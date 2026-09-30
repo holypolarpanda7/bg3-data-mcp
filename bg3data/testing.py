@@ -791,8 +791,13 @@ def plan(store, active, layer, build_id, write=True, _picked_only=False):
     md += ["**Each level:** say **\"level up\"** -> make exactly the choices below -> say **\"leveled\"**. I run the level "
            "check and this level's automated tests. Save after each level (never while a test is staged).", ""]
     # levels below the plan's range still grant spells: track them so they aren't picked twice
+    max_slot = 0  # highest spell-slot level so far: filler picks stay castable
     for L in range(1, hi + 1):
         nodes = _nodes(store, active, cls, L) + (_nodes(store, active, sub, L) if sub else [])
+        for n_ in nodes:
+            for rname, rlvl, _amt in _boost_resources(n_[4].get("Boosts")):
+                if rname in ("SpellSlot", "WarlockSpellSlot"):
+                    max_slot = max(max_slot, rlvl)
         body = []
         if len({n[3] for n in nodes if n[2]}) > 1 and len([n for n in nodes if n[1] == cls]) > 1:
             body.append(f"- note: {len([n for n in nodes if n[1] == cls])} {cls} progression nodes at this level "
@@ -825,7 +830,13 @@ def plan(store, active, layer, build_id, write=True, _picked_only=False):
                     spell_lvl = lvls[0] if len(lvls) == 1 else (f"{lvls[0]}-{lvls[-1]}" if lvls else "?")
                     req = [x for x in sorted(need, key=need.get) if x in pool][:n]
                     later = set(need)
-                    filler = [x for x in sorted(pool, key=lambda x: lvl_names[x]) if x not in req and x not in later][: n - len(req)]
+                    def castable(x):
+                        r_ = store.resolve(x, active)
+                        try:
+                            return int(r_["fields"].get("Level", ("0",))[0]) <= max_slot if r_ else False
+                        except ValueError:
+                            return True
+                    filler = [x for x in sorted(pool, key=lambda x: lvl_names[x]) if x not in req and x not in later and castable(x)][: n - len(req)]
                     for x in req + filler:
                         picked[x] = L
                     items = [f"**{lvl_names[x]}** (tested at L{need[x]})" for x in req] + [f"{lvl_names[x]} (filler)" for x in filler]
