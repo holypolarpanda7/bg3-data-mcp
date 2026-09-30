@@ -151,7 +151,7 @@ def eval_lua(code, context="server", timeout=15.0):
             # the END marker is always printed and failures come back as errors, not timeouts
             f'local __lok,__f,__e=pcall(load,{_lua_string(code)}); local __ok,__r; '
             f'if not __lok then __ok,__r=false,__f elseif __f then __ok,__r=pcall(__f) else __ok,__r=false,__e end; '
-            f'local __s; local __js,__jv=pcall(Ext.Json.Stringify,{{r=__r}},{{Beautify=false,StringifyInternalTypes=true,IterateUserdata=true,AvoidRecursion=true,LimitDepth=4,LimitArrayElements=200}}); '
+            f'local __s; local __js,__jv=pcall(Ext.Json.Stringify,{{r=__r}},{{Beautify=false,StringifyInternalTypes=true,IterateUserdata=true,AvoidRecursion=true,LimitDepth=10,LimitArrayElements=200}}); '
             f'__s=__js and __jv or Ext.Json.Stringify({{r=tostring(__r)}}); '
             f'Ext.Utils.Print("[BG3SE:"..__t..":END]"..(__ok and "OK" or "ERR").."|"..__s)'
         )

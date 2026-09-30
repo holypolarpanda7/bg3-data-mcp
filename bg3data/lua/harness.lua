@@ -153,6 +153,16 @@ function T.setHp(g, hp)
     if hp == "full" then Osi.SetHitpointsPercentage(g, 100) else Osi.SetHitpoints(g, hp) end
 end
 
+-- Restore every action resource (spell slots, action points...) to its maximum: tests start fresh.
+function T.refill(g)
+    g = uuid(g)
+    local e = Ext.Entity.Get(g)
+    for _, list in pairs(e.ActionResources.Resources) do
+        for _, x in ipairs(list) do x.Amount = x.MaxAmount end
+    end
+    e:Replicate("ActionResources")
+end
+
 function T.enterCombat()
     local h = T.host()
     for _, g in pairs(T.spawns) do pcall(Osi.EnterCombat, g, h) end
@@ -192,58 +202,75 @@ end
 -- ------------------------------------------------------------------ safety watch
 -- While test spawns are alive, a party member dropping under the floor (percent) ends the encounter:
 -- every spawn dies, the party member is healed, and a SAFETY event records that the tool stepped in.
+-- Triggered from HitpointsChanged, from AttackedBy (backup: HitpointsChanged doesn't always fire) and
+-- from a DOWNED status on a party member.
 local function safetyCheck(entity, pct)
     if not (T.safety.enabled and T.recording) or T.safety.tripped or next(T.spawns) == nil then return end
     local g = uuid(entity)
     if isTracked(g) ~= "host" and Osi.IsPartyMember(g, 1) ~= 1 then return end
-    if pct >= T.safety.floor then return end
+    pct = pct or (Osi.GetHitpoints(g) * 100 / math.max(1, Osi.GetMaxHitpoints(g)))
+    if pct >= T.safety.floor and Osi.HasActiveStatus(g, "DOWNED") ~= 1 then return end
     T.safety.tripped = true
     for _, s in pairs(T.spawns) do if Osi.IsDead(s) == 0 then pcall(Osi.Die, s, 0, NULL, 0, 1) end end
+    pcall(Osi.RemoveStatus, g, "DOWNED")
     Osi.SetHitpointsPercentage(g, 100)
     push({ kind = "SAFETY", who = g, pct = pct })
 end
 
 -- ------------------------------------------------------------------ event recorder
-local function listen(name, arity, fn)
-    local ok, err = pcall(Ext.Osiris.RegisterListener, name, arity, "after", function(...)
-        local ok2, err2 = pcall(fn, ...)
-        if not ok2 then Ext.Utils.PrintWarning("[BG3T] listener " .. name .. ": " .. tostring(err2)) end
-    end)
-    if not ok then T.listen_errors[#T.listen_errors + 1] = name .. ": " .. tostring(err) end
-end
-
-if not T.listening then
-    T.listening = true
-    T.listen_errors = {}
-    listen("StatusApplied", 4, function(obj, status, causee)
+-- Osiris listeners can't be removed, so they're registered once per Lua session and dispatch through
+-- T.on[name]: installing a newer harness replaces the handlers instead of stacking listeners.
+T.on = {
+    StatusApplied = function(obj, status, causee)
         if T.recording and isTracked(obj) then push({ kind = "StatusApplied", who = uuid(obj), status = status, by = uuid(causee) }) end
-    end)
-    listen("StatusRemoved", 4, function(obj, status, causee)
+        if status == "DOWNED" then safetyCheck(obj, 0) end
+    end,
+    StatusRemoved = function(obj, status)
         if T.recording and isTracked(obj) then push({ kind = "StatusRemoved", who = uuid(obj), status = status }) end
-    end)
-    listen("CastedSpell", 5, function(caster, spell, spellType, element)
+    end,
+    CastedSpell = function(caster, spell)
         if T.recording and isTracked(caster) then push({ kind = "CastedSpell", who = uuid(caster), spell = spell }) end
-    end)
-    listen("UsingSpellOnTarget", 6, function(caster, target, spell)
+    end,
+    UsingSpellOnTarget = function(caster, target, spell)
         if T.recording and (isTracked(caster) or isTracked(target)) then
             push({ kind = "SpellOnTarget", who = uuid(caster), target = uuid(target), spell = spell })
         end
-    end)
-    listen("AttackedBy", 7, function(defender, attackerOwner, attacker, damageType, amount, cause)
+    end,
+    AttackedBy = function(defender, attackerOwner, attacker, damageType, amount, cause)
         if T.recording and isTracked(defender) then
             push({ kind = "Damage", who = uuid(defender), by = uuid(attackerOwner), type = damageType, amount = amount, cause = cause })
         end
-    end)
-    listen("Died", 1, function(ch)
+        safetyCheck(defender, nil)
+    end,
+    Died = function(ch)
         if T.recording and isTracked(ch) then push({ kind = "Died", who = uuid(ch) }) end
-    end)
-    listen("TurnStarted", 1, function(ch)
+    end,
+    TurnStarted = function(ch)
         if T.recording then push({ kind = "TurnStarted", who = uuid(ch), tracked = isTracked(ch) }) end
-    end)
-    listen("CombatStarted", 1, function(c) if T.recording then push({ kind = "CombatStarted" }) end end)
-    listen("CombatEnded", 1, function(c) if T.recording then push({ kind = "CombatEnded" }) end end)
-    listen("LeveledUp", 1, function(ch) push({ kind = "LeveledUp", who = uuid(ch), level = Osi.GetLevel(ch) }) end)
-    listen("HitpointsChanged", 2, function(entity, pct) safetyCheck(entity, pct) end)
+    end,
+    CombatStarted = function() if T.recording then push({ kind = "CombatStarted" }) end end,
+    CombatEnded = function() if T.recording then push({ kind = "CombatEnded" }) end end,
+    LeveledUp = function(ch)
+        if isTracked(ch) or Osi.IsPartyMember(ch, 1) == 1 then push({ kind = "LeveledUp", who = uuid(ch), level = Osi.GetLevel(ch) }) end
+    end,
+    HitpointsChanged = function(entity, pct) safetyCheck(entity, pct) end,
+}
+
+local ARITY = { StatusApplied = 4, StatusRemoved = 4, CastedSpell = 5, UsingSpellOnTarget = 6, AttackedBy = 7, Died = 1,
+                TurnStarted = 1, CombatStarted = 1, CombatEnded = 1, LeveledUp = 1, HitpointsChanged = 2 }
+T.listen_errors = {}
+T.registered = T.registered or {}
+for name, arity in pairs(ARITY) do
+    if not T.registered[name] then
+        local ok, err = pcall(Ext.Osiris.RegisterListener, name, arity, "after", function(...)
+            local h = BG3T and BG3T.on and BG3T.on[name]
+            if h then
+                local ok2, err2 = pcall(h, ...)
+                if not ok2 then Ext.Utils.PrintWarning("[BG3T] " .. name .. ": " .. tostring(err2)) end
+            end
+        end)
+        if ok then T.registered[name] = true else T.listen_errors[#T.listen_errors + 1] = name .. ": " .. tostring(err) end
+    end
 end
 
 return "installed"

@@ -535,11 +535,11 @@ def bg3_test_stage(layer: str, case_id: str, layers: list[str] | None = None) ->
                                    f"first turn went to {ft.get('tracked') or 'someone else'}" if ft else "no turn recorded yet"))
     for alias, snap in (r["before"] or {}).items():
         out.append(f"  {alias}: HP {snap.get('hp')}/{snap.get('max_hp')}" + (f", statuses {', '.join(snap.get('statuses') or [])}" if snap.get("statuses") else ""))
-    if c.get("mode", "player") == "player" and r["spell_name"]:
+    if c.get("mode", "auto") == "player" and r["spell_name"]:
         tgt = "yourself" if c.get("target", "host") == "host" else c["target"]
         out.append(f"USER: cast {r['spell_name']} from the class spell bar at {tgt}, then say verify")
-    elif c.get("mode") == "script":
-        out.append("scripted cast sent (effects-only run); run bg3_test_verify")
+    else:
+        out.append("scripted cast sent; run bg3_test_verify (or use bg3_test_run next time)")
     return "\n".join(out)
 
 
@@ -551,6 +551,27 @@ def bg3_test_verify(cleanup: bool = True, wait: float = 2.0, layers: list[str] |
     from . import testing
     s, active = _testing_store(layers)
     return testing.verify(s, active, cleanup, wait)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_test_run(layer: str, case_id: str, wait: float = 4.0, layers: list[str] | None = None) -> str:
+    """Run one auto/script case end to end: stage (real combat, host acts first), scripted cast, verify,
+    cleanup. Effects come from recorded events; costs are checked against the spell's loaded UseCosts
+    (a scripted cast never charges them). player-mode cases need bg3_test_stage + a hotbar cast instead."""
+    from . import testing
+    s, active = _testing_store(layers)
+    return testing.run(s, active, layer, case_id, wait)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_test_run_level(layer: str, class_name: str, level: int, wait: float = 4.0, layers: list[str] | None = None) -> str:
+    """Run every automated case for a class level, one after another, and summarise. Lists the
+    player-mode cases that still need a hotbar cast."""
+    from . import testing
+    s, active = _testing_store(layers)
+    return testing.run_level(s, active, layer, class_name, level, wait)
 
 
 @mcp.tool()

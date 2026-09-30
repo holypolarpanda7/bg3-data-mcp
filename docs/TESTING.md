@@ -3,14 +3,19 @@
 bg3-data-mcp can drive repeatable in-game tests for any mod layer. You keep playing normally (level-ups,
 casting from the hotbar); the tools do the setup, recording, checking and cleanup.
 
-## Why a player casts
-A scripted cast (`Osi.UseSpell`) applies the spell's effects but **never pays its costs** (verified
-2026-09-30, even for a class-learned spell), and a spell added by script (`Osi.AddSpell`) isn't part of the
-class. So:
-- `mode = "player"` (default): you cast from the class spell bar. The only run that verifies slots and
-  resources, class ownership and turn flow.
-- `mode = "script"`: the tool casts. Effects only; resource checks report SKIP. Every verdict says which
-  kind of run it was.
+## Modes: how much is automated
+A scripted cast (`Osi.UseSpell`) applies the spell's effects but **never pays its costs**, in or out of
+combat, even for a class-learned spell (verified 2026-09-30: slot and Action Point unchanged). So:
+- `mode = "auto"` (default): the tool stages a real encounter (combat, host first in initiative), casts by
+  script and checks effects from recorded events. Resource expectations are checked **against the spell's
+  UseCosts as the game loaded them** (`[data]` rows: right resource, level and amount, and the host has
+  it). This catches the data bugs mods make; the engine charging it is vanilla behaviour.
+  `bg3_test_run` / `bg3_test_run_level` do stage + cast + verify + cleanup in one call.
+- `mode = "player"`: stage, you cast from the class spell bar, `bg3_test_verify`. Measures the real
+  resource change; use it as a spot check (e.g. once per resource type).
+- `mode = "script"`: effects only, no class-ownership requirement.
+The spell must be learned through the class (SpellBook source is not `Osiris`) for auto and player cases.
+Every verdict states which kind of run it was.
 
 ## Loop per level
 1. `bg3_level_up` grants exactly enough XP (from the active layers' `XPData.txt`) for the next level.
@@ -18,7 +23,7 @@ class. So:
 3. `bg3_level_check` compares the host with its class and subclass progressions up to its level:
    `PassivesAdded` present, `PassivesRemoved` gone, `AddSpells` lists learned (with their source),
    `ActionResource` boosts, plus this level's choices.
-4. For each case: `bg3_test_stage <id>` sets it up, you cast, then `bg3_test_verify` checks it and cleans up.
+4. `bg3_test_run_level <class> <level>` runs every automated case; player cases: `bg3_test_stage`, cast, `bg3_test_verify`.
 5. Save only after verify/cleanup. Staged spawns and test boosts must never end up in a save.
 
 `bg3_test_script` writes the human reading script (`<mod>/docs/test-scripts/<Class>[_L<n>].md`).
@@ -41,12 +46,13 @@ level = 1                    # class level the case is written for (stage blocks
 title = "Magic Missile hits a hostile wolf and spends a 1st-level slot"
 spell = "Projectile_MagicMissile"
 target = "A"                 # "host" or a spawn alias
-mode = "player"              # or "script"
+mode = "auto"                # default; or "player" / "script"
 prep = "..."                 # optional: shown as "Before casting: ..."
 instructions = "..."         # optional: extra step after the cast step
 notes = "..."                # optional: shown at the end of the case
 combat = true                # default: true when any spawn is hostile
 initiative = "host_first"    # default in combat: temporary Initiative(50) boost on the host
+refill = true                # default: host action resources (slots, action points...) restored to max first
 safety = true                # default: kill spawns + heal if a party member drops below safety_floor
 safety_floor = 35            # percent HP
 spawn = [{ as = "A", template = "wolf", faction = "hostile", hp = 40, distance = 8 }]
@@ -74,7 +80,11 @@ and loaded through the SE console into the global `BG3T`. It re-installs itself 
 version change. It tracks everything it creates (spawns, boosts tagged `BG3Test`, statuses) so cleanup is
 complete, records Osiris events (StatusApplied/Removed, CastedSpell, UsingSpellOnTarget, AttackedBy,
 Died, TurnStarted, CombatStarted/Ended, LeveledUp) for tracked characters, and runs the safety watch on
-HitpointsChanged. Staging state is kept in the cache (`test_state.json`), so it survives an MCP restart.
+HitpointsChanged. Staging order matters: a hostile spawn starts combat and rolls initiative the moment it appears, so the
+recorder, safety watch and Initiative boost are set first, creatures spawn neutral, get their setup, and
+only then turn hostile. Verify also removes statuses the run left on the host. Listeners dispatch through
+`BG3T.on`, so a newer harness replaces handlers without stacking listeners. Staging state is kept in the
+cache (`test_state.json`), so it survives an MCP restart.
 
 ## Known limits
 - The Nautiloid tutorial (`TUT_SUMMON_BLOCK`) blocks summons: test summon spells after the crash site.

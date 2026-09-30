@@ -33,6 +33,7 @@ FACTIONS = {
     "friendly": "80182081-6bb1-95f1-c40f-4c3cea368269",
     "neutral": "a66b2d45-1b6c-082d-8a01-c6d975ead314",
 }
+MODES = ("auto", "player", "script")
 SCRIPT_SPELL_SOURCES = {"Osiris"}  # spells added by script (Osi.AddSpell): not class-sourced
 GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
@@ -303,7 +304,7 @@ def list_cases(store, active, layer, cls=None, level=None):
         if level is not None and c.get("level") != level:
             continue
         errs = validate(store, active, c)
-        out.append(f"{c['id']}  L{c.get('level', '?')} {c.get('class', '')}  [{c.get('mode', 'player')}] {c.get('title', '')}"
+        out.append(f"{c['id']}  L{c.get('level', '?')} {c.get('class', '')}  [{c.get('mode', 'auto')}] {c.get('title', '')}"
                    + ("" if not errs else "\n    INVALID: " + "; ".join(errs)))
     return "\n".join(out) or f"no cases (suite folders: {suite_dirs(layer)})"
 
@@ -331,7 +332,9 @@ def stage(store, active, layer, case_id):
     errs = validate(store, active, c)
     if errs:
         raise ValueError("case is invalid: " + "; ".join(errs))
-    mode = c.get("mode", "player")
+    mode = c.get("mode", "auto")
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
     lua("BG3T.cleanup(); return true")
     st = host_state()
     notes, blockers = [], []
@@ -346,9 +349,9 @@ def stage(store, active, layer, case_id):
         blockers.append(f"host lacks subclass {c['subclass']}")
     if c.get("spell"):
         src = {s["id"]: s["source"] for s in st["spells"]}.get(c["spell"])
-        if src is None and mode == "player":
+        if src is None and mode != "script":
             blockers.append(f"host doesn't know {c['spell']} - learn it through level-up / the class spell list")
-        elif src in SCRIPT_SPELL_SOURCES and mode == "player":
+        elif src in SCRIPT_SPELL_SOURCES and mode != "script":
             blockers.append(f"{c['spell']} was added by script (source {src}): it won't pay costs - learn it via level-up")
         elif src:
             notes.append(f"{c['spell']} known, source {src}")
@@ -360,59 +363,69 @@ def stage(store, active, layer, case_id):
     spawns = c.get("spawn", [])
     hostile = any(s.get("faction", "hostile") == "hostile" for s in spawns)
     combat = c.get("combat", hostile)
-    code = ["local r={}"]
+    first = combat and c.get("initiative", "host_first") == "host_first"
+    floor = int(c.get("safety_floor", 35))
+    # Order matters: a hostile spawn starts combat (and rolls initiative) the moment it appears. So the
+    # recorder, safety watch and initiative boost go first, creatures spawn NEUTRAL, get their setup, and
+    # only then switch to their real faction and enter combat.
+    code = [f"BG3T.safety.floor={floor}; BG3T.safety.enabled={'true' if c.get('safety', True) else 'false'}; "
+            "local since=BG3T.seq; BG3T.recording=true; local r={}"]
+    if first:
+        code.append("BG3T.grant(BG3T.host(), 'Initiative(50)')")
     for i, s in enumerate(spawns):
         tpl = TEMPLATES.get(s["template"], (s["template"], None))[0]
-        fac = FACTIONS.get(s.get("faction", "hostile"), s.get("faction"))
         dist = float(s.get("distance", 8))
         ang = (i - (len(spawns) - 1) / 2) * 0.6
         dx, dz = dist * math.cos(ang), dist * math.sin(ang)
-        code.append(f"r[{se._lua_string(s['as'])}]=BG3T.spawn({se._lua_string(s['as'])},{se._lua_string(tpl)},{se._lua_string(fac)},{dx:.2f},{dz:.2f})")
-    code.append("return r")
-    spawned = lua("; ".join(code))
+        a_ = se._lua_string(s["as"])
+        code.append(f"r[{a_}]=BG3T.spawn({a_},{se._lua_string(tpl)},{se._lua_string(FACTIONS['neutral'])},{dx:.2f},{dz:.2f})")
+        if s.get("hp") is not None:
+            code.append(f"if r[{a_}] then local m=Osi.GetMaxHitpoints(r[{a_}]); "
+                        f"if {int(s['hp'])}>m then BG3T.grant(r[{a_}],'IncreaseMaxHP('..({int(s['hp'])}-m)..')') end end")
+    for st_ in c.get("setup", []):
+        if st_.get("max_hp") and st_.get("target", "host") == "host":
+            code.append(f"BG3T.grant(BG3T.host(), 'IncreaseMaxHP({int(st_['max_hp'])})')")
+    code.append("return {r=r, since=since}")
+    res = lua("; ".join(code), timeout=30)
+    spawned, since = res.get("r") or {}, res["since"]
     missing = [s["as"] for s in spawns if not (spawned or {}).get(s["as"])]
     if missing:
         lua("BG3T.cleanup(); return true")
         raise RuntimeError(f"spawn failed for {missing}")
-    # HP: raise max first (applies next tick), then set exact values
-    pre = []
-    for s in spawns:
-        if s.get("hp") is not None:
-            pre.append(f"local g=BG3T.spawns[{se._lua_string(s['as'])}]; local m=Osi.GetMaxHitpoints(g); "
-                       f"if {int(s['hp'])}>m then BG3T.grant(g,'IncreaseMaxHP('..({int(s['hp'])}-m)..')') end")
-    for st_ in c.get("setup", []):
-        if st_.get("max_hp"):
-            pre.append(f"BG3T.grant({_who(st_)}, 'IncreaseMaxHP({int(st_['max_hp'])})')")
-    if pre:
-        lua("; ".join(pre) + "; return true")
-        time.sleep(1.0)
+    time.sleep(1.2)  # boosts (initiative, max HP) apply on the next tick
     post = []
     for s in spawns:
         if s.get("hp") is not None:
             post.append(f"BG3T.setHp(BG3T.spawns[{se._lua_string(s['as'])}], {int(s['hp'])})")
     for st_ in c.get("setup", []):
+        if st_.get("max_hp") and st_.get("target", "host") != "host":
+            post.append(f"BG3T.grant({_who(st_)}, 'IncreaseMaxHP({int(st_['max_hp'])})')")
         if "hp" in st_:
             post.append(f"BG3T.setHp({_who(st_)}, {st_['hp'] if isinstance(st_['hp'], int) else repr('full')})")
         if st_.get("status"):
             post.append(f"BG3T.apply({_who(st_)}, {se._lua_string(st_['status'])}, {int(st_.get('turns', 10))})")
         if st_.get("boost"):
             post.append(f"BG3T.grant({_who(st_)}, {se._lua_string(st_['boost'])})")
-    first = combat and c.get("initiative", "host_first") == "host_first"
-    if first:
-        post.append("BG3T.grant(BG3T.host(), 'Initiative(50)')")
-    floor = int(c.get("safety_floor", 35))
-    post.append(f"BG3T.safety.floor={floor}; BG3T.safety.enabled={'true' if c.get('safety', True) else 'false'}")
-    post.append("local since=BG3T.seq; BG3T.recording=true")
+    if c.get("refill", True):
+        post.append("BG3T.refill(BG3T.host())")
+    # a case that deliberately starts you at low HP mustn't trip the safety watch by itself
+    post.append("local h=BG3T.host(); local p=Osi.GetHitpoints(h)*100/math.max(1,Osi.GetMaxHitpoints(h)); "
+                "if p<=BG3T.safety.floor then BG3T.safety.floor=math.max(1,math.floor(p)-1) end")
+    for s in spawns:
+        fac = FACTIONS.get(s.get("faction", "hostile"), s.get("faction"))
+        if fac != FACTIONS["neutral"]:
+            post.append(f"pcall(Osi.SetFaction, BG3T.spawns[{se._lua_string(s['as'])}], {se._lua_string(fac)})")
     if combat:
         post.append("BG3T.enterCombat()")
-    post.append("return {since=since, world=BG3T.world()}")
-    since = lua("; ".join(post), timeout=30)["since"]
+    post.append("return true")
+    lua("; ".join(post), timeout=30)
     time.sleep(1.0)
     before = lua("return BG3T.world()", timeout=30)
     first_turn = None
     if combat:
-        for _ in range(40):
-            evs = lua(f"return BG3T.drain({since})") or []
+        for _ in range(12):
+            r_ = se.eval_lua(f"return BG3T.drain({since})", "server", timeout=10)
+            evs = (r_["result"] if r_["ok"] else None) or []
             turns = [e for e in evs if e.get("kind") == "TurnStarted"]
             if turns:
                 first_turn = turns[0]
@@ -421,7 +434,7 @@ def stage(store, active, layer, case_id):
     state = {"layer": layer, "case": c["id"], "mode": mode, "combat": combat, "since": since, "before": before,
              "first_turn": first_turn, "staged_at": time.time()}
     _save_state(state)
-    if mode == "script" and c.get("spell"):
+    if mode in ("auto", "script") and c.get("spell"):
         tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
         lua(f"BG3T.cast(BG3T.host(), {se._lua_string(c['spell'])}, {tgt}); return true")
     return {"ok": True, "case": c, "notes": notes, "combat": combat, "first_turn": first_turn,
@@ -444,6 +457,7 @@ def verify(store, active, cleanup=True, wait=2.0):
     before = state["before"]
     mode = state["mode"]
     player = mode == "player"
+    costs = None if player or not c.get("spell") else _use_costs(c["spell"])
     host = (before.get("host") or {}).get("guid")
     results = []
 
@@ -483,7 +497,11 @@ def verify(store, active, cleanup=True, wait=2.0):
             bv = ((b.get("resources") or {}).get(e["resource"]) or {}).get(lvl)
             av = ((a.get("resources") or {}).get(e["resource"]) or {}).get(lvl)
             if not player:
-                row(None, f"{e['resource']}[{lvl}] change - not testable in script mode (scripted casts never pay costs)")
+                want = -e.get("change", -1)
+                charged = sum(a_ for n_, lv_, a_ in (costs or []) if _cost_matches(n_, e["resource"]) and str(lv_) == lvl)
+                has = bv is not None and bv[0] >= want
+                row(charged == want and has, f"[data] {c.get('spell')} UseCosts charge {e['resource']}[{lvl}] x{charged:g} "
+                    f"(expected x{want}); you had {bv[0] if bv else 'none'}{'' if has else ' - not enough to cast'}")
             elif bv is None or av is None:
                 row(False, f"{label} has no {e['resource']}[{lvl}] resource")
             else:
@@ -499,8 +517,9 @@ def verify(store, active, cleanup=True, wait=2.0):
             hits = [x for x in events if x.get("kind") == "Damage" and x.get("who") == guid]
             row(any(x.get("type") == e["damage_type"] for x in hits), f"{label} took {e['damage_type']} damage (seen: {sorted({x.get('type') for x in hits}) or 'none'})")
     safety = [x for x in events if x.get("kind") == "SAFETY"]
-    fid = ("player cast" + (" in real combat (initiative)" if state["combat"] else " out of combat")) if player \
-        else "SCRIPTED cast - effects only; slot/resource costs and turn flow NOT tested"
+    where = " in real combat (initiative)" if state["combat"] else " out of combat"
+    fid = ("player cast" + where) if player else ("scripted cast" + where + "; costs checked against the loaded UseCosts, not charged"
+                                                   if mode == "auto" else "SCRIPTED cast - effects only")
     npass = sum(1 for r in results if r[0] == "PASS")
     nfail = sum(1 for r in results if r[0] == "FAIL")
     verdict = "FAIL" if nfail else ("PASS" if npass else "NO CHECKS")
@@ -517,6 +536,11 @@ def verify(store, active, cleanup=True, wait=2.0):
     if ev:
         lines.append("  events: " + ", ".join(ev))
     if cleanup:
+        # statuses the test run left on you (e.g. a scripted Mage Armour) must not end up in a save
+        gained = [x for x in (ent(after, "host").get("statuses") or []) if x not in (ent(before, "host").get("statuses") or [])]
+        if gained:
+            lua("local h=BG3T.host(); " + " ".join(f"pcall(Osi.RemoveStatus,h,{se._lua_string(x)});" for x in gained) + " return true")
+            lines.append(f"  removed from you: {', '.join(gained)}")
         rep = lua("return BG3T.cleanup()")
         lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses removed")
         try:
@@ -524,6 +548,57 @@ def verify(store, active, cleanup=True, wait=2.0):
         except OSError:
             pass
     return "\n".join(lines)
+
+
+def _use_costs(spell):
+    """[(resource, level, amount)] from the spell's UseCosts as the running game loaded them."""
+    raw = lua(f"local s=Ext.Stats.Get({se._lua_string(spell)}); return s and tostring(s.UseCosts) or ''") or ""
+    out = []
+    for part in filter(None, (p.strip() for p in raw.split(";"))):
+        f = part.split(":")
+        if f[0] == "SpellSlotsGroup" and len(f) >= 4:   # SpellSlotsGroup:group:amount:level
+            out.append(("SpellSlotsGroup", int(f[3]), float(f[2])))
+        elif len(f) >= 2:                               # Name:amount[:level]
+            out.append((f[0], int(f[2]) if len(f) > 2 else 0, float(f[1])))
+    return out
+
+
+def _cost_matches(cost_name, resource):
+    # SpellSlotsGroup is paid from SpellSlot or WarlockSpellSlot of that level
+    return cost_name == resource or (cost_name == "SpellSlotsGroup" and resource in ("SpellSlot", "WarlockSpellSlot"))
+
+
+def run(store, active, layer, case_id, wait=4.0):
+    """Stage + (scripted) cast + verify in one go for auto/script cases."""
+    c = find_case(layer, case_id)
+    if c.get("mode", "auto") == "player":
+        raise ValueError(f"{case_id} is a player-mode case: use bg3_test_stage, cast from the hotbar, then bg3_test_verify")
+    r = stage(store, active, layer, case_id)
+    if not r["ok"]:
+        return f"{case_id}: NOT RUN - " + "; ".join(r["blockers"])
+    return verify(store, active, cleanup=True, wait=wait)
+
+
+def run_level(store, active, layer, cls, level, wait=4.0):
+    cases = [c for c in load_cases(layer) if (c.get("class") or "").lower() == cls.lower() and c.get("level") == level]
+    if not cases:
+        return f"no {cls} level {level} cases"
+    out, manual = [], []
+    for c in cases:
+        if c.get("mode", "auto") == "player":
+            manual.append(c["id"])
+            continue
+        try:
+            out.append(run(store, active, layer, c["id"], wait))
+        except (RuntimeError, ValueError, TimeoutError) as e:
+            out.append(f"{c['id']}: ERROR {e}")
+            try:
+                cleanup()
+            except (RuntimeError, TimeoutError):
+                pass
+    passed = sum(1 for o in out if o.split("\n")[0].endswith("]") and ": PASS" in o.split("\n")[0])
+    head = f"{cls} level {level}: {passed}/{len(out)} automated cases passed" + (f"; player-mode (run by hand): {', '.join(manual)}" if manual else "")
+    return head + "\n\n" + "\n\n".join(out)
 
 
 def cleanup():
@@ -598,8 +673,10 @@ def script(store, active, layer, cls=None, level=None, write=True):
             md += ["Say **\"level check\"** first: I confirm your level 1 features and spells (`bg3_level_check`).", ""]
         for i, c in enumerate(by_level[lvl], 1):
             spell = _name(store, active, c["spell"]) if c.get("spell") else None
-            mode = c.get("mode", "player")
-            md += [f"### {lvl}.{i} {c.get('title', c['id'])}", "", f"Case `{c['id']}` - {'you cast it (real play)' if mode == 'player' else 'I cast it by script (effects only)'}.", ""]
+            mode = c.get("mode", "auto")
+            md += [f"### {lvl}.{i} {c.get('title', c['id'])}", "", f"Case `{c['id']}` - " + {"player": "you cast it from the hotbar (verifies the engine charging costs)",
+                                    "auto": "automated: I set up, cast and check it; costs checked against the loaded data",
+                                    "script": "I cast it by script (effects only)"}[mode] + ".", ""]
             steps = [f"Say **\"stage {c['id']}\"**. I set up:"]
             setup = []
             for s in c.get("spawn", []):
@@ -626,9 +703,11 @@ def script(store, active, layer, cls=None, level=None, write=True):
                 if c.get("instructions"):
                     steps.append(c["instructions"])
                 steps.append("Wait for the spell to resolve." + (" Don't end your turn." if combat else ""))
-            elif mode == "script":
-                steps.append("Watch: I cast it for you.")
-            steps.append("Say **\"verify\"**. I check the results, then remove every spawn and test boost.")
+            else:
+                steps = [f"Say **\"run {c['id']}\"** (or **\"run level {lvl}\"** for all of them). I set up:"] + steps[1:]
+                steps.append("Watch: I cast it for you, check the results and clean up.")
+            if mode == "player":
+                steps.append("Say **\"verify\"**. I check the results, then remove every spawn and test boost.")
             md += [f"{n}. {s}" if not s.startswith("   ") else s for n, s in _number(steps)]
             exp = [t for e in c.get("expect", []) for t in _expect_text(store, active, c, e)]
             if exp:
