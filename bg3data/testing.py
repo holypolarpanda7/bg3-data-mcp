@@ -206,12 +206,24 @@ def level_check(store, active):
                 fails += not ok
                 if not ok or lvl == c["level"]:
                     lines.append(f"  {'PASS' if ok else 'FAIL'} spell {sp} (L{lvl} AddSpells, {src})" + (f" source={have_s[sp]}" if ok else ""))
+        # resource boosts from the host's other passives (origin feats, race, background...) also count
+        other = {}
+        for p in have_p - set(added):
+            r = store.resolve(p, active)
+            for rname, rlvl, amt in _boost_resources((r or {}).get("fields", {}).get("Boosts", ("", ""))[0]):
+                other.setdefault((rname, rlvl), []).append((p, amt))
         for (rname, rlvl), amt in sorted(res.items()):
             got = (st["resources"].get(rname) or {}).get(str(rlvl))
             mx = got[1] if got else 0
-            if mx != amt:
+            extra = other.get((rname, rlvl), [])
+            total = amt + sum(a for _, a in extra)
+            why = ", ".join(f"+{a:g} {p}" for p, a in extra)
+            if mx == total and extra:
+                lines.append(f"  PASS resource {rname}[{rlvl}] max {mx:g} = progression {amt:g} {why}")
+            elif mx != total:
                 warns += 1
-                lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, progression boosts sum to {amt:g} (other passives may change it)")
+                lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, expected {total:g} (progression {amt:g}"
+                             + (f" {why}" if why else "") + ")")
         for ch in choices:
             lines.append(f"  info this level's choice: {ch}")
     lines.insert(0, f"LEVEL CHECK: {'ALL PASS' if not fails else f'{fails} FAIL'}" + (f", {warns} warning(s)" if warns else ""))
