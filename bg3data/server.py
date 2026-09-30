@@ -403,6 +403,48 @@ def bg3_se_live_entry(name: str, layers: list[str] | None = None, fields: list[s
     return "\n".join(out)
 
 
+@mcp.tool()
+@se_guarded
+def bg3_se_hot_load(layer: str, files: list[str] | None = None, loca: bool = True) -> str:
+    """HOT-LOAD a mod layer into the RUNNING game without restarting: mirrors its stats .txt files as loose
+    files under <game>/Data/Public/BG3DataHot_<layer>/, loads them with Ext.Stats.LoadStatsFile(…, true)
+    (overwriting existing entries), Syncs every entry to the client, and (loca=True) pushes its English
+    strings. files: only these stats files (e.g. ['Passive.txt']). Progressions/lists/templates can't be
+    hot-loaded (restart with a pak). Test-only: don't save the game while relying on hot-loaded entries.
+    Clean up with bg3_se_hot_clean."""
+    r = se.hot_load_stats(layer, files)
+    out = [f"hot-loaded {layer}: {r['synced']} entries synced ({r['created_new']} newly created in this session)"]
+    for f in r["files"]:
+        out.append(f"  {'OK ' if f['ok'] else 'ERR'} {f['file'].split('/')[-1]}: {f['entries']} entries" + (f"  {f['err']}" if f.get("err") else ""))
+    if r["sync_errors"]:
+        out.append("sync errors: " + "; ".join(r["sync_errors"]))
+    if r["engine_errors"]:
+        out.append("engine messages: " + "; ".join(r["engine_errors"]))
+    if loca:
+        l = se.hot_load_loca(layer)
+        out.append(f"loca: {l.get('updated', 0)}/{l['strings_sent']} strings updated" + (f", {l['failed']} failed" if l.get("failed") else ""))
+    out.append(f"loose files: {r['hot_root']} (remove with bg3_se_hot_clean)")
+    return "\n".join(out)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_se_hot_clean() -> str:
+    """Remove the loose hot-load folders (Data/Public/BG3DataHot_*) from the game install. Entries already
+    hot-loaded stay in the running session until restart."""
+    removed = se.hot_clean()
+    return "removed: " + (", ".join(removed) if removed else "nothing")
+
+
+@mcp.tool()
+@se_guarded
+def bg3_se_reset_lua() -> str:
+    """Reload Script Extender Lua (console `reset`): re-runs every loaded mod's Bootstrap scripts from its
+    pak/loose files. Only affects mods that were loaded at game start."""
+    lines = se.command("reset", wait=6)
+    return "\n".join(lines[-40:]) or "(no log output)"
+
+
 def main():
     mcp.run(transport="stdio")
 

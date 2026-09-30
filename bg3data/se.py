@@ -244,7 +244,7 @@ def normalize(value):
     if isinstance(v, list):
         return ";".join(sorted(normalize(x) for x in v if normalize(x)))
     s = str(v).strip()
-    if _re.fullmatch(r"h[0-9a-z]{8}g[0-9a-z]{4}g[0-9a-z]{4}g[0-9a-z]{4}g[0-9a-z]{12};\d+", s):
+    if _re.fullmatch(r"h[0-9a-z]{16,48};\d+", s):
         s = s.split(";")[0]  # loca handle: the game drops the ;version suffix
     try:
         f = float(s)
@@ -272,3 +272,103 @@ def same(index_value, game_value):
     if ni in EMPTY:
         return ng in EMPTY or index_value == ""
     return ni == ng
+
+
+# ------------------------------------------------------------------ hot loading (no restart)
+# SE only reads safe RELATIVE paths through the game's VFS, so a layer's files are mirrored as loose files
+# under <game>/Data/Public/BG3DataHot_<layer>/ and loaded from there. Nothing here survives a restart or
+# gets written into saves unless the game is saved while hot-loaded entries are in use.
+import re as _re2
+import shutil as _sh
+
+HOT_PREFIX = "BG3DataHot_"
+
+
+def _hot_root(cfg, layer):
+    return os.path.join(cfg["base"]["game_data"], "Public", HOT_PREFIX + _re2.sub(r"[^A-Za-z0-9_]", "_", layer))
+
+
+def _layer_mod(cfg, layer):
+    for m in cfg["mods"]:
+        if m["name"] == layer:
+            return m
+    raise ValueError(f"unknown mod layer {layer!r}; hot loading works on mod layers, not base")
+
+
+def hot_load_stats(layer, files=None):
+    """Mirror a mod layer's Stats/Generated/Data/*.txt into the game's Data folder, LoadStatsFile each
+    (in name order), then Sync every entry they define. Returns a summary dict."""
+    cfg = sources.load_config()
+    mod = _layer_mod(cfg, layer)
+    srcs = sources.mod_files(cfg, mod, "stats")
+    if files:
+        want = {f.lower() for f in files}
+        srcs = [f for f in srcs if os.path.basename(f).lower() in want]
+    if not srcs:
+        raise ValueError(f"no stats files found for layer {layer!r}" + (f" matching {files}" if files else ""))
+    root = _hot_root(cfg, layer)
+    if os.path.isdir(root):
+        _sh.rmtree(root)
+    rel = []
+    for f in srcs:
+        dst = os.path.join(root, "Stats", os.path.basename(f))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        _sh.copy2(f, dst)
+        rel.append("Public/" + os.path.basename(root) + "/Stats/" + os.path.basename(f))
+    lua_files = "{" + ",".join(_lua_string(r) for r in rel) + "}"
+    code = (
+        f"local files={lua_files}; local res={{files={{}}, synced=0, sync_errors={{}}}}; "
+        "for _,p in ipairs(files) do local ok,e=pcall(Ext.Stats.LoadStatsFile,p,true); "
+        "local txt=Ext.IO.LoadFile(p,'data') or ''; local n=0; "
+        "for name in txt:gmatch('new entry \"(.-)\"') do n=n+1; "
+        "local sok,se_=pcall(Ext.Stats.Sync,name,false); if sok then res.synced=res.synced+1 elseif #res.sync_errors<10 then res.sync_errors[#res.sync_errors+1]=name..': '..tostring(se_) end end; "
+        "res.files[#res.files+1]={file=p, ok=ok, err=(not ok) and tostring(e) or nil, entries=n} end; return res"
+    )
+    r = eval_lua(code, "server", timeout=120)
+    if not r["ok"]:
+        raise RuntimeError(f"hot load failed in game: {r['result']}")
+    created = sum(1 for l in r["output"] if "Create new entry" in l)
+    errors = [l for l in r["output"] if "Unrecognized line" not in l
+              and _re2.search(r"\b(error|failed|invalid|could not)\b", l, _re2.I)][:10]
+    warnings = sum(1 for l in r["output"] if "Unrecognized line" in l)  # e.g. // comments: skipped harmlessly
+    return {"layer": layer, "files": r["result"]["files"], "synced": r["result"]["synced"],
+            "sync_errors": r["result"]["sync_errors"], "created_new": created, "engine_errors": errors,
+            "skipped_lines": warnings, "hot_root": root}
+
+
+def hot_load_loca(layer):
+    """Push a mod layer's English loca into the running game (Ext.Loca.UpdateTranslatedString)."""
+    from . import parse
+    cfg = sources.load_config()
+    mod = _layer_mod(cfg, layer)
+    rows = []
+    for f in sources.mod_files(cfg, mod, "loca"):
+        for h, _, text in parse.parse_loca(f):
+            if h and "\t" not in text:
+                rows.append(h + "\t" + text.replace("\r", "").replace("\n", "<br>"))
+    root = _hot_root(cfg, layer)
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, "loca.tsv"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(rows) + "\n")
+    relp = "Public/" + os.path.basename(root) + "/loca.tsv"
+    code = (
+        f"local t=Ext.IO.LoadFile({_lua_string(relp)},'data') or ''; local n,bad=0,0; "
+        "for line in t:gmatch('[^\\n]+') do local h,s=line:match('^([^\\t]+)\\t(.*)$'); "
+        "if h then local ok=pcall(Ext.Loca.UpdateTranslatedString,h,s); if ok then n=n+1 else bad=bad+1 end end end; "
+        "return {updated=n, failed=bad}"
+    )
+    r = eval_lua(code, "server", timeout=60)
+    if not r["ok"]:
+        raise RuntimeError(f"loca hot load failed: {r['result']}")
+    return {"layer": layer, "strings_sent": len(rows), **(r["result"] or {})}
+
+
+def hot_clean():
+    """Remove every loose hot-load folder from the game's Data/Public."""
+    cfg = sources.load_config()
+    pub = os.path.join(cfg["base"]["game_data"], "Public")
+    removed = []
+    for d in glob.glob(os.path.join(pub, HOT_PREFIX + "*")) + glob.glob(os.path.join(pub, "BG3DataHotProbe")):
+        _sh.rmtree(d, ignore_errors=True)
+        removed.append(os.path.basename(d))
+    return removed

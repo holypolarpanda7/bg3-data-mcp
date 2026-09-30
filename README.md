@@ -70,6 +70,20 @@ the game's start time.
 | `bg3_se_log(filter, lines)` | tail this run's log |
 | `bg3_se_live_entry(name, layers)` | ground truth: the entry as the game loaded it vs the index, field by field |
 
+### Hot loading (no restart)
+| Tool | Purpose |
+| --- | --- |
+| `bg3_se_hot_load(layer, files, loca)` | mirror a mod layer's stats `.txt` as loose files under `<game>/Data/Public/BG3DataHot_<layer>/`, `Ext.Stats.LoadStatsFile(…, true)` each, `Ext.Stats.Sync` every entry, and push its English loca (`Ext.Loca.UpdateTranslatedString`) |
+| `bg3_se_hot_clean` | delete the loose `BG3DataHot_*` folders from the game install |
+| `bg3_se_reset_lua` | console `reset`: reload SE Lua for mods loaded at startup |
+
+SE only reads safe **relative** paths through the game's file system (absolute paths are rejected by
+`IsSafeRelativePath`), which is why layers are mirrored as loose files. Entries created after startup must
+be synced; the tool does that. Hot loading covers **stats, loca and Lua**. Progressions, lists and templates
+load at startup and need a restart with a pak. Stats files with `//` comments load fine (the lines are skipped).
+Measured 2026-09-30: all 661 Apotheosis entries in 3.0 s and 755 loca strings in 2.6 s. The edit → hot-load
+one file → re-test loop takes about 3 s. Test-only: don't save while relying on hot-loaded entries.
+
 Each eval is wrapped in unique BEGIN/END markers and `pcall`, so Lua errors come back as errors rather
 than timeouts. SE replaces `load()` (its second argument must be an environment table). Console access is
 serialised. Functor fields (`SpellSuccess`...) are exposed by SE as parsed userdata and can't be compared

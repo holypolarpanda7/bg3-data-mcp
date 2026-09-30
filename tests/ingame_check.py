@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--sample", type=int, default=300)
     ap.add_argument("--exclude-layer", default="apotheosis")
     ap.add_argument("--batch", type=int, default=50)
+    ap.add_argument("--only-layer", help="compare only entries this layer defines (e.g. after hot-loading it)")
     a = ap.parse_args()
     started = datetime.now().astimezone()
     store = query.Store(refresh=False)
@@ -38,6 +39,8 @@ def main():
     random.seed(20260930)
     random.shuffle(names)
     # bias towards entries a mod touches, where resolution rules matter most
+    if a.only_layer:
+        names = [r[0] for r in store.db.execute("SELECT DISTINCT name FROM stats WHERE layer=?", (a.only_layer,))]
     touched = [n for n in names if len(store.defs(n, active)) > 1]
     pick = (touched[: a.sample // 2] + [n for n in names if n not in set(touched)])[: a.sample]
     resolved = {n: store.resolve(n, active) for n in pick}

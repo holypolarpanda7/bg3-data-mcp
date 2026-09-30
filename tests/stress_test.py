@@ -109,7 +109,7 @@ async def mcp_tests():
             await session.initialize()
             tools = (await session.list_tools()).tools
             names = sorted(t.name for t in tools)
-            rec("protocol", len(names) == 21, f"{len(names)} tools: {', '.join(names)}")
+            rec("protocol", len(names) == 24, f"{len(names)} tools: {', '.join(names)}")
             out, err, dt = await call(session, "bg3_layers")
             rec("protocol", not err and "base" in out, f"first call (cold start incl. index check) {dt:.1f}s; startup {time.perf_counter() - t0:.1f}s")
 
@@ -179,6 +179,12 @@ async def mcp_tests():
                 # console access is serialised: concurrent evals must all succeed
                 res = await asyncio.gather(*(call(session, "bg3_se_eval", {"code": f"return {i}"}) for i in range(6)))
                 rec("se", all(f"OK: {i}" in r[0] for i, r in enumerate(res)), f"6 concurrent evals serialised ({sum(r[2] for r in res):.1f}s total)")
+                out, err, dt = await call(session, "bg3_se_hot_load", {"layer": "apotheosis", "files": ["Interrupt.txt"], "loca": False})
+                rec("se", "entries synced" in out and "OK " in out and "engine messages" not in out, f"hot-load one file ({dt:.1f}s): {out.splitlines()[0]}")
+                out, _, _ = await call(session, "bg3_se_hot_load", {"layer": "base"})
+                rec("se", "error" in out, "hot-load refuses the base layer")
+                out, _, _ = await call(session, "bg3_se_hot_clean")
+                rec("se", "BG3DataHot_apotheosis" in out, f"hot_clean removes loose files: {out}")
             else:
                 rec("se", True, f"SKIPPED (game not running): {st.splitlines()[0]}")
 
