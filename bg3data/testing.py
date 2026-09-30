@@ -1090,5 +1090,14 @@ def restart(deploy_layer=None, launch=True, timeout=300):
                 return "\n".join(log)
         except (RuntimeError, TimeoutError):
             pass
-    log.append(f"not loaded within {timeout}s - check the game window (main menu? crash?)")
+    state = ""
+    try:
+        name, lines = se.log_tail(None, 40)
+        if any("Cannot queue server commands in game state Uninitialized" in l for l in lines):
+            state = (" The game is at the MAIN MENU (no server session): -continueGame didn't load the save, usually "
+                     "because a dialog is waiting (e.g. the save was made with a different mod build). Accept it or "
+                     "load the save by hand.")
+    except RuntimeError:
+        pass
+    log.append(f"not loaded within {timeout}s.{state or ' Check the game window (main menu? crash?)'}")
     return "\n".join(log)
