@@ -311,7 +311,7 @@ def find_case(layer, case_id):
 
 
 EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
-               "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note"}
+               "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change"}
 
 
 def validate(store, active, c):
@@ -433,6 +433,8 @@ def stage(store, active, layer, case_id):
             code.append(f"if r[{a_}] then local m=Osi.GetMaxHitpoints(r[{a_}]); "
                         f"if {int(s['hp'])}>m then BG3T.grant(r[{a_}],'IncreaseMaxHP('..({int(s['hp'])}-m)..')') end end")
     for st_ in c.get("setup", []):
+        if st_.get("passive"):
+            code.append(f"BG3T.addPassive({_who(st_)}, {se._lua_string(st_['passive'])})")
         if st_.get("max_hp") and st_.get("target", "host") == "host":
             code.append(f"BG3T.grant(BG3T.host(), 'IncreaseMaxHP({int(st_['max_hp'])})')")
     code.append("return {r=r, since=since}")
@@ -529,6 +531,9 @@ def verify(store, active, cleanup=True, wait=2.0):
             lo, hi = e["hp_change"]
             d = (a.get("hp") or 0) - (b.get("hp") or 0)
             row(lo <= d <= hi, f"{label} HP change {d:+d} within [{lo}, {hi}] ({b.get('hp')} -> {a.get('hp')})")
+        if "max_hp_change" in e:
+            d = (a.get("max_hp") or 0) - (b.get("max_hp") or 0)
+            row(d == e["max_hp_change"], f"{label} max HP {b.get('max_hp')} -> {a.get('max_hp')} (change {d:+d}, expected {e['max_hp_change']:+d})")
         if "hp" in e:
             want = a.get("max_hp") if e["hp"] == "full" else e["hp"]
             row(a.get("hp") == want, f"{label} HP {a.get('hp')}/{a.get('max_hp')} == {e['hp']}")
@@ -595,7 +600,7 @@ def verify(store, active, cleanup=True, wait=2.0):
             lua("local h=BG3T.host(); " + " ".join(f"pcall(Osi.RemoveStatus,h,{se._lua_string(x)});" for x in gained) + " return true")
             lines.append(f"  removed from you: {', '.join(gained)}")
         rep = lua("return BG3T.cleanup()")
-        lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses removed")
+        lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses, {rep.get('passives', 0)} passives removed")
         try:
             os.remove(STATE_FILE)
         except OSError:
@@ -746,10 +751,20 @@ MAIN_ABILITY = {"wizard": "Intelligence", "artificer": "Intelligence", "sorcerer
                 "monk": "Wisdom", "fighter": "Strength", "barbarian": "Strength", "rogue": "Dexterity"}
 
 
-def _class_names(uuids):
-    """ClassDescription UUID -> (Name, display name), read from the running game when available."""
+def _class_names(uuids, store=None, active=None):
+    """ClassDescription UUID -> (Name, display name): from the index (static data), else the running game."""
     if not uuids:
         return {}
+    if store is not None:
+        out = {}
+        for u in uuids:
+            r = store.static("ClassDescription", u, active)
+            if r:
+                dn = r[2].get("DisplayName") or ""
+                row = store.loca(dn, active) if dn else None  # (text, source, version)
+                out[u] = (r[2].get("Name"), row[0] if row else r[2].get("Name"))
+        if len(out) == len(uuids):
+            return out
     try:
         lst = "{" + ",".join(se._lua_string(u) for u in uuids) + "}"
         r = se.eval_lua(f"local o={{}}; for _,u in ipairs({lst}) do local c=Ext.StaticData.Get(u,'ClassDescription'); "
@@ -805,7 +820,7 @@ def plan(store, active, layer, build_id, write=True, _picked_only=False):
         for lvl, pname, table, src, a in nodes:
             if a.get("_SubClasses") and L >= lo:
                 ids = [x for x in a["_SubClasses"].split(";") if x]
-                sub_uuid_names = _class_names(ids)
+                sub_uuid_names = _class_names(ids, store, active)
                 disp = next((v[1] for v in sub_uuid_names.values() if v[0] == sub), sub) if sub else None
                 body.append(f"- **Subclass: {disp}**" + (f" (`{sub}`)" if sub and disp != sub else "") if sub else
                             f"- Subclass: not chosen in this build (stop before level {L}, or pick any)")

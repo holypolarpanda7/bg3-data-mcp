@@ -201,6 +201,19 @@ class Store:
         out = sorted(merged.values(), key=lambda t: (t[0], t[1] or ""))
         return [o for o in out if level is None or o[0] == level]
 
+    def static(self, kind, key, active):
+        """A static-data node (ClassDescription, LevelMapSeries, ActionResourceDefinition, Feat) by UUID or
+        Name; the highest layer wins. Returns (layer, source, attrs dict) or None."""
+        w, p = self._where(active)
+        row = self.db.execute(f"SELECT layer, source, attrs FROM staticdata WHERE kind=? AND (uuid=? OR name=?) AND {w} ORDER BY rank DESC LIMIT 1",
+                              [kind, key, key] + p).fetchone()
+        return (row[0], row[1], json.loads(row[2])) if row else None
+
+    def static_search(self, kind, text, active, limit=50):
+        w, p = self._where(active)
+        return self.db.execute(f"SELECT DISTINCT name, uuid, layer FROM staticdata WHERE kind=? AND (name LIKE ? OR uuid LIKE ?) AND {w} ORDER BY name LIMIT ?",
+                               [kind, f"%{text}%", f"%{text}%"] + p + [limit]).fetchall()
+
     def spell_list(self, key, active):
         w, p = self._where(active)
         row = self.db.execute(f"SELECT node, uuid, name, source, attrs FROM lists WHERE (uuid=? OR name=?) AND {w} ORDER BY rank DESC LIMIT 1", [key, key] + p).fetchone()

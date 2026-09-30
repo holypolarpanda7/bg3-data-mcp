@@ -91,6 +91,8 @@ def vocabulary(store, active, layer):
                 resources.update(RES_COST.findall(v))
             resources.update(RES_BOOST.findall(v))
     resources |= _resource_names(store.cfg, active)
+    wr, pr = store._where(active)
+    resources |= {n for (n,) in store.db.execute(f"SELECT DISTINCT name FROM staticdata WHERE kind='ActionResourceDefinition' AND {wr}", pr) if n}
     wa, pa = store._where(active)
     names = {}
     for n, t in store.db.execute(f"SELECT DISTINCT name, type FROM stats WHERE {wa}", pa):

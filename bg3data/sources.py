@@ -28,6 +28,10 @@ BASE_GLOBS = [
     "Public/*/Lists/*.lsx",
     "Public/*/MultiEffectInfos/*.lsf",
     "Public/*/Content/Assets/Effects/*_merged.lsf",
+    "Public/*/ClassDescriptions/*.lsf", "Public/*/ClassDescriptions/*.lsx",
+    "Public/*/Levelmaps/*.lsf", "Public/*/Levelmaps/*.lsx",
+    "Public/*/ActionResourceDefinitions/*.lsf", "Public/*/ActionResourceDefinitions/*.lsx",
+    "Public/*/Feats/*.lsf", "Public/*/Feats/*.lsx",
 ]  # Divine's -x glob has no [..] classes, so list each extension
 
 
@@ -137,6 +141,10 @@ def module_of(path):
     return "?"
 
 
+STATIC_PATTERNS_LSX = ["Public/*/ClassDescriptions/*.lsx", "Public/*/Levelmaps/*.lsx",
+                       "Public/*/ActionResourceDefinitions/*.lsx", "Public/*/Feats/*.lsx"]
+
+
 def base_files(cfg, kind):
     """Base-layer files of a kind in load order: (module label, path)."""
     root = os.path.join(CACHE, "base")
@@ -149,10 +157,12 @@ def base_files(cfg, kind):
         "lists": "Public/*/Lists/*.lsx",
         "mei": "Public/*/MultiEffectInfos/*.lsx",
         "fxbanks": "Public/*/Content/Assets/Effects/**/_merged.lsx",
+        "staticdata": STATIC_PATTERNS_LSX,
     }
     found = []
     for pak_dir in [os.path.join(root, os.path.splitext(os.path.basename(p))[0]) for p in base_paks(cfg)]:
-        for f in sorted(glob.glob(os.path.join(pak_dir, pats[kind]), recursive=True)):
+        pl = pats[kind] if isinstance(pats[kind], list) else [pats[kind]]
+        for f in sorted(f for pat in pl for f in glob.glob(os.path.join(pak_dir, pat), recursive=True)):
             mod = module_of(f)
             if mod in excl:
                 continue
@@ -195,13 +205,14 @@ def mod_files(cfg, mod, kind):
         "loca": ["Mods/*/Localization/English/*.xml"],
         "mei": ["Public/*/MultiEffectInfos/*.lsx", "Public/*/MultiEffectInfos/*.lsf"],
         "fxbanks": ["Public/*/Content/Assets/Effects/**/_merged.lsx", "Public/*/Content/Assets/Effects/**/_merged.lsf"],
+        "staticdata": STATIC_PATTERNS_LSX + [x[:-1] + "f" for x in STATIC_PATTERNS_LSX],
     }
     files = []
     if not os.path.isdir(root):
         raise FileNotFoundError(f"mod layer '{mod['name']}': path not found: {root}")
     for p in pats[kind]:
         files += glob.glob(os.path.join(root, p), recursive=True)
-    if kind in ("templates", "progressions", "lists", "mei", "fxbanks"):
+    if kind in ("templates", "progressions", "lists", "mei", "fxbanks", "staticdata"):
         lsx = {f[:-4] for f in files if f.endswith(".lsx")}
         need = [f for f in files if f.endswith(".lsf") and f[:-4] not in lsx]
         if need:
@@ -237,7 +248,9 @@ def mod_signature(cfg, mod):
     for kind in ("stats", "loca"):
         files += mod_files(cfg, mod, kind)
     for pat in ["Public/*/RootTemplates/*.ls[fx]", "Public/*/Progressions/*.ls[fx]", "Public/*/Lists/*.ls[fx]",
-                "Public/*/MultiEffectInfos/*.ls[fx]", "Public/*/Content/Assets/Effects/**/_merged.ls[fx]"]:
+                "Public/*/MultiEffectInfos/*.ls[fx]", "Public/*/Content/Assets/Effects/**/_merged.ls[fx]",
+                "Public/*/ClassDescriptions/*.ls[fx]", "Public/*/Levelmaps/*.ls[fx]",
+                "Public/*/ActionResourceDefinitions/*.ls[fx]", "Public/*/Feats/*.ls[fx]"]:
         files += glob.glob(os.path.join(path, pat), recursive=True)
     stats = sorted((os.path.relpath(f, path), int(os.path.getmtime(f)), os.path.getsize(f)) for f in files)
     newest = max((s[1] for s in stats), default=0)

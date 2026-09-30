@@ -228,6 +228,26 @@ def bg3_progression(key: str, level: int | None = None, layers: list[str] | None
 
 @mcp.tool()
 @guarded
+def bg3_static(kind: str, key: str, layers: list[str] | None = None) -> str:
+    """Static game data by UUID or Name (highest layer wins): kind = ClassDescription (classes/subclasses,
+    with ProgressionTableUUID), LevelMapSeries (e.g. SuperiorityDie, per-level values), ActionResourceDefinition
+    (resources: MaxValue, ReplenishType), Feat. A partial key lists matches."""
+    kinds = ("ClassDescription", "LevelMapSeries", "ActionResourceDefinition", "Feat")
+    if kind not in kinds:
+        return f"error: kind must be one of {kinds}"
+    _text(key, "key")
+    s = store()
+    active = s.active(layers)
+    r = s.static(kind, key, active)
+    if r:
+        layer, src, a = r
+        return f"{kind} {a.get('Name')} {a.get('UUID')} [{src}]\n" + "\n".join(f"  {k} = {v}" for k, v in a.items() if k not in ("Name", "UUID"))
+    rows = s.static_search(kind, key, active)
+    return "\n".join(f"{n}  {u}  [{l}]" for n, u, l in rows) or f"no {kind} matching '{key}'"
+
+
+@mcp.tool()
+@guarded
 def bg3_spell_list(key: str, layers: list[str] | None = None) -> str:
     """A spell/passive/skill list by UUID or Name (highest layer wins)."""
     s = store()

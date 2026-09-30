@@ -33,9 +33,14 @@ CREATE TABLE IF NOT EXISTS mei(layer TEXT, rank INT, source TEXT, uuid TEXT, nam
 CREATE INDEX IF NOT EXISTS mei_uuid ON mei(uuid);
 CREATE TABLE IF NOT EXISTS fx(layer TEXT, rank INT, source TEXT, id TEXT, name TEXT, duration TEXT,
     looping TEXT, source_file TEXT);
+CREATE TABLE IF NOT EXISTS staticdata(layer TEXT, rank INT, source TEXT, kind TEXT, uuid TEXT, name TEXT, attrs TEXT);
+CREATE INDEX IF NOT EXISTS staticdata_key ON staticdata(kind, name, uuid);
 CREATE INDEX IF NOT EXISTS fx_id ON fx(id);
 """
-TABLES = ("stats", "loca", "templates", "prog", "lists", "mei", "fx")
+TABLES = ("stats", "loca", "templates", "prog", "lists", "mei", "fx", "staticdata")
+# static-data nodes indexed generically (by UUID and Name): class/subclass descriptions, level maps
+# (SuperiorityDie, proficiency...), action resources, feats
+STATIC_NODES = ("ClassDescription", "LevelMapSeries", "ActionResourceDefinition", "Feat")
 
 LIST_NODES = ("SpellList", "PassiveList", "SkillList", "AbilityList", "EquipmentList")
 
@@ -129,6 +134,17 @@ def _ingest(db, layer, base_rank, files_by_kind):
             rows.append((layer, rank, source, fid, name, dur, loop, src))
         db.executemany("INSERT INTO fx VALUES(?,?,?,?,?,?,?,?)", rows)
         counts["fx"] += len(rows)
+    for source, path in files_by_kind.get("staticdata", []):
+        ids = parse.list_node_ids(path)
+        rows = []
+        for node in STATIC_NODES:
+            if node not in ids:
+                continue
+            for a in parse.parse_nodes(path, node):
+                rank += 1
+                rows.append((layer, rank, source, node, a.get("UUID"), a.get("Name"), json.dumps(a)))
+        db.executemany("INSERT INTO staticdata VALUES(?,?,?,?,?,?,?)", rows)
+        counts["staticdata"] += len(rows)
     return counts
 
 
@@ -140,13 +156,13 @@ def build_layer(db, cfg, layer, log=print):
         sig, newest = sources.base_signature(cfg)
         log(f"[base] extracting from game paks (newest pak {sources.iso(newest)})")
         sources.extract_base(cfg, log=log)
-        files = {k: sources.base_files(cfg, k) for k in ("stats", "templates", "progressions", "lists", "mei", "fxbanks")}
+        files = {k: sources.base_files(cfg, k) for k in ("stats", "templates", "progressions", "lists", "mei", "fxbanks", "staticdata")}
         files["loca"] = [("base/Localization", f) for f in sources.base_loca_files()]
     else:
         mod = layer["mod"]
         sig, newest = sources.mod_signature(cfg, mod)
         files = {k: [(name, f) for f in sources.mod_files(cfg, mod, k)]
-                 for k in ("stats", "templates", "progressions", "lists", "loca", "mei", "fxbanks")}
+                 for k in ("stats", "templates", "progressions", "lists", "loca", "mei", "fxbanks", "staticdata")}
     # atomic: a failure mid-ingest rolls back and leaves the previous index for this layer intact
     db.execute("BEGIN")
     try:

@@ -74,13 +74,15 @@ safety = true                # default: kill spawns + heal if a party member dro
 safety_floor = 35            # percent HP
 spawn = [{ as = "A", template = "wolf", faction = "hostile", hp = 40, distance = 8 }]
 setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", turns = 10 },
-         { target = "A", boost = "Resistance(Fire,Resistant)" }, { target = "host", max_hp = 20 }]
+         { target = "A", boost = "Resistance(Fire,Resistant)" }, { target = "host", max_hp = 20 },
+         { target = "host", passive = "SomeFeature" }]   # passive: added for the case, removed at cleanup
 expect = [
   { acted_first = true },                                   # first recorded turn was the host's
   { cast = true },                                          # the host cast `spell` (or cast = "OtherSpell")
   { target = "A", hp_change = [-15, -6], damage_type = "Force" },
   { target = "A", dead = true },
   { target = "host", hp = "full" },                         # or an exact number
+  { target = "host", max_hp_change = 40 },
   { target = "host", status_applied = ["MAGE_ARMOR"] },     # event seen during the run
   { target = "host", status_removed = ["FRIGHTENED"] },     # present before, gone after
   { target = "host", status_present = ["X"], status_absent = ["Y"] },
