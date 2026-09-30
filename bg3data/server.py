@@ -338,12 +338,15 @@ def bg3_se_status() -> str:
 
 @mcp.tool()
 @se_guarded
-def bg3_se_eval(code: str, context: str = "server", timeout: float = 15) -> str:
+def bg3_se_eval(code: str, context: str = "server", timeout: float = 15, delay: float = 0) -> str:
     """Run Lua inside the RUNNING game via Script Extender and return its printed output plus the return
     value (JSON). context: 'server' (game logic, Osi.*, Ext.Stats) or 'client' (UI/visuals).
-    This executes code in the user's live game session; it can change game state."""
+    delay: seconds to wait first (e.g. for a cast or boost to resolve). The test harness, once staged,
+    is available as the global BG3T. This executes code in the user's live game session."""
     if not code or len(code) > 8000:
         return "error: `code` must be 1-8000 characters"
+    if delay:
+        time.sleep(max(0.0, min(float(delay), 30.0)))
     r = se.eval_lua(code, context, timeout=max(2.0, min(float(timeout), 120.0)))
     out = [("OK" if r["ok"] else "LUA ERROR") + ": " + json.dumps(r["result"], indent=1)[:MAX_OUTPUT // 2]]
     if r["output"]:
@@ -443,6 +446,132 @@ def bg3_se_reset_lua() -> str:
     pak/loose files. Only affects mods that were loaded at game start."""
     lines = se.command("reset", wait=6)
     return "\n".join(lines[-40:]) or "(no log output)"
+
+
+# ---------------------------------------------------------------------------- in-game testing
+# Mod-agnostic test loop: level up by XP, check the level against progressions, and run TOML test cases
+# (<mod>/tests/bg3/*.toml) as real encounters. A scripted cast never pays costs, so only mode="player"
+# cases (the user casts from the hotbar) can verify slots/resources; every verdict states its fidelity.
+
+def _testing_store(layers):
+    with _lock:
+        s = store()
+        return s, s.active(layers)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_game_restart(deploy_layer: str | None = None, launch: bool = True) -> str:
+    """Kill the game, optionally run a mod layer's `deploy` command (layers.json), relaunch through Steam
+    (--skip-launcher -continueGame: loads the NEWEST save) and wait until a host character is loaded.
+    Unsaved progress in the running game is lost."""
+    from . import testing
+    return testing.restart(deploy_layer, launch)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_level_up(levels: int = 1, layers: list[str] | None = None) -> str:
+    """Grant the host exactly enough XP (from the layers' XPData) to reach `levels` more levels. The user
+    then levels up in the UI, so every feature and spell is class-sourced; follow with bg3_level_check."""
+    from . import testing
+    s, active = _testing_store(layers)
+    r = testing.grant_levels(s, active, max(1, min(int(levels), 19)))
+    if not r["granted"]:
+        return f"level {r['level']}, XP {r['xp']}: {r['note']}"
+    return (f"level {r['level']} -> {r['target']}: granted {r['granted']} XP (total {r.get('xp_after')}, needed {r['needed_total']}). "
+            "Open the level-up screen in game, then run bg3_level_check.")
+
+
+@mcp.tool()
+@se_guarded
+def bg3_level_check(layers: list[str] | None = None) -> str:
+    """Compare the host with its class/subclass progressions up to its current level: passives added and
+    removed, AddSpells lists (with the spell's source), ActionResource boosts, and this level's choices."""
+    from . import testing
+    s, active = _testing_store(layers)
+    return testing.level_check(s, active)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_test_list(layer: str, class_name: str | None = None, level: int | None = None, layers: list[str] | None = None) -> str:
+    """Test cases a mod layer defines (TOML under <mod>/tests/bg3, or layers.json `tests`), validated
+    against the index (spells, statuses, templates, aliases)."""
+    from . import testing
+    s, active = _testing_store(layers)
+    return testing.list_cases(s, active, layer, class_name, level)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_test_script(layer: str, class_name: str | None = None, level: int | None = None, layers: list[str] | None = None) -> str:
+    """Write the human test script (step-by-step reading script per level and case) to
+    <mod>/docs/test-scripts/ and return it."""
+    from . import testing
+    s, active = _testing_store(layers)
+    text, path = testing.script(s, active, layer, class_name, level)
+    return (f"written to {path}\n\n" if path else "") + text
+
+
+@mcp.tool()
+@se_guarded
+def bg3_test_stage(layer: str, case_id: str, layers: list[str] | None = None) -> str:
+    """Set up one test case in the running game: preconditions (class level, spell learned through the
+    class, not in combat), spawns, HP/status setup, host-first initiative, safety watch, event recorder.
+    mode="script" cases are cast immediately. Then the user acts; finish with bg3_test_verify."""
+    from . import testing
+    s, active = _testing_store(layers)
+    r = testing.stage(s, active, layer, case_id)
+    if not r["ok"]:
+        return "NOT STAGED - blockers:\n" + "\n".join(f"  - {b}" for b in r["blockers"]) + \
+               ("\nnotes:\n" + "\n".join(f"  - {n}" for n in r["notes"]) if r["notes"] else "")
+    c = r["case"]
+    out = [f"staged {c['id']}: {c.get('title', '')}"]
+    out += [f"  note: {n}" for n in r["notes"]]
+    if r["combat"]:
+        ft = r["first_turn"]
+        out.append("  combat: " + ("your turn first" if ft and ft.get("tracked") == "host" else
+                                   f"first turn went to {ft.get('tracked') or 'someone else'}" if ft else "no turn recorded yet"))
+    for alias, snap in (r["before"] or {}).items():
+        out.append(f"  {alias}: HP {snap.get('hp')}/{snap.get('max_hp')}" + (f", statuses {', '.join(snap.get('statuses') or [])}" if snap.get("statuses") else ""))
+    if c.get("mode", "player") == "player" and r["spell_name"]:
+        tgt = "yourself" if c.get("target", "host") == "host" else c["target"]
+        out.append(f"USER: cast {r['spell_name']} from the class spell bar at {tgt}, then say verify")
+    elif c.get("mode") == "script":
+        out.append("scripted cast sent (effects-only run); run bg3_test_verify")
+    return "\n".join(out)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_test_verify(cleanup: bool = True, wait: float = 2.0, layers: list[str] | None = None) -> str:
+    """Evaluate the staged case's expectations (before/after snapshots + recorded events), report
+    PASS/FAIL per check with its fidelity, then remove every spawn, test boost and applied status."""
+    from . import testing
+    s, active = _testing_store(layers)
+    return testing.verify(s, active, cleanup, wait)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_test_cleanup() -> str:
+    """Remove every test spawn, boost (tag BG3Test) and applied status, and stop recording."""
+    from . import testing
+    r = testing.cleanup()
+    return f"removed {r.get('spawns', 0)} spawns, {r.get('grants', 0)} boosts, {r.get('statuses', 0)} statuses"
+
+
+@mcp.tool()
+@se_guarded
+def bg3_ingame_check(layer: str, layers: list[str] | None = None) -> str:
+    """Compare EVERY stats entry a mod layer defines with what the running game loaded (the engine drops
+    invalid values silently). `layers` = what's deployed (default: all)."""
+    from . import groundtruth
+    with _lock:
+        s = store()
+    lines = groundtruth.run(s, layers or [m["name"] for m in s.cfg["mods"]], only_layer=layer)
+    return "\n".join(lines)
 
 
 def main():
