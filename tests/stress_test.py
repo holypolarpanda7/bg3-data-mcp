@@ -109,7 +109,7 @@ async def mcp_tests():
             await session.initialize()
             tools = (await session.list_tools()).tools
             names = sorted(t.name for t in tools)
-            rec("protocol", len(names) == 16, f"{len(names)} tools: {', '.join(names)}")
+            rec("protocol", len(names) == 21, f"{len(names)} tools: {', '.join(names)}")
             out, err, dt = await call(session, "bg3_layers")
             rec("protocol", not err and "base" in out, f"first call (cold start incl. index check) {dt:.1f}s; startup {time.perf_counter() - t0:.1f}s")
 
@@ -162,6 +162,25 @@ async def mcp_tests():
             res = await asyncio.gather(refresh, *load)
             rout = res[0][0]
             rec("refresh-under-load", "rebuilt: ['apotheosis']" in rout and not bad, f"forced apotheosis rebuild alongside 80 queries; failures {bad[:2]}")
+
+            # 5b. Script Extender bridge (only when the game is running)
+            st, _, _ = await call(session, "bg3_se_status")
+            if "game running" in st and "no Extender Runtime log" not in st:
+                out, err, dt = await call(session, "bg3_se_eval", {"code": "return 6*7"})
+                rec("se", "OK: 42" in out, f"eval round-trip {dt:.1f}s: {out[:40]!r}")
+                out, _, _ = await call(session, "bg3_se_eval", {"code": 'error("boom")'})
+                rec("se", "LUA ERROR" in out and "boom" in out, "Lua errors come back as errors, not timeouts")
+                out, _, _ = await call(session, "bg3_se_eval", {"code": 'Ext.Utils.Print("stress-print"); return true'})
+                rec("se", "stress-print" in out, "printed output captured")
+                out, _, dt = await call(session, "bg3_se_live_entry", {"name": "Target_ChillTouch", "layers": ["dnd55e"]})
+                rec("se", "SpellRoll" in out and "MATCH" in out, f"live entry vs index ({dt:.1f}s): {out.splitlines()[1] if len(out.splitlines())>1 else out}")
+                out, _, _ = await call(session, "bg3_se_log", {"filter": "BG3SE", "lines": 5})
+                rec("se", "BG3SE" in out, "log tail with filter")
+                # console access is serialised: concurrent evals must all succeed
+                res = await asyncio.gather(*(call(session, "bg3_se_eval", {"code": f"return {i}"}) for i in range(6)))
+                rec("se", all(f"OK: {i}" in r[0] for i, r in enumerate(res)), f"6 concurrent evals serialised ({sum(r[2] for r in res):.1f}s total)")
+            else:
+                rec("se", True, f"SKIPPED (game not running): {st.splitlines()[0]}")
 
             # 6. layer management with a real .pak
             paks = glob.glob("/mnt/d/vortex/BG3/mods/PHB_2024_Bladesinger*/*.pak")

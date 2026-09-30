@@ -1,104 +1,92 @@
-"""Ground-truth check: compare the index's resolved stats with what the running game actually loaded.
+"""Ground truth: compare the index's resolved stats with what the RUNNING game loaded (via bg3data.se).
 
-Needs BG3 running with a save loaded and Script Extender's console open. The deployed paks must match
-the indexed layers (e.g. base + dnd55e: deploy the dnd55e release that matches ../dnd55e).
+  uv run python tests/ingame_check.py [--layers dnd55e] [--sample 300] [--exclude-layer apotheosis]
 
-  uv run python tests/ingame_check.py --pid <bg3 pid> [--layers dnd55e] [--sample 150]
-
-It samples entries, sends Lua through References/Dev/dnd55e-tools/se_inject.ps1 that prints each
-entry's fields as JSON tagged [BG3DATA], reads them back from the newest Script Extender runtime log,
-and reports field-level mismatches.
+Pick --layers to match what's deployed. Entries defined by --exclude-layer are skipped (e.g. an
+outdated deployed pak). Writes tests/INGAME_REPORT.md.
 """
 import argparse
-import glob
-import json
+import collections
 import os
 import random
-import re
-import subprocess
 import sys
 import time
+from datetime import datetime
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
-from bg3data import query, sources  # noqa: E402
+from bg3data import query, se  # noqa: E402
 
-INJECT = "/mnt/d/BG3Modding/Mod_Projects/References/Dev/dnd55e-tools/se_inject.ps1"
-LOGDIR = "/mnt/c/Users/holyp/AppData/Local/Larian Studios/Baldur's Gate 3/Script Extender Logs"
-SIMPLE = re.compile(r"^[A-Za-z0-9_ .:;,'()+\-*/%<>=!]*$")  # plain scalar-ish values that compare cleanly
-
-
-def pick(store, active, n):
-    names = [r[0] for r in store.db.execute(
-        "SELECT DISTINCT name FROM stats WHERE type IN ('SpellData','StatusData','PassiveData','Character','Weapon','Armor')")]
-    random.seed(20260930)
-    random.shuffle(names)
-    out = []
-    for name in names:
-        r = store.resolve(name, active)
-        if not r:
-            continue
-        fields = {k: v for k, (v, _) in r["fields"].items()
-                  if v and len(v) < 200 and SIMPLE.match(v) and k not in ("SpellType", "StatusType")}
-        if len(fields) >= 3:
-            keys = sorted(fields)[:8]
-            out.append((name, {k: fields[k] for k in keys}))
-        if len(out) >= n:
-            break
-    return out
-
-
-def lua_lines(samples):
-    lines = ["server"]
-    for name, fields in samples:
-        keys = ",".join(json.dumps(k) for k in fields)
-        lines.append(
-            f'local ok,s=pcall(Ext.Stats.Get,{json.dumps(name)}); local o={{n={json.dumps(name)},f={{}}}}; '
-            f'if ok and s then for _,k in ipairs({{{keys}}}) do local okv,v=pcall(function() return s[k] end); '
-            f'if okv then o.f[k]=(type(v)=="table") and Ext.Json.Stringify(v) or tostring(v) end end else o.missing=true end; '
-            f'Ext.Utils.Print("[BG3DATA]"..Ext.Json.Stringify(o,{{Beautify=false}}))')
-    return lines
-
-
-def norm(v):
-    return re.sub(r"[\s;]+", ";", str(v)).strip(";").lower()
+TYPES = ("SpellData", "StatusData", "PassiveData", "Character", "Weapon", "Armor", "Object", "InterruptData")
+SKIP_FIELDS = {"SpellType", "StatusType"}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pid", type=int, required=True)
-    ap.add_argument("--layers")
-    ap.add_argument("--sample", type=int, default=150)
+    ap.add_argument("--layers", default="dnd55e")
+    ap.add_argument("--sample", type=int, default=300)
+    ap.add_argument("--exclude-layer", default="apotheosis")
+    ap.add_argument("--batch", type=int, default=50)
     a = ap.parse_args()
-    store = query.Store(refresh=True, log=lambda m: print(m, file=sys.stderr))
-    active = store.active(a.layers.split(",") if a.layers else [])
-    samples = pick(store, active, a.sample)
-    tmp = "/mnt/c/Users/holyp/AppData/Local/Temp/bg3data_ingame.txt"
-    open(tmp, "w", newline="\r\n").write("\n".join(lua_lines(samples)))
-    subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", sources.winpath(INJECT),
-                    "-LinesFile", sources.winpath(tmp), "-ProcId", str(a.pid)], check=True)
-    time.sleep(3)
-    log = max(glob.glob(os.path.join(LOGDIR, "Extender Runtime*.log")), key=os.path.getmtime)
-    got = {}
-    for line in open(log, encoding="utf-8", errors="replace"):
-        if "[BG3DATA]" in line:
-            o = json.loads(line.split("[BG3DATA]", 1)[1])
-            got[o["n"]] = o
-    checked = mism = missing = 0
-    bad = []
-    for name, fields in samples:
-        o = got.get(name)
-        if not o or o.get("missing"):
-            missing += 1
-            bad.append(f"{name}: not loaded in game")
+    started = datetime.now().astimezone()
+    store = query.Store(refresh=False)
+    active = store.active([l for l in a.layers.split(",") if l])
+    excluded = {r[0] for r in store.db.execute("SELECT DISTINCT name FROM stats WHERE layer=?", (a.exclude_layer,))}
+    names = [r[0] for r in store.db.execute(
+        f"SELECT DISTINCT name FROM stats WHERE type IN ({','.join('?' * len(TYPES))}) AND layer IN ({','.join('?' * len(active))})",
+        list(TYPES) + active) if r[0] not in excluded]
+    random.seed(20260930)
+    random.shuffle(names)
+    # bias towards entries a mod touches, where resolution rules matter most
+    touched = [n for n in names if len(store.defs(n, active)) > 1]
+    pick = (touched[: a.sample // 2] + [n for n in names if n not in set(touched)])[: a.sample]
+    resolved = {n: store.resolve(n, active) for n in pick}
+    resolved = {n: r for n, r in resolved.items() if r}
+    t0 = time.time()
+    live = {}
+    items = list(resolved.items())
+    for i in range(0, len(items), a.batch):
+        chunk = {n: sorted(k for k in r["fields"] if k not in SKIP_FIELDS) for n, r in items[i:i + a.batch]}
+        live.update(se.live_stats_many(chunk, timeout=90))
+    elapsed = time.time() - t0
+    fields = mism = uncomparable = 0
+    missing = []
+    by_field = collections.Counter()
+    by_source = collections.Counter()
+    examples = []
+    for n, r in resolved.items():
+        g = live.get(n)
+        if g is None:
+            missing.append(n)
             continue
-        for k, v in fields.items():
-            checked += 1
-            if norm(o["f"].get(k, "")) != norm(v):
+        for k, (iv, src) in r["fields"].items():
+            if k in SKIP_FIELDS:
+                continue
+            gv = g.get(k)
+            if not se.comparable(gv):
+                uncomparable += 1
+                continue
+            fields += 1
+            if not se.same(iv, gv):
                 mism += 1
-                bad.append(f"{name}.{k}: index={v!r} game={o['f'].get(k)!r}")
-    print(f"layers {active}: {len(samples)} entries, {checked} fields compared, {mism} mismatches, {missing} entries missing in game")
-    print("\n".join(bad[:40]))
+                by_field[k] += 1
+                by_source[src.split("@")[0]] += 1
+                if len(examples) < 60:
+                    examples.append(f"{n}.{k} [{src}]: index={iv!r} game={gv!r}")
+    lines = [
+        "# bg3-data-mcp in-game ground-truth report", "",
+        f"Run {started:%Y-%m-%d %H:%M %Z}. Layers compared: {'+'.join(active)} (entries defined by {a.exclude_layer} skipped).",
+        f"{len(resolved)} entries ({min(len(touched), a.sample // 2)} overridden by a mod), {fields} fields, "
+        f"{mism} mismatches ({mism / max(fields, 1):.2%}), {uncomparable} functor fields not comparable (game exposes parsed userdata), "
+        f"{len(missing)} entries not loaded in game; "
+        f"{elapsed:.1f}s of game round-trips.", "",
+        "## Mismatches by field", *[f"- {k}: {v}" for k, v in by_field.most_common(25)], "",
+        "## Mismatches by layer that set the field", *[f"- {k}: {v}" for k, v in by_source.most_common()], "",
+        "## Examples", *[f"- {e}" for e in examples], "",
+        "## Not loaded in game", *[f"- {m}" for m in missing[:40]],
+    ]
+    open(os.path.join(REPO, "tests", "INGAME_REPORT.md"), "w").write("\n".join(lines) + "\n")
+    print("\n".join(lines[:12 + len(by_field.most_common(25))]))
 
 
 if __name__ == "__main__":

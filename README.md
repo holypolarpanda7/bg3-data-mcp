@@ -56,6 +56,25 @@ claude mcp add bg3-data -e UV_PROJECT_ENVIRONMENT=$HOME/.cache/bg3-data-mcp/venv
 `layers.json` holds the `Divine.exe` path (LSLib v1.20.4+; Vortex's bundled copy is too old for LSF v7)
 and the game `Data` path.
 
+## Script Extender bridge (running game)
+These tools talk to the live game through the SE console, using `References/Dev/dnd55e-tools/se_inject.ps1`
+(AttachConsole + WriteConsoleInput, so no window focus is needed). Output is read back from the current
+run's `Extender Runtime` log. Log file names are UTC; the bridge compares real modification times with
+the game's start time.
+
+| Tool | Purpose |
+| --- | --- |
+| `bg3_se_status` | game running? PID and start time, this run's log, latest game state |
+| `bg3_se_eval(code, context)` | run Lua (server/client); returns the return value as JSON plus printed lines. **Runs in your live game.** |
+| `bg3_se_command(line)` | one console line (e.g. `!apofeature X`), plus the log lines it produced |
+| `bg3_se_log(filter, lines)` | tail this run's log |
+| `bg3_se_live_entry(name, layers)` | ground truth: the entry as the game loaded it vs the index, field by field |
+
+Each eval is wrapped in unique BEGIN/END markers and `pcall`, so Lua errors come back as errors rather
+than timeouts. SE replaces `load()` (its second argument must be an environment table). Console access is
+serialised. Functor fields (`SpellSuccess`...) are exposed by SE as parsed userdata and can't be compared
+as text. SE reports `ComboCategory` as empty.
+
 ## Hardening
 - One SQLite connection shared by MCP worker threads, serialised with a lock (WAL mode).
 - Every tool catches errors and returns a readable message; free-text inputs are capped at 500 characters
@@ -70,8 +89,13 @@ and the game `Data` path.
 - `uv run python tests/stress_test.py` drives the real server over stdio with the official MCP client:
   protocol, correct answers, bad input, concurrency (400 calls, 32 at a time), refresh under load,
   `.pak` layer add and remove, and a full resolution sweep. It writes `tests/STRESS_REPORT.md`.
-- `uv run python tests/ingame_check.py --pid <bg3 pid> [--layers dnd55e]` checks field values against the
-  running game through Script Extender (needs the deployed paks to match the indexed layers).
+- `uv run python tests/ingame_check.py [--layers dnd55e] [--sample 400]` compares resolved entries with the
+  running game through SE. The deployed paks must match the layers. It writes `tests/INGAME_REPORT.md`.
+  The first run (2026-09-30) compared 400 entries (200 mod-overridden) and 7,844 fields: 18 mismatches
+  (0.23%). 16 were `ComboCategory` (SE doesn't expose it) and 2 were one quirk (`MULTIATTACKDEFENSE`: the
+  game didn't inherit DisplayName through dnd55e's `using`). A targeted test of the 72 cases where
+  "override re-parents via `using`" and "`using` ignored on override" predict different values sided with
+  the resolver's model 78:1.
 
 ## Known limits
 - `SpellAnimation` GUIDs are animation slot keys mapped per race and body across about 2,500 content banks,

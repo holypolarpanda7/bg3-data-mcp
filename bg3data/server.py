@@ -9,7 +9,7 @@ import traceback
 from mcp.server.mcpserver import MCPServer
 
 from . import format as fmt
-from . import index, query, sources
+from . import index, query, se, sources
 
 mcp = MCPServer(
     "bg3-data",
@@ -307,6 +307,100 @@ def bg3_search_effects(text: str, layers: list[str] | None = None, limit: int = 
     for uuid, name, source, why, users in rows:
         out.append(f"{uuid}  {name}  [{source}, matched {why}]" + (("\n    used by: " + ", ".join(n for n, _ in users)) if users else ""))
     return "\n".join(out) or "no matching effects"
+
+
+# ---------------------------------------------------------------------------- Script Extender
+# These talk to the RUNNING game through the SE console (References/Dev/dnd55e-tools/se_inject.ps1).
+# They don't take the index lock, so data lookups stay responsive while the game is busy.
+
+def se_guarded(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            out = fn(*args, **kwargs)
+        except (RuntimeError, TimeoutError, ValueError, sources.ConfigError) as e:
+            return f"error: {e}"
+        except Exception as e:
+            _log(traceback.format_exc())
+            return f"internal error in {fn.__name__}: {type(e).__name__}: {e}"
+        if isinstance(out, str) and len(out) > MAX_OUTPUT:
+            out = out[:MAX_OUTPUT] + f"\n... [truncated: {len(out) - MAX_OUTPUT} more characters]"
+        return out
+    return wrapper
+
+
+@mcp.tool()
+@se_guarded
+def bg3_se_status() -> str:
+    """Is the game running, which Script Extender log belongs to this run, and the latest game state."""
+    return se.status()
+
+
+@mcp.tool()
+@se_guarded
+def bg3_se_eval(code: str, context: str = "server", timeout: float = 15) -> str:
+    """Run Lua inside the RUNNING game via Script Extender and return its printed output plus the return
+    value (JSON). context: 'server' (game logic, Osi.*, Ext.Stats) or 'client' (UI/visuals).
+    This executes code in the user's live game session; it can change game state."""
+    if not code or len(code) > 8000:
+        return "error: `code` must be 1-8000 characters"
+    r = se.eval_lua(code, context, timeout=max(2.0, min(float(timeout), 120.0)))
+    out = [("OK" if r["ok"] else "LUA ERROR") + ": " + json.dumps(r["result"], indent=1)[:MAX_OUTPUT // 2]]
+    if r["output"]:
+        out.append("printed:\n" + "\n".join(r["output"]))
+    return "\n".join(out)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_se_command(line: str, wait: float = 3, context: str = "server") -> str:
+    """Send one Script Extender console line to the running game (e.g. '!apofeature Barbarian_PersistentRage')
+    and return the log lines it produced within `wait` seconds (max 60)."""
+    if not line or len(line) > 2000:
+        return "error: `line` must be 1-2000 characters"
+    lines = se.command(line, wait=float(wait), context=context)
+    return "\n".join(lines) or "(no log output)"
+
+
+@mcp.tool()
+@se_guarded
+def bg3_se_log(filter: str | None = None, lines: int = 60) -> str:
+    """Tail the current game run's Script Extender runtime log, optionally only lines containing `filter`
+    (e.g. '[Apotheosis]', 'error', 'FAILED')."""
+    name, text = se.log_tail(filter, _limit(lines, 60, 1000))
+    return f"{name}:\n" + ("\n".join(text) or "(no matching lines)")
+
+
+@mcp.tool()
+@se_guarded
+def bg3_se_live_entry(name: str, layers: list[str] | None = None, fields: list[str] | None = None) -> str:
+    """Ground truth: compare a stats entry as the running game actually loaded it with the index's
+    resolution for `layers`. Pick layers matching what's deployed. Shows each field as MATCH or DIFF."""
+    _text(name, "name")
+    with _lock:
+        s = store()
+        active = s.active(layers)
+        r = s.resolve(name, active)
+    if not r and not fields:
+        return f"'{name}' not in the index for layers {active}; pass `fields` to read it from the game anyway"
+    want = fields or sorted(k for k in r["fields"] if k not in ("SpellType", "StatusType"))
+    live = se.live_stats_many({name: want}).get(name)
+    if live is None:
+        return f"'{name}' is not loaded in the running game"
+    out = [f"{name}: game vs index ({'+'.join(active)})"]
+    diff = 0
+    for k in want:
+        iv = r["fields"].get(k, (None, ""))[0] if r else None
+        gv = live.get(k)
+        if not se.comparable(gv):
+            out.append(f"  n/a   {k}: index={iv!r}  (game exposes parsed functors; not comparable as text)")
+            continue
+        same = se.same(iv, gv)
+        diff += not same
+        out.append(f"  {'MATCH' if same else 'DIFF '} {k}: index={iv!r}" + ("" if same else f"  game={gv!r}")
+                   + (f"  [{r['fields'][k][1]}]" if r and k in r["fields"] else ""))
+    out.insert(1, f"  {len(want) - diff}/{len(want)} fields match")
+    return "\n".join(out)
 
 
 def main():
