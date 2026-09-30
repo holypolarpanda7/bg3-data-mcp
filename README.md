@@ -46,6 +46,7 @@ minute. Rebuilds are atomic: a failed rebuild keeps serving the previous index a
 | `bg3_game_restart(deploy_layer)` | kill the game, run the layer's `deploy` command, relaunch via Steam into the newest save, wait until loaded |
 | `bg3_level_up(levels)` / `bg3_level_check` | grant exactly the XP for the next level; compare the host with its class/subclass progressions |
 | `bg3_test_list` / `bg3_test_script` / `bg3_test_stage` / `bg3_test_verify` / `bg3_test_cleanup` | data-driven in-game test cases (TOML in the mod repo) run as real encounters: see [docs/TESTING.md](docs/TESTING.md) |
+| `bg3_lint_stats(layer)` / `bg3_lint_progressions(layer)` | static checks before deploying: values the engine silently drops (vocabulary learned from the other layers), missing references, unknown resources; progression UUIDs, dangling lists, stacked choices |
 | `bg3_ingame_check(layer)` | every stats entry a layer defines vs what the running game loaded (invalid values the engine dropped) |
 
 ## Setup

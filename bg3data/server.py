@@ -578,6 +578,18 @@ def bg3_test_run_level(layer: str, level: int, build: str | None = None, class_n
 
 @mcp.tool()
 @guarded
+def bg3_lint_stats(layer: str, layers: list[str] | None = None, limit: int = 200) -> str:
+    """Static stats lint for a mod layer, before the game ever loads it: enum values (Cooldown,
+    StatsFunctorContext, RemoveEvents, SpellFlags, TickType...) and functor/condition/boost names that no
+    other layer uses (the engine silently drops what it doesn't know), plus missing referenced entries
+    (statuses, unlocked spells/interrupts, using, containers) and unknown action resources."""
+    from . import lint
+    s = store()
+    return lint.lint_stats(s, s.active(layers), layer, _limit(limit, 200, 2000))
+
+
+@mcp.tool()
+@guarded
 def bg3_lint_progressions(layer: str, layers: list[str] | None = None) -> str:
     """Static progression checks for a mod layer: invalid node UUIDs (the game silently drops those
     nodes), selectors referencing lists no layer defines, and same table+level nodes from different
