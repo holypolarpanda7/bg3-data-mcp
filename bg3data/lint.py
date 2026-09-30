@@ -77,9 +77,10 @@ def vocabulary(store, active, layer):
     """Everything the layers other than `layer` use: enum values per field, callable names, resources, entry names."""
     others = [l for l in active if l != layer]
     w, p = store._where(others)
-    enums, calls, resources = {}, set(), set()
+    enums, calls, resources, fields = {}, set(), set(), {}
     for typ, data in store.db.execute(f"SELECT type, data FROM stats WHERE {w}", p):
         for k, v in _fields(data).items():
+            fields.setdefault(typ, set()).add(k)
             if not isinstance(v, str):
                 continue
             if k in ENUM_FIELDS or (k == "Properties" and typ in PASSIVE_PROPERTIES):
@@ -94,11 +95,11 @@ def vocabulary(store, active, layer):
     names = {}
     for n, t in store.db.execute(f"SELECT DISTINCT name, type FROM stats WHERE {wa}", pa):
         names.setdefault(n, set()).add(t)
-    return enums, calls, resources, names
+    return enums, calls, resources, names, fields
 
 
 def lint_stats(store, active, layer, limit=200):
-    enums, calls, resources, names = vocabulary(store, active, layer)
+    enums, calls, resources, names, known_fields = vocabulary(store, active, layer)
     rows = store.db.execute("SELECT name, type, file, using_, data FROM stats WHERE layer=? ORDER BY file, name", (layer,)).fetchall()
     issues = []
 
@@ -110,6 +111,8 @@ def lint_stats(store, active, layer, limit=200):
         if using and using != name and using not in names:
             add("REF", name, file, f"using '{using}' doesn't exist")
         for k, v in f.items():
+            if typ in known_fields and k not in known_fields[typ]:
+                add("FIELD", name, file, f"'{k}' isn't a field any other layer uses on {typ} (the engine ignores unknown fields)")
             if not isinstance(v, str) or not v:
                 continue
             if k in enums and (k != "Properties" or typ in PASSIVE_PROPERTIES):
@@ -147,7 +150,7 @@ def lint_stats(store, active, layer, limit=200):
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL = value no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")
