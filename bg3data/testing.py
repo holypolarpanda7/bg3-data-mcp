@@ -255,6 +255,54 @@ def load_cases(layer):
     return cases
 
 
+def load_builds(layer):
+    builds = []
+    for d in suite_dirs(layer):
+        for f in sorted(glob.glob(os.path.join(d, "*.toml"))):
+            with open(f, "rb") as fh:
+                doc = tomllib.load(fh)
+            suite = doc.get("suite", {})
+            for b in doc.get("build", []):
+                b = {**{k: v for k, v in suite.items() if k in ("class",)}, **b}
+                b.setdefault("levels", [1, 20])
+                builds.append(b)
+    return builds
+
+
+def find_build(layer, build_id):
+    for b in load_builds(layer):
+        if b["id"] == build_id:
+            return b
+    raise ValueError(f"no build {build_id!r} in {suite_dirs(layer)}")
+
+
+def assign_cases(cases, builds):
+    """{build id: [cases]}. A case goes to its `build`, else a build of its `subclass`, else (class-wide)
+    to the builds covering its level in turn, so shared tests are spread across runs instead of repeated."""
+    out = {b["id"]: [] for b in builds}
+    turn = {}
+    for c in cases:
+        cls = (c.get("class") or "").lower()
+        mine = [b for b in builds if (b.get("class") or "").lower() == cls]
+        if c.get("build"):
+            if c["build"] in out:
+                out[c["build"]].append(c)
+            continue
+        if c.get("subclass"):
+            hit = [b for b in builds if b.get("subclass") == c["subclass"]]
+            if hit:
+                out[hit[0]["id"]].append(c)
+            continue
+        lvl = c.get("level", 1)
+        cover = [b for b in mine if b["levels"][0] <= lvl <= b["levels"][1]]
+        if cover:
+            k = (cls, lvl)
+            b = cover[turn.get(k, 0) % len(cover)]
+            turn[k] = turn.get(k, 0) + 1
+            out[b["id"]].append(c)
+    return out
+
+
 def find_case(layer, case_id):
     for c in load_cases(layer):
         if c.get("id") == case_id:
@@ -262,7 +310,7 @@ def find_case(layer, case_id):
     raise ValueError(f"no test case {case_id!r} in {suite_dirs(layer)}")
 
 
-EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied",
+EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note"}
 
 
@@ -273,6 +321,8 @@ def validate(store, active, c):
         if not c.get(k):
             errs.append(f"missing `{k}`")
     aliases = {"host"} | {s.get("as") for s in c.get("spawn", [])}
+    if c.get("console") and not c.get("expect_log"):
+        errs.append("console case needs `expect_log` (the log line that means PASS)")
     if c.get("spell") and not store.resolve(c["spell"], active):
         errs.append(f"spell {c['spell']} not found in layers {active}")
     if c.get("target") and c["target"] not in aliases:
@@ -489,6 +539,9 @@ def verify(store, active, cleanup=True, wait=2.0):
         for s in e.get("status_applied", []):
             hit = any(x.get("kind") == "StatusApplied" and x.get("who") == guid and x.get("status") == s for x in events)
             row(hit, f"{s} applied to {label}")
+        if e.get("status_applied_any"):
+            seen = sorted({x.get("status") for x in events if x.get("kind") == "StatusApplied" and x.get("who") == guid} & set(e["status_applied_any"]))
+            row(bool(seen), f"any of {', '.join(e['status_applied_any'])} applied to {label}" + (f" (got {', '.join(seen)})" if seen else ""))
         for s in e.get("status_removed", []):
             was = s in (b.get("statuses") or [])
             row(was and s not in (a.get("statuses") or []), f"{s} removed from {label}" + ("" if was else " (it wasn't present before!)"))
@@ -568,21 +621,45 @@ def _cost_matches(cost_name, resource):
     return cost_name == resource or (cost_name == "SpellSlotsGroup" and resource in ("SpellSlot", "WarlockSpellSlot"))
 
 
+def run_console(c):
+    """A mod's own test command (e.g. '!apofeature X'): pass when `expect_log` appears in its output."""
+    lines = se.command(c["console"], wait=float(c.get("wait", 8)))
+    text = "\n".join(lines)
+    ok = c["expect_log"] in text
+    bad = c.get("fail_log") and c["fail_log"] in text
+    verdict = "PASS" if ok and not bad else "FAIL"
+    tail = [l for l in lines if l.strip() and "Switching to" not in l][-6:]
+    return f"{c['id']}: {verdict}  [mod console command: {c['console']}]\n  {c.get('title', '')}\n" + "\n".join(f"  | {l}" for l in tail)
+
+
 def run(store, active, layer, case_id, wait=4.0):
-    """Stage + (scripted) cast + verify in one go for auto/script cases."""
+    """Stage + (scripted) cast + verify in one go for auto/script cases; console cases run their command.
+    `retries` re-runs a failed case (for save-based effects the target can resist)."""
     c = find_case(layer, case_id)
+    if c.get("console"):
+        return run_console(c)
     if c.get("mode", "auto") == "player":
         raise ValueError(f"{case_id} is a player-mode case: use bg3_test_stage, cast from the hotbar, then bg3_test_verify")
-    r = stage(store, active, layer, case_id)
-    if not r["ok"]:
-        return f"{case_id}: NOT RUN - " + "; ".join(r["blockers"])
-    return verify(store, active, cleanup=True, wait=wait)
+    out = ""
+    for attempt in range(1 + int(c.get("retries", 0))):
+        r = stage(store, active, layer, case_id)
+        if not r["ok"]:
+            return f"{case_id}: NOT RUN - " + "; ".join(r["blockers"])
+        out = verify(store, active, cleanup=True, wait=wait)
+        if ": PASS" in out.split("\n")[0]:
+            return out + (f"\n  (passed on attempt {attempt + 1})" if attempt else "")
+    return out
 
 
-def run_level(store, active, layer, cls, level, wait=4.0):
-    cases = [c for c in load_cases(layer) if (c.get("class") or "").lower() == cls.lower() and c.get("level") == level]
+def run_level(store, active, layer, cls, level, wait=4.0, build=None):
+    if build:
+        b = find_build(layer, build)
+        cls = b["class"]
+        cases = [c for c in assign_cases(load_cases(layer), load_builds(layer)).get(build, []) if c.get("level") == level]
+    else:
+        cases = [c for c in load_cases(layer) if (c.get("class") or "").lower() == (cls or "").lower() and c.get("level") == level]
     if not cases:
-        return f"no {cls} level {level} cases"
+        return f"no {cls} level {level} cases" + (f" for build {build}" if build else "")
     out, manual = [], []
     for c in cases:
         if c.get("mode", "auto") == "player":
@@ -608,6 +685,208 @@ def cleanup():
     except OSError:
         pass
     return rep
+
+
+# ------------------------------------------------------------------ progression lint
+GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def lint_progressions(store, active, layer):
+    """Static checks on the progression nodes a layer defines: invalid node UUIDs (the game drops the
+    node), selectors pointing at lists no layer defines, and several nodes for the same table+level from
+    different layers (both load: choices and feats are granted twice)."""
+    w, p = store._where(active)
+    rows = store.db.execute(f"SELECT layer, name, level, table_uuid, uuid, attrs FROM prog WHERE {w} ORDER BY rank", p).fetchall()
+    mine = [r for r in rows if r[0] == layer]
+    out = []
+    bad = [r for r in mine if r[4] and not GUID_RE.match(r[4])]
+    if bad:
+        out.append(f"INVALID node UUIDs ({len(bad)}) - the game doesn't load these nodes:")
+        out += [f"  {r[1]} L{r[2]}: {r[4]}" for r in bad]
+    dangling = []
+    for r in mine:
+        a = json.loads(r[5])
+        for kind, args in re.findall(r"(\w+)\(([^)]*)\)", a.get("Selectors") or ""):
+            lst = args.split(",")[0].strip()
+            if kind in ("SelectSpells", "AddSpells", "SelectPassives") and GUID_RE.match(lst) and not store.spell_list(lst, active):
+                dangling.append(f"  {r[1]} L{r[2]}: {kind}({lst}) - list not defined in {'+'.join(active)}")
+    if dangling:
+        out.append(f"DANGLING list references ({len(dangling)}):")
+        out += sorted(set(dangling))
+    by = {}
+    for r in rows:
+        a = json.loads(r[5])
+        if str(a.get("IsMulticlass", "")).lower() == "true":
+            continue
+        by.setdefault((r[3], r[2]), []).append(r)
+    def grants_choice(x):
+        at = json.loads(x[5])
+        return at.get("AllowImprovement") == "true" or bool(at.get("Selectors"))
+
+    # only stacked CHOICES/feats are harmful: an extra node that just adds passives is a normal way to extend
+    dup = []
+    for k, v in by.items():
+        latest = {}
+        for x in v:  # same node UUID in several layers = one node (last layer wins)
+            latest[x[4]] = x
+        nodes = list(latest.values())
+        if len(nodes) > 1 and any(x[0] == layer for x in nodes) and sum(grants_choice(x) for x in nodes) > 1:
+            dup.append((k, nodes))
+    if dup:
+        out.append(f"STACKED choices ({len(dup)}): several nodes for one table+level each grant choices/feats - all load, so they're offered twice:")
+        for (t, l), v in sorted(dup, key=lambda d: (d[1][0][1], d[0][1])):
+            out.append(f"  {v[0][1]} L{l}: " + "; ".join(f"{x[0]} {x[4]}" + (" [AllowImprovement]" if json.loads(x[5]).get("AllowImprovement") == "true" else "")
+                                                      + (" [Selectors]" if json.loads(x[5]).get("Selectors") else "") for x in v))
+    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels")] + out)
+
+
+# ------------------------------------------------------------------ build plans
+MAIN_ABILITY = {"wizard": "Intelligence", "artificer": "Intelligence", "sorcerer": "Charisma", "warlock": "Charisma",
+                "bard": "Charisma", "paladin": "Charisma", "cleric": "Wisdom", "druid": "Wisdom", "ranger": "Wisdom",
+                "monk": "Wisdom", "fighter": "Strength", "barbarian": "Strength", "rogue": "Dexterity"}
+
+
+def _class_names(uuids):
+    """ClassDescription UUID -> (Name, display name), read from the running game when available."""
+    if not uuids:
+        return {}
+    try:
+        lst = "{" + ",".join(se._lua_string(u) for u in uuids) + "}"
+        r = se.eval_lua(f"local o={{}}; for _,u in ipairs({lst}) do local c=Ext.StaticData.Get(u,'ClassDescription'); "
+                        "if c then o[u]={c.Name, Ext.Loca.GetTranslatedString(c.DisplayName.Handle.Handle)} end end; return o",
+                        "server", timeout=15)
+        return {k: tuple(v) for k, v in (r["result"] or {}).items()} if r["ok"] else {}
+    except (RuntimeError, TimeoutError):
+        return {}
+
+
+def _nodes(store, active, table_name, level):
+    return [n for n in store.progression(table_name, active, level) if str(n[4].get("IsMulticlass", "")).lower() != "true"]
+
+
+def plan(store, active, layer, build_id, write=True, _picked_only=False):
+    """Exact level-up choices per level for a build, driven by the tests assigned to it."""
+    b = find_build(layer, build_id)
+    cls, sub = b["class"], b.get("subclass")
+    lo, hi = b["levels"]
+    ability = b.get("ability") or MAIN_ABILITY.get(cls.lower(), "your main ability")
+    cases = assign_cases(load_cases(layer), load_builds(layer)).get(build_id, [])
+    # spells the tests need, learned no later than their test level (auto-granted ones excluded below)
+    need = {}
+    for c in sorted(cases, key=lambda c: c.get("level", 0)):
+        if c.get("spell") and c.get("mode", "auto") != "script":
+            need.setdefault(c["spell"], c.get("level", 0))
+    for L, pins in (b.get("spells") or {}).items():
+        for sp in pins:
+            need.setdefault(sp, int(L))
+    granted, picked, warnings = set(), {}, []
+    if b.get("from"):  # spells the parent build already picked aren't offered again
+        picked.update(plan(store, active, layer, b["from"], write=False, _picked_only=True))
+    sub_uuid_names = {}
+    md = [f"# Test plan: {b.get('title') or build_id}", "",
+          f"Build `{build_id}`: {cls}" + (f" / {sub}" if sub else "") + f", levels {lo}-{hi}. "
+          f"Generated {time.strftime('%Y-%m-%d %H:%M %Z')} (layers: {', '.join(active)}).", ""]
+    if b.get("from"):
+        md += [f"**Start:** load your save from build `{b['from']}`" + (f" (\"{find_build(layer, b['from']).get('save_as')}\")" if find_build(layer, b['from']).get('save_as') else "") + ".", ""]
+    md += ["**Each level:** say **\"level up\"** -> make exactly the choices below -> say **\"leveled\"**. I run the level "
+           "check and this level's automated tests. Save after each level (never while a test is staged).", ""]
+    # levels below the plan's range still grant spells: track them so they aren't picked twice
+    for L in range(1, hi + 1):
+        nodes = _nodes(store, active, cls, L) + (_nodes(store, active, sub, L) if sub else [])
+        body = []
+        if len({n[3] for n in nodes if n[2]}) > 1 and len([n for n in nodes if n[1] == cls]) > 1:
+            body.append(f"- note: {len([n for n in nodes if n[1] == cls])} {cls} progression nodes at this level "
+                        f"({', '.join(sorted({n[3] for n in nodes if n[1] == cls}))}); the level-up screen may ask twice")
+        for lvl, pname, table, src, a in nodes:
+            if a.get("_SubClasses") and L >= lo:
+                ids = [x for x in a["_SubClasses"].split(";") if x]
+                sub_uuid_names = _class_names(ids)
+                disp = next((v[1] for v in sub_uuid_names.values() if v[0] == sub), sub) if sub else None
+                body.append(f"- **Subclass: {disp}**" + (f" (`{sub}`)" if sub and disp != sub else "") if sub else
+                            f"- Subclass: not chosen in this build (stop before level {L}, or pick any)")
+            for kind, args in re.findall(r"(\w+)\(([^)]*)\)", a.get("Selectors") or ""):
+                args = [x.strip() for x in args.split(",")]
+                if kind == "AddSpells" and args[0]:
+                    granted |= set(_list_spells(store, active, args[0]) or [])
+                    continue
+                if L < lo:
+                    if kind == "SelectSpells":  # earlier builds' picks aren't known; nothing to plan
+                        pass
+                    continue
+                if kind == "SelectSpells":
+                    n = int(float(args[1])) if len(args) > 1 and args[1] else 1
+                    pool = [x for x in (_list_spells(store, active, args[0]) or []) if x not in picked and x not in granted]
+                    if _list_spells(store, active, args[0]) is None:
+                        body.append(f"- Spells ({args[3] if len(args) > 3 else 'list'}, pick {args[1]}): **list {args[0]} doesn't exist in any layer** - the screen will offer nothing")
+                        warnings.append(f"L{L}: SelectSpells list {args[0]} is not defined anywhere")
+                        continue
+                    lvl_names = {x: _name(store, active, x) for x in pool}
+                    lvls = sorted({str(store.resolve(x, active)["fields"].get("Level", ("?",))[0]) for x in pool if store.resolve(x, active)})
+                    spell_lvl = lvls[0] if len(lvls) == 1 else (f"{lvls[0]}-{lvls[-1]}" if lvls else "?")
+                    req = [x for x in sorted(need, key=need.get) if x in pool][:n]
+                    later = set(need)
+                    filler = [x for x in sorted(pool, key=lambda x: lvl_names[x]) if x not in req and x not in later][: n - len(req)]
+                    for x in req + filler:
+                        picked[x] = L
+                    items = [f"**{lvl_names[x]}** (tested at L{need[x]})" for x in req] + [f"{lvl_names[x]} (filler)" for x in filler]
+                    what = "cantrips" if spell_lvl == "0" else f"level {spell_lvl} spells"
+                    extra = f", {args[3]}" if len(args) > 3 and args[3] else ""
+                    body.append(f"- Spells ({what}{extra}, pick {n}): " + ", ".join(items))
+                elif kind == "SelectPassives":
+                    n = int(float(args[1])) if len(args) > 1 and args[1] else 1
+                    row = store.spell_list(args[0], active)
+                    if not row:
+                        body.append(f"- Choose {n} ({args[2] if len(args) > 2 else 'passive'}): **list {args[0]} doesn't exist in any layer** - nothing to choose")
+                        warnings.append(f"L{L}: SelectPassives list {args[0]} is not defined anywhere")
+                        continue
+                    opts = [x for x in re.split(r"[;,]", json.loads(row[4]).get("Passives", "")) if x]
+                    want = [x for x in (b.get("passives") or {}).get(str(L), []) if x in opts] or opts[:n]
+                    body.append(f"- Choose {n} ({args[2] if len(args) > 2 else 'passive'}): " + ", ".join(f"**{_name(store, active, x)}**" for x in want)
+                                + (f" (options: {len(opts)})" if opts else ""))
+                elif kind in ("SelectSkills", "SelectSkillsExpertise", "SelectAbilityBonus", "SelectAbilities", "SelectEquipment"):
+                    body.append(f"- {kind.replace('Select', '')}: any (doesn't affect tests)")
+                else:
+                    body.append(f"- {kind}({', '.join(args[:2])}): any")
+            if a.get("AllowImprovement") == "true" and L >= lo:
+                body.append(f"- Feat: **{(b.get('feats') or {}).get(str(L), f'Ability Score Improvement, +2 {ability}')}**")
+        if L < lo:
+            continue
+        if _picked_only:
+            continue
+        here = [c for c in cases if c.get("level") == L]
+        md += [f"## Level {L}", ""]
+        md += ["Level-up screen:" if L > 1 else "Character creation:"] + (body or ["- no choices"]) + [""]
+        if here:
+            auto = [c for c in here if c.get("mode", "auto") != "player"]
+            man = [c for c in here if c.get("mode", "auto") == "player"]
+            if auto:
+                md += [f"Automated tests (`bg3_test_run_level(build=\"{build_id}\", level={L})`), nothing for you to do:"]
+                md += [f"- `{c['id']}` {c.get('title', '')}" for c in auto] + [""]
+            for c in man:
+                md += [f"Your spot check `{c['id']}`: {c.get('title', '')}",
+                       f"1. Say **\"stage {c['id']}\"**; I set it up (you act first).",
+                       f"2. Cast **{_name(store, active, c['spell'])}** from the class spell bar at "
+                       f"{'yourself' if c.get('target', 'host') == 'host' else _spawn_label(c, c['target'])}." + (f" {c['instructions']}" if c.get("instructions") else ""),
+                       "3. Say **\"verify\"**.", ""]
+        if b.get("save_as") and L == hi:
+            md += [f"**Save now as \"{b['save_as']}\"**: other builds start from it.", ""]
+    if _picked_only:
+        return picked
+    for sp, L in need.items():
+        if sp not in picked and sp not in granted:
+            warnings.append(f"{sp} (tested at L{L}) is never offered by a spell choice in this build")
+        elif picked.get(sp, 0) > L:
+            warnings.append(f"{sp} is picked at L{picked[sp]} but tested at L{L}")
+    if warnings:
+        md += ["## Plan warnings", ""] + [f"- {w}" for w in warnings] + [""]
+    text = "\n".join(md)
+    path = None
+    if write:
+        d = os.path.join(mod_entry(layer)["path"], "docs", "test-scripts")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"plan-{build_id}.md")
+        open(path, "w", encoding="utf-8").write(text)
+    return text, path
 
 
 # ------------------------------------------------------------------ human test scripts

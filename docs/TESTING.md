@@ -30,6 +30,23 @@ Every verdict states which kind of run it was.
 `bg3_game_restart(deploy_layer)` kills the game, runs the layer's `deploy` command, relaunches through
 Steam with `-continueGame` (the newest save) and waits until a character is loaded.
 
+## Test builds and plans
+A `[[build]]` is one test character: `class`, optional `subclass`, `levels = [from, to]`, optional `from`
+(the build whose final save it starts from), `save_as`, `ability` (for ASIs), `feats = { "8" = "..." }`,
+`spells = { "5" = ["Spell_Id"] }` (pins), `passives = { "19" = ["Boon"] }`. Cases are assigned to builds:
+by `build`, else by `subclass`, else class-wide cases are spread across the builds covering their level, so
+each spell is tested once across all runs. `bg3_test_plan(layer, build)` writes the per-level script: the
+exact subclass, spells (every tested spell learned by its test level; the rest named as filler), feat and
+other choices, then the tests that run there. `bg3_test_run_level(layer, level, build=...)` runs them.
+
+Case kinds beyond spells: `console = "!mycommand X"` + `expect_log = "PASS marker"` (+ `fail_log`) runs a
+mod's own test command; `retries = N` re-runs a failed case (save-based effects);
+`status_applied_any = [...]` passes if any listed status lands.
+
+`bg3_lint_progressions(layer)` checks progression data statically: invalid node UUIDs (the game drops the
+node), selectors pointing at lists no layer defines, and stacked choices (several nodes for one
+table+level that each grant selectors/feats: all load, so the player is asked twice).
+
 ## Where tests live
 `<mod path>/tests/bg3/*.toml`, or set `"tests": "<dir>"` on the mod in `layers.json`. Add
 `"deploy": "<shell command>"` (run in the mod folder) to use `bg3_game_restart(deploy_layer=...)`.

@@ -566,12 +566,37 @@ def bg3_test_run(layer: str, case_id: str, wait: float = 4.0, layers: list[str] 
 
 @mcp.tool()
 @se_guarded
-def bg3_test_run_level(layer: str, class_name: str, level: int, wait: float = 4.0, layers: list[str] | None = None) -> str:
-    """Run every automated case for a class level, one after another, and summarise. Lists the
-    player-mode cases that still need a hotbar cast."""
+def bg3_test_run_level(layer: str, level: int, build: str | None = None, class_name: str | None = None, wait: float = 4.0,
+                       layers: list[str] | None = None) -> str:
+    """Run every automated case for a level, one after another, and summarise: the cases assigned to
+    `build` (see bg3_test_plan), or all of `class_name`'s cases at that level. Lists the player-mode cases
+    that still need a hotbar cast."""
     from . import testing
     s, active = _testing_store(layers)
-    return testing.run_level(s, active, layer, class_name, level, wait)
+    return testing.run_level(s, active, layer, class_name, level, wait, build)
+
+
+@mcp.tool()
+@guarded
+def bg3_lint_progressions(layer: str, layers: list[str] | None = None) -> str:
+    """Static progression checks for a mod layer: invalid node UUIDs (the game silently drops those
+    nodes), selectors referencing lists no layer defines, and same table+level nodes from different
+    layers (both load, so their choices/feats stack)."""
+    from . import testing
+    s = store()
+    return testing.lint_progressions(s, s.active(layers), layer)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_test_plan(layer: str, build: str, layers: list[str] | None = None) -> str:
+    """The step-by-step plan for a test build ([[build]] in the suite TOML): for every level the exact
+    level-up choices (subclass, which spells, feat), chosen so every spell a test needs is learned by its
+    test level, plus the tests that run there. Written to <mod>/docs/test-scripts/plan-<build>.md."""
+    from . import testing
+    s, active = _testing_store(layers)
+    text, path = testing.plan(s, active, layer, build)
+    return (f"written to {path}\n\n" if path else "") + text
 
 
 @mcp.tool()
