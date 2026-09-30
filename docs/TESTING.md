@@ -65,6 +65,7 @@ spell = "Projectile_MagicMissile"
 target = "A"                 # "host" or a spawn alias
 mode = "auto"                # default; or "player" / "script"
 prep = "..."                 # optional: shown as "Before casting: ..."
+grant_passive = "Feature"     # optional action instead of/before a spell: add a passive after the before-snapshot
 instructions = "..."         # optional: extra step after the cast step
 notes = "..."                # optional: shown at the end of the case
 combat = true                # default: true when any spawn is hostile

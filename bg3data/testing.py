@@ -486,6 +486,8 @@ def stage(store, active, layer, case_id):
     state = {"layer": layer, "case": c["id"], "mode": mode, "combat": combat, "since": since, "before": before,
              "first_turn": first_turn, "staged_at": time.time()}
     _save_state(state)
+    if c.get("grant_passive"):  # the case's action is gaining a feature (e.g. a boon's max HP increase)
+        lua(f"BG3T.addPassive(BG3T.host(), {se._lua_string(c['grant_passive'])}); return true")
     if mode in ("auto", "script") and c.get("spell"):
         tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
         lua(f"BG3T.cast(BG3T.host(), {se._lua_string(c['spell'])}, {tgt}); return true")

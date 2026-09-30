@@ -146,13 +146,29 @@ def lint_stats(store, active, layer, limit=200):
                         add("REF", name, file, f"ContainerSpells: '{ref}' doesn't exist")
             if k in ("SpellContainerID", "RootSpellID", "ConcentrationSpellID") and v not in names:
                 add("REF", name, file, f"{k} '{v}' doesn't exist")
+    # a spell without SpellAnimation (own or inherited) never finishes a normal cast (verified in game
+    # 2026-09-30). Exempt: containers (not cast themselves), nameless editor separators, and spells only
+    # cast immediately by an interrupt/functor (UseSpell(...,X,true,true,true) skips the animation).
+    wa, pa = store._where(active)
+    immediate = set()
+    for (d,) in store.db.execute(f"SELECT data FROM stats WHERE {wa} AND data LIKE '%UseSpell(%'", pa):
+        immediate.update(re.findall(r"UseSpell\([^,()]*,\s*([A-Za-z0-9_]+)\s*,\s*true", d))
+    for name, typ, file, using, data in rows:
+        if typ != "SpellData" or name in immediate:
+            continue
+        r = store.resolve(name, active)
+        fl = r["fields"] if r else {}
+        if not fl or fl.get("ContainerSpells", ("",))[0] or not fl.get("DisplayName", ("",))[0]:
+            continue
+        if not fl.get("SpellAnimation", ("",))[0]:
+            add("SPELL", name, file, "no SpellAnimation (own or inherited): a normal cast never resolves")
     by_kind = {}
     for kind, *_ in issues:
         by_kind[kind] = by_kind.get(kind, 0) + 1
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")

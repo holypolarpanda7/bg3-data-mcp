@@ -12,7 +12,7 @@ T.TAG = "BG3Test"
 T.spawns = T.spawns or {}      -- alias -> guid
 T.grants = T.grants or {}      -- { {guid, boost} }
 T.applied = T.applied or {}    -- { {guid, status} }
-T.passives = T.passives or {}  -- { {guid, passive} } added by tests
+T.added_passives = T.added_passives or {}  -- { {guid, passive} } added by tests (T.passives() is the snapshot function)
 T.events = T.events or {}
 T.seq = T.seq or 0
 T.recording = T.recording or false
@@ -146,7 +146,7 @@ function T.addPassive(g, passive)
     g = uuid(g)
     if Osi.HasPassive(g, passive) == 1 then return end  -- already owned: leave it alone at cleanup
     Osi.AddPassive(g, passive)
-    T.passives[#T.passives + 1] = { g, passive }
+    T.added_passives[#T.added_passives + 1] = { g, passive }
 end
 
 function T.apply(g, status, turns)
@@ -188,11 +188,11 @@ end
 
 function T.cleanup()
     local report = { spawns = 0, grants = 0, statuses = 0, passives = 0 }
-    for _, ps in ipairs(T.passives) do
+    for _, ps in ipairs(T.added_passives) do
         pcall(Osi.RemovePassive, ps[1], ps[2])
         report.passives = report.passives + 1
     end
-    T.passives = {}
+    T.added_passives = {}
     for _, g in pairs(T.spawns) do
         if Osi.IsDead(g) == 0 then pcall(Osi.Die, g, 0, NULL, 0, 1) end
         pcall(Osi.RequestDelete, g)
