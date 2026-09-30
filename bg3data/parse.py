@@ -107,3 +107,39 @@ def list_node_ids(path):
         if el.tag == "node":
             ids.add(el.get("id"))
     return ids
+
+
+def parse_multieffect(path):
+    """A MultiEffectInfos .lsx -> (uuid, name, [ {resource, start, target_bones, source_bones} ])."""
+    root = ET.parse(path).getroot()
+    for node in root.iter("node"):
+        if node.get("id") != "MultiEffectInfos":
+            continue
+        a = _attrs(node)
+        effects = []
+        for info in node.iter("node"):
+            if info.get("id") != "EffectInfo":
+                continue
+            ia = _attrs(info)
+            bones = {"TargetBone": [], "SourceBone": []}
+            for b in info.iter("node"):
+                if b.get("id") in bones:
+                    v = _attrs(b).get("Value")
+                    if v:
+                        bones[b.get("id")].append(v)
+            effects.append({"resource": ia.get("EffectResourceGuid"), "start": ia.get("StartTextKey") or "",
+                            "target_bones": bones["TargetBone"], "source_bones": bones["SourceBone"]})
+        return a.get("UUID"), a.get("Name"), effects
+    return None
+
+
+def parse_effect_bank(path):
+    """Effect resources in a Content/Assets/Effects bank: (id, name, duration, looping, source_file)."""
+    for _, el in ET.iterparse(path, events=("end",)):
+        if el.tag != "node" or el.get("id") != "Resource":
+            continue
+        a = _attrs(el)
+        src = a.get("SourceFile") or ""
+        if a.get("ID") and src.lower().endswith(".lsfx"):
+            yield a["ID"], a.get("EffectName") or a.get("Name"), a.get("Duration"), a.get("Looping"), src
+        el.clear()

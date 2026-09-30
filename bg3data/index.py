@@ -7,7 +7,7 @@ import time
 from . import parse, sources
 
 DB = os.path.join(sources.CACHE, "index.sqlite")
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -29,21 +29,28 @@ CREATE INDEX IF NOT EXISTS prog_name ON prog(name);
 CREATE TABLE IF NOT EXISTS lists(layer TEXT, rank INT, source TEXT, node TEXT, uuid TEXT, name TEXT,
     attrs TEXT);
 CREATE INDEX IF NOT EXISTS lists_uuid ON lists(uuid);
+CREATE TABLE IF NOT EXISTS mei(layer TEXT, rank INT, source TEXT, uuid TEXT, name TEXT, effects TEXT);
+CREATE INDEX IF NOT EXISTS mei_uuid ON mei(uuid);
+CREATE TABLE IF NOT EXISTS fx(layer TEXT, rank INT, source TEXT, id TEXT, name TEXT, duration TEXT,
+    looping TEXT, source_file TEXT);
+CREATE INDEX IF NOT EXISTS fx_id ON fx(id);
 """
+TABLES = ("stats", "loca", "templates", "prog", "lists", "mei", "fx")
 
 LIST_NODES = ("SpellList", "PassiveList", "SkillList", "AbilityList", "EquipmentList")
 
 
 def connect():
     os.makedirs(sources.CACHE, exist_ok=True)
-    db = sqlite3.connect(DB)
+    # one shared connection used from MCP worker threads; callers serialise access with a lock
+    db = sqlite3.connect(DB, check_same_thread=False, isolation_level=None)
+    db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
     row = db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
     if not row or row[0] != SCHEMA_VERSION:
-        for t in ("layers", "stats", "loca", "templates", "prog", "lists"):
+        for t in ("layers",) + TABLES:
             db.execute(f"DELETE FROM {t}")
         db.execute("INSERT OR REPLACE INTO meta VALUES('schema', ?)", (SCHEMA_VERSION,))
-        db.commit()
     return db
 
 
@@ -56,12 +63,12 @@ def configured_layers(cfg):
 
 
 def _clear(db, layer):
-    for t in ("stats", "loca", "templates", "prog", "lists"):
+    for t in TABLES:
         db.execute(f"DELETE FROM {t} WHERE layer=?", (layer,))
 
 
 def _ingest(db, layer, base_rank, files_by_kind):
-    counts = {k: 0 for k in ("stats", "loca", "templates", "prog", "lists")}
+    counts = {k: 0 for k in TABLES}
     rank = base_rank
     for source, path in files_by_kind.get("stats", []):
         rows = []
@@ -107,6 +114,21 @@ def _ingest(db, layer, base_rank, files_by_kind):
                 rows.append((layer, rank, source, node, a.get("UUID"), a.get("Name"), json.dumps(a)))
         db.executemany("INSERT INTO lists VALUES(?,?,?,?,?,?,?)", rows)
         counts["lists"] += len(rows)
+    rows = []
+    for source, path in files_by_kind.get("mei", []):
+        m = parse.parse_multieffect(path)
+        if m and m[0]:
+            rank += 1
+            rows.append((layer, rank, source, m[0], m[1], json.dumps(m[2])))
+    db.executemany("INSERT INTO mei VALUES(?,?,?,?,?,?)", rows)
+    counts["mei"] += len(rows)
+    for source, path in files_by_kind.get("fxbanks", []):
+        rows = []
+        for fid, name, dur, loop, src in parse.parse_effect_bank(path):
+            rank += 1
+            rows.append((layer, rank, source, fid, name, dur, loop, src))
+        db.executemany("INSERT INTO fx VALUES(?,?,?,?,?,?,?,?)", rows)
+        counts["fx"] += len(rows)
     return counts
 
 
@@ -118,18 +140,24 @@ def build_layer(db, cfg, layer, log=print):
         sig, newest = sources.base_signature(cfg)
         log(f"[base] extracting from game paks (newest pak {sources.iso(newest)})")
         sources.extract_base(cfg, log=log)
-        files = {k: sources.base_files(cfg, k) for k in ("stats", "templates", "progressions", "lists")}
+        files = {k: sources.base_files(cfg, k) for k in ("stats", "templates", "progressions", "lists", "mei", "fxbanks")}
         files["loca"] = [("base/Localization", f) for f in sources.base_loca_files()]
     else:
         mod = layer["mod"]
         sig, newest = sources.mod_signature(cfg, mod)
         files = {k: [(name, f) for f in sources.mod_files(cfg, mod, k)]
-                 for k in ("stats", "templates", "progressions", "lists", "loca")}
-    _clear(db, name)
-    counts = _ingest(db, name, base_rank, files)
-    db.execute("INSERT OR REPLACE INTO layers VALUES(?,?,?,?,?,?,?,?)",
-               (name, layer["kind"], layer["path"], layer["order_idx"], sig, newest, time.time(), json.dumps(counts)))
-    db.commit()
+                 for k in ("stats", "templates", "progressions", "lists", "loca", "mei", "fxbanks")}
+    # atomic: a failure mid-ingest rolls back and leaves the previous index for this layer intact
+    db.execute("BEGIN")
+    try:
+        _clear(db, name)
+        counts = _ingest(db, name, base_rank, files)
+        db.execute("INSERT OR REPLACE INTO layers VALUES(?,?,?,?,?,?,?,?)",
+                   (name, layer["kind"], layer["path"], layer["order_idx"], sig, newest, time.time(), json.dumps(counts)))
+        db.execute("COMMIT")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
     log(f"[{name}] indexed {counts} in {time.time() - t0:.1f}s")
     return counts
 
@@ -142,17 +170,32 @@ def refresh(db=None, cfg=None, force=None, log=print):
     names = {l["name"] for l in wanted}
     for (old,) in db.execute("SELECT name FROM layers").fetchall():
         if old not in names:
+            db.execute("BEGIN")
             _clear(db, old)
             db.execute("DELETE FROM layers WHERE name=?", (old,))
-    rebuilt = []
+            db.execute("COMMIT")
+    rebuilt, errors = [], {}
     for layer in wanted:
         row = db.execute("SELECT signature, order_idx FROM layers WHERE name=?", (layer["name"],)).fetchone()
-        if layer["kind"] == "base":
-            sig, _ = sources.base_signature(cfg)
-        else:
-            sig, _ = sources.mod_signature(cfg, layer["mod"])
+        try:
+            if layer["kind"] == "base":
+                sig, _ = sources.base_signature(cfg)
+            else:
+                sig, _ = sources.mod_signature(cfg, layer["mod"])
+        except Exception as e:
+            errors[layer["name"]] = f"{type(e).__name__}: {e}"
+            log(f"[{layer['name']}] cannot read sources, keeping previous index: {errors[layer['name']]}")
+            continue
         if force and (force == "all" or layer["name"] in force) or not row or row[0] != sig or row[1] != layer["order_idx"]:
-            build_layer(db, cfg, layer, log=log)
-            rebuilt.append(layer["name"])
-    db.commit()
+            try:
+                build_layer(db, cfg, layer, log=log)
+                rebuilt.append(layer["name"])
+            except Exception as e:  # keep serving the old index for this layer (if there is one)
+                had = row is not None and db.execute("SELECT count(*) FROM stats WHERE layer=?", (layer["name"],)).fetchone()[0] > 0
+                errors[layer["name"]] = f"{type(e).__name__}: {e}" + ("" if had else " [NO previous index: layer is EMPTY]")
+                log(f"[{layer['name']}] rebuild FAILED: {errors[layer['name']]}")
+    refresh.last_errors = errors
     return rebuilt
+
+
+refresh.last_errors = {}

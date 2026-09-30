@@ -63,6 +63,11 @@ def main(argv=None):
     elif a.cmd == "similar":
         for n, dn, lvl, sch, kit in s.similar_spells(active, a.damage, a.school, a.spell_type, a.level, a.keyword, a.limit):
             print(f"{n} \"{dn}\" L{lvl} {sch}: " + ", ".join(f"{k}" for k in kit if "Effect" in k))
+    elif a.cmd == "effect":
+        print(fmt.effect(s, a.args[0].lower(), active))
+    elif a.cmd == "fxsearch":
+        for uuid, name, src, why, users in s.search_effects(a.args[0], active, a.limit):
+            print(f"{uuid} {name} [{src}, {why}]" + (" used by " + ", ".join(n for n, _ in users) if users else ""))
     else:
         ap.error(f"unknown command {a.cmd}")
 

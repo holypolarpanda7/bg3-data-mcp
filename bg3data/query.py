@@ -15,6 +15,14 @@ import re
 
 from . import index, sources
 
+GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def like(text):
+    """Escape LIKE wildcards so user input matches literally (use with ESCAPE '\\')."""
+    return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
 VISUAL_KEYS = re.compile(r"(Effect|Animation|Sound|Icon|Trajector|VerbalIntent|StyleGroup|Beam|Hit.*Type|Sheathing)", re.I)
 HANDLE = re.compile(r"^h[0-9a-z]{8}g[0-9a-z]{4}g[0-9a-z]{4}g[0-9a-z]{4}g[0-9a-z]{12}$|^h[0-9a-z]{20,40}$")
 
@@ -23,8 +31,12 @@ class Store:
     def __init__(self, refresh=True, log=print):
         self.db = index.connect()
         self.cfg = sources.load_config()
+        self._cache = {}
         if refresh:
             index.refresh(self.db, self.cfg, log=log)
+
+    def invalidate(self):
+        self._cache.clear()
 
     # ------------------------------------------------------------ layers
     def layer_rows(self):
@@ -50,6 +62,17 @@ class Store:
 
     def resolve(self, name, active, below_rank=None, _seen=None):
         """Return {'name','type','source','file','chain':[...], 'fields':{k:(value, source)}} or None."""
+        ck = (name, tuple(active), below_rank)
+        if _seen is None and ck in self._cache:
+            return self._cache[ck]
+        r = self._resolve(name, active, below_rank, _seen)
+        if _seen is None:
+            if len(self._cache) > 200_000:
+                self._cache.clear()
+            self._cache[ck] = r
+        return r
+
+    def _resolve(self, name, active, below_rank=None, _seen=None):
         _seen = _seen or set()
         key = (name, below_rank)
         if key in _seen:
@@ -79,11 +102,11 @@ class Store:
             sql += " AND type=?"
             args.append(type_)
         if field:
-            sql += " AND json_extract(data, ?) LIKE ?"
-            args += [f'$."{field}"', f"%{text}%"]
+            sql += " AND json_extract(data, ?) LIKE ? ESCAPE '\\'"
+            args += ['$."' + field.replace('"', '') + '"', like(text)]
         else:
-            sql += " AND (name LIKE ? OR data LIKE ?)"
-            args += [f"%{text}%", f"%{text}%"]
+            sql += " AND (name LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\')"
+            args += [like(text), like(text)]
         sql += " ORDER BY name LIMIT ?"
         args.append(limit * 4)
         seen, out = set(), []
@@ -98,14 +121,19 @@ class Store:
 
     def references(self, token, active, limit=100):
         w, p = self._where(active)
-        like = f"%{token}%"
+        pat = like(token)
         out = []
         for t, cols in (("stats", "name, layer, source"), ("templates", "coalesce(name, mapkey), layer, source"),
                         ("prog", "name || ' L' || level || ' ' || uuid, layer, source"),
                         ("lists", "coalesce(name, uuid), layer, source")):
             col = "data" if t == "stats" else "attrs"
-            for row in self.db.execute(f"SELECT {cols} FROM {t} WHERE {w} AND {col} LIKE ? LIMIT ?", p + [like, limit]):
+            name_col = "name" if t != "prog" else "uuid"
+            for row in self.db.execute(f"SELECT {cols} FROM {t} WHERE {w} AND ({col} LIKE ? ESCAPE '\\' OR {name_col}=?) LIMIT ?",
+                                       p + [pat, token, limit]):
                 out.append((t,) + row)
+        for row in self.db.execute(f"SELECT name, layer, source FROM mei WHERE {w} AND (uuid=? OR effects LIKE ? ESCAPE '\\') LIMIT ?",
+                                   p + [token, pat, limit]):
+            out.append(("effect",) + row)
         return out
 
     def diff(self, name, layer, active):
@@ -131,7 +159,7 @@ class Store:
 
     def loca_search(self, text, active, limit=30):
         w, p = self._where(active)
-        return self.db.execute(f"SELECT handle, text, source FROM loca WHERE {w} AND text LIKE ? LIMIT ?", p + [f"%{text}%", limit]).fetchall()
+        return self.db.execute(f"SELECT handle, text, source FROM loca WHERE {w} AND text LIKE ? ESCAPE '\\' LIMIT ?", p + [like(text), limit]).fetchall()
 
     def display_name(self, fields, active):
         h = fields.get("DisplayName", ("",))[0]
@@ -214,4 +242,64 @@ class Store:
             out.append((n, dn, f.get("Level", ""), f.get("SpellSchool", ""), kit))
             if len(out) >= limit:
                 break
+        return out
+
+    # ------------------------------------------------------------ effects (phase 2)
+    def fx_resource(self, rid, active):
+        w, p = self._where(active)
+        return self.db.execute(f"SELECT name, duration, looping, source_file, source FROM fx WHERE id=? AND {w} ORDER BY rank DESC LIMIT 1",
+                               [rid] + p).fetchone()
+
+    def effect(self, guid, active):
+        """Resolve a MultiEffectInfo GUID (what stats *Effect fields hold) or an effect resource GUID."""
+        w, p = self._where(active)
+        row = self.db.execute(f"SELECT uuid, name, effects, source FROM mei WHERE uuid=? AND {w} ORDER BY rank DESC LIMIT 1",
+                              [guid] + p).fetchone()
+        if row:
+            uuid, name, effects, source = row
+            parts = []
+            for e in json.loads(effects):
+                r = self.fx_resource(e.get("resource"), active) if e.get("resource") else None
+                parts.append({**e, "name": r[0] if r else None, "duration": r[1] if r else None,
+                              "looping": r[2] if r else None, "file": r[3] if r else None})
+            return {"kind": "MultiEffectInfo", "uuid": uuid, "name": name, "source": source, "effects": parts}
+        r = self.fx_resource(guid, active)
+        if r:
+            return {"kind": "EffectResource", "uuid": guid, "name": r[0], "duration": r[1], "looping": r[2], "file": r[3], "source": r[4]}
+        return None
+
+    def effect_name(self, guid, active):
+        e = self.effect(guid, active)
+        return e["name"] if e else None
+
+    def effect_users(self, guid, active, limit=30):
+        w, p = self._where(active)
+        rows = self.db.execute(f"SELECT DISTINCT name, type FROM stats WHERE {w} AND data LIKE ? ESCAPE '\\' LIMIT ?",
+                               p + [like(guid), limit]).fetchall()
+        return rows
+
+    def search_effects(self, text, active, limit=30):
+        """MultiEffectInfos whose own name or any component effect name contains `text`."""
+        w, p = self._where(active)
+        # every word must appear, in any order ("necrotic beam" matches ..._Necrotic_..._Beam_...)
+        words = [t for t in re.split(r"[\s_]+", text) if t]
+        cond = " AND ".join("name LIKE ? ESCAPE '\\'" for _ in words) or "1"
+        pats = [like(t) for t in words]
+        hits = {}
+        for uuid, name, source in self.db.execute(f"SELECT uuid, name, source FROM mei WHERE {w} AND {cond} LIMIT ?",
+                                                  p + pats + [limit * 4]):
+            hits.setdefault(uuid, (name, source, "name"))
+        fx_ids = [r[0] for r in self.db.execute(f"SELECT id FROM fx WHERE {w} AND {cond} LIMIT 2000", p + pats)]
+        for i in range(0, len(fx_ids), 400):
+            chunk = fx_ids[i:i + 400]
+            cond = " OR ".join("effects LIKE ?" for _ in chunk)
+            for uuid, name, source in self.db.execute(f"SELECT uuid, name, source FROM mei WHERE {w} AND ({cond})",
+                                                      p + [f"%{c}%" for c in chunk]):
+                hits.setdefault(uuid, (name, source, "component"))
+            if len(hits) >= limit * 4:
+                break
+        out = []
+        for uuid, (name, source, why) in list(hits.items())[: limit]:
+            users = self.effect_users(uuid, active, limit=5)
+            out.append((uuid, name, source, why, users))
         return out

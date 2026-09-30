@@ -2,17 +2,43 @@
 import json
 import time
 
-from . import sources
+from . import index, sources
 
 
 def layers(store):
     lines = ["Layers (load order; base always included):"]
     for name, kind, path, order, newest, indexed, counts in store.layer_rows():
         c = json.loads(counts)
-        lines.append(f"  {order}. {name} [{kind}] sources newest {sources.iso(newest)}, indexed {sources.iso(indexed)}"
-                     f" | stats {c['stats']}, loca {c['loca']}, templates {c['templates']}, progression nodes {c['prog']}, lists {c['lists']}")
+        lines.append(f"  {order}. {name} [{kind}] sources newest {sources.iso(newest)}, indexed {sources.iso(indexed)}")
+        lines.append("     " + ", ".join(f"{k} {c.get(k, 0)}" for k in ("stats", "loca", "templates", "prog", "lists", "mei", "fx")))
         lines.append(f"     {path}")
+    errs = getattr(index.refresh, "last_errors", {})
+    for name, err in errs.items():
+        lines.append(f"  !! {name}: last rebuild failed: {err}")
     return "\n".join(lines)
+
+
+def effect(store, guid, active):
+    e = store.effect(guid, active)
+    if not e:
+        return f"no MultiEffectInfo or effect resource with GUID {guid}"
+    if e["kind"] == "EffectResource":
+        out = [f"EffectResource {e['name']} ({guid}) [{e['source']}]", f"  duration {e['duration']}, looping {e['looping']}", f"  file {e['file']}"]
+    else:
+        out = [f"MultiEffectInfo {e['name']} ({guid}) [{e['source']}]"]
+        for c in e["effects"]:
+            bones = ", ".join(c["target_bones"] + [f"src:{b}" for b in c["source_bones"]])
+            try:
+                dur = f"  {float(c['duration']):.1f}s" if c.get("duration") else ""
+            except (TypeError, ValueError):
+                dur = f"  {c['duration']}s"
+            label = c["name"] or f"{c.get('resource') or '?'} [resource not indexed]"
+            out.append(f"  - {label}" + (f"  start={c['start']}" if c.get("start") else "") + (f"  bones={bones}" if bones else "")
+                       + dur + ("  looping" if c.get("looping") == "True" else ""))
+    users = store.effect_users(guid, active)
+    if users:
+        out.append("used by: " + ", ".join(f"{n} ({t})" for n, t in users))
+    return "\n".join(out)
 
 
 def entry(store, name, active, provenance=True):

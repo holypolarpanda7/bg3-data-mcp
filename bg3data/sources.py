@@ -14,7 +14,9 @@ import subprocess
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CACHE = os.path.join(ROOT, "cache")
+# Keep the cache on the Linux filesystem: fast, and directory renames are reliable there (they
+# fail on /mnt/* Windows drives while Divine.exe still holds handles). Override with BG3_DATA_CACHE.
+CACHE = os.environ.get("BG3_DATA_CACHE", os.path.join(os.path.expanduser("~"), ".cache", "bg3-data-mcp", "cache"))
 CONFIG = os.path.join(ROOT, "layers.json")
 
 BASE_GLOBS = [
@@ -24,12 +26,23 @@ BASE_GLOBS = [
     "Public/*/Progressions/Progressions.lsx",
     "Public/*/Lists/*.lsf",
     "Public/*/Lists/*.lsx",
+    "Public/*/MultiEffectInfos/*.lsf",
+    "Public/*/Content/Assets/Effects/*_merged.lsf",
 ]  # Divine's -x glob has no [..] classes, so list each extension
+
+
+class ConfigError(RuntimeError):
+    pass
 
 
 def load_config():
     with open(CONFIG, encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    if not os.path.isfile(cfg.get("divine", "")):
+        raise ConfigError(f"Divine.exe not found at {cfg.get('divine')!r} (layers.json 'divine'); LSLib v1.20.4+ is required")
+    if not os.path.isdir(cfg["base"]["game_data"]):
+        raise ConfigError(f"game Data folder not found: {cfg['base']['game_data']!r} (layers.json base.game_data)")
+    return cfg
 
 
 def save_config(cfg):
@@ -78,7 +91,8 @@ def base_signature(cfg):
 
 def extract_base(cfg, log=print):
     """Extract the indexable files from every base pak into cache/base/<pak>/ and convert to text."""
-    out_root = os.path.join(CACHE, "base")
+    final_root = os.path.join(CACHE, "base")
+    out_root = os.path.join(CACHE, "base.tmp")
     if os.path.isdir(out_root):
         shutil.rmtree(out_root)
     os.makedirs(out_root)
@@ -100,15 +114,16 @@ def extract_base(cfg, log=print):
     divine(cfg, "-a", "extract-package", "-s", winpath(loca_pak), "-d", winpath(loca_dir), "-x", "*english.loca")
     for f in glob.glob(os.path.join(loca_dir, "**", "*.loca"), recursive=True):
         divine(cfg, "-a", "convert-loca", "-s", winpath(f), "-d", winpath(f[:-5] + ".xml"))
-    return out_root
+    if os.path.isdir(final_root):
+        shutil.rmtree(final_root)
+    os.replace(out_root, final_root)
+    return final_root
 
 
 def convert_lsf_tree(cfg, root):
-    """Convert every .lsf under root to a sibling .lsx (skipping ones already converted)."""
-    for f in glob.glob(os.path.join(root, "**", "*.lsf"), recursive=True):
-        target = f[:-4] + ".lsx"
-        if not os.path.exists(target) or os.path.getmtime(target) < os.path.getmtime(f):
-            divine(cfg, "-a", "convert-resource", "-s", winpath(f), "-d", winpath(target))
+    """Batch-convert every .lsf under root to a sibling .lsx (one Divine call)."""
+    if glob.glob(os.path.join(root, "**", "*.lsf"), recursive=True):
+        divine(cfg, "-a", "convert-resources", "-s", winpath(root), "-d", winpath(root), "-i", "lsf", "-o", "lsx")
 
 
 def module_of(path):
@@ -132,10 +147,12 @@ def base_files(cfg, kind):
         "templates": "Public/*/RootTemplates/_merged.lsx",
         "progressions": "Public/*/Progressions/Progressions.lsx",
         "lists": "Public/*/Lists/*.lsx",
+        "mei": "Public/*/MultiEffectInfos/*.lsx",
+        "fxbanks": "Public/*/Content/Assets/Effects/**/_merged.lsx",
     }
     found = []
     for pak_dir in [os.path.join(root, os.path.splitext(os.path.basename(p))[0]) for p in base_paks(cfg)]:
-        for f in sorted(glob.glob(os.path.join(pak_dir, pats[kind]))):
+        for f in sorted(glob.glob(os.path.join(pak_dir, pats[kind]), recursive=True)):
             mod = module_of(f)
             if mod in excl:
                 continue
@@ -176,22 +193,36 @@ def mod_files(cfg, mod, kind):
         "progressions": ["Public/*/Progressions/Progressions.lsx", "Public/*/Progressions/Progressions.lsf"],
         "lists": ["Public/*/Lists/*.lsx", "Public/*/Lists/*.lsf"],
         "loca": ["Mods/*/Localization/English/*.xml"],
+        "mei": ["Public/*/MultiEffectInfos/*.lsx", "Public/*/MultiEffectInfos/*.lsf"],
+        "fxbanks": ["Public/*/Content/Assets/Effects/**/_merged.lsx", "Public/*/Content/Assets/Effects/**/_merged.lsf"],
     }
     files = []
+    if not os.path.isdir(root):
+        raise FileNotFoundError(f"mod layer '{mod['name']}': path not found: {root}")
     for p in pats[kind]:
-        files += glob.glob(os.path.join(root, p))
-    if kind in ("templates", "progressions", "lists"):
+        files += glob.glob(os.path.join(root, p), recursive=True)
+    if kind in ("templates", "progressions", "lists", "mei", "fxbanks"):
         lsx = {f[:-4] for f in files if f.endswith(".lsx")}
         need = [f for f in files if f.endswith(".lsf") and f[:-4] not in lsx]
         if need:
             conv = os.path.join(CACHE, "mods", mod["name"] + "_lsx")
+            stale = []
             for f in need:
-                rel = os.path.relpath(f, root)
-                target = os.path.join(conv, rel[:-4] + ".lsx")
+                target = os.path.join(conv, os.path.relpath(f, root)[:-4] + ".lsx")
                 if not os.path.exists(target) or os.path.getmtime(target) < os.path.getmtime(f):
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    divine(cfg, "-a", "convert-resource", "-s", winpath(f), "-d", winpath(target))
+                    stale.append(f)
                 files.append(target)
+            if stale:
+                # stage the stale .lsf files and convert them in one batch
+                stage = os.path.join(CACHE, "mods", mod["name"] + "_stage")
+                if os.path.isdir(stage):
+                    shutil.rmtree(stage)
+                for f in stale:
+                    dst = os.path.join(stage, os.path.relpath(f, root))
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(f, dst)
+                divine(cfg, "-a", "convert-resources", "-s", winpath(stage), "-d", winpath(conv), "-i", "lsf", "-o", "lsx")
+                shutil.rmtree(stage)
         files = [f for f in files if f.endswith(".lsx")] if kind != "loca" else files
     return sorted(files)
 
@@ -200,11 +231,14 @@ def mod_signature(cfg, mod):
     path = mod["path"]
     if path.lower().endswith(".pak"):
         return json.dumps([int(os.path.getmtime(path)), os.path.getsize(path)]), os.path.getmtime(path)
+    if not os.path.isdir(path):
+        return json.dumps(["missing", path]), 0
     files = []
     for kind in ("stats", "loca"):
         files += mod_files(cfg, mod, kind)
-    for pat in ["Public/*/RootTemplates/*.ls[fx]", "Public/*/Progressions/*.ls[fx]", "Public/*/Lists/*.ls[fx]"]:
-        files += glob.glob(os.path.join(path, pat))
+    for pat in ["Public/*/RootTemplates/*.ls[fx]", "Public/*/Progressions/*.ls[fx]", "Public/*/Lists/*.ls[fx]",
+                "Public/*/MultiEffectInfos/*.ls[fx]", "Public/*/Content/Assets/Effects/**/_merged.ls[fx]"]:
+        files += glob.glob(os.path.join(path, pat), recursive=True)
     stats = sorted((os.path.relpath(f, path), int(os.path.getmtime(f)), os.path.getsize(f)) for f in files)
     newest = max((s[1] for s in stats), default=0)
     return json.dumps(stats), newest
