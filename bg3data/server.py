@@ -652,6 +652,43 @@ def bg3_ingame_check(layer: str, layers: list[str] | None = None) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------- Larian Toolkit
+# mod.io publishing goes through the Toolkit, which edits its own copy under Editor/Mods/<mod>/. These keep
+# that copy generated from (and in step with) the game-ready files. Formats/mappings are learned from the
+# vanilla editor data and mods shipping both copies (validated: 99.7% of dnd55e's 8107 objects reproduced).
+
+@mcp.tool()
+@guarded
+def bg3_toolkit_status(layer: str) -> str:
+    """Where the Larian Toolkit expects this mod (Data/Projects, Mods, Public, Editor/Mods): present or missing,
+    linked to the repo or a separate copy, file counts, and the meta.lsx version (mod.io readiness)."""
+    from . import toolkit
+    return toolkit.status(layer)
+
+
+@mcp.tool()
+@guarded
+def bg3_toolkit_check(layer: str, dest: str = "toolkit", limit: int = 80) -> str:
+    """Compare the mod's Toolkit editor copy (dest='toolkit': <game>/Data/Editor/Mods/<mod>; 'repo':
+    <mod>/Editor/Mods/<mod>) with an export of its game-ready files: missing/extra objects and differing
+    fields per file. Run before publishing; 0 problems = both copies say the same."""
+    from . import toolkit
+    s = store()
+    return toolkit.check(s, s.active(None), layer, dest, _limit(limit, 80, 1000))
+
+
+@mcp.tool()
+@guarded
+def bg3_toolkit_export(layer: str, dest: str = "toolkit", write: bool = False) -> str:
+    """Generate the Toolkit editor copy (.stats for stats, .tbl for lists/progressions/resources/classes/
+    level maps/feats) from the mod's game-ready files. Existing editor UUIDs are kept. write=False is a dry
+    run listing files, object counts and warnings; write=True writes them (dest 'toolkit' or 'repo').
+    Close the Toolkit first: it overwrites files it has open."""
+    from . import toolkit
+    s = store()
+    return toolkit.export(s, s.active(None), layer, dest, dry_run=not write)
+
+
 def main():
     mcp.run(transport="stdio")
 

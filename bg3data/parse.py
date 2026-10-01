@@ -97,6 +97,16 @@ def parse_nodes(path, node_id):
                     sub.append(_attrs(c).get("Object"))
             if sub:
                 a["_SubClasses"] = ";".join(filter(None, sub))
+            # other child lists of single-Object nodes (ClassDescription Tags, ...) -> "_<ChildId>"
+            ch = el.find("children")
+            for c in ([] if ch is None else ch.findall("node")):
+                cid = c.get("id")
+                if cid == "SubClasses":
+                    continue
+                ca = _attrs(c)
+                if set(ca) == {"Object"}:
+                    key = "_" + cid
+                    a[key] = (a[key] + ";" if key in a else "") + (ca["Object"] or "")
             yield a
 
 

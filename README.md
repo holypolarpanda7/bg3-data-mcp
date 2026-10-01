@@ -47,6 +47,7 @@ minute. Rebuilds are atomic: a failed rebuild keeps serving the previous index a
 | `bg3_level_up(levels)` / `bg3_level_check` | grant exactly the XP for the next level; compare the host with its class/subclass progressions |
 | `bg3_test_list` / `bg3_test_script` / `bg3_test_stage` / `bg3_test_verify` / `bg3_test_cleanup` | data-driven in-game test cases (TOML in the mod repo) run as real encounters: see [docs/TESTING.md](docs/TESTING.md) |
 | `bg3_lint_stats(layer)` / `bg3_lint_progressions(layer)` | static checks before deploying: values the engine silently drops (vocabulary learned from the other layers), missing references, unknown resources; progression UUIDs, dangling lists, stacked choices |
+| `bg3_toolkit_status` / `bg3_toolkit_export` / `bg3_toolkit_check` | Larian Toolkit (mod.io publishing): where the Toolkit expects the mod, generate its editor copy (.stats/.tbl) from the game-ready files, and diff the two copies - formats learned from vanilla + dnd55e editor data |
 | `bg3_ingame_check(layer)` | every stats entry a layer defines vs what the running game loaded (invalid values the engine dropped) |
 
 ## Setup
