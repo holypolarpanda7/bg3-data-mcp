@@ -66,6 +66,7 @@ target = "A"                 # "host", a spawn alias, or "ground" (cast at a poi
 mode = "auto"                # default; or "player" / "script"
 prep = "..."                 # optional: shown as "Before casting: ..."
 grant_passive = "Feature"     # optional action instead of/before a spell: add a passive after the before-snapshot
+repeat = 4                    # optional (auto/script): cast the spell N times, repeat_wait seconds apart (default 3)
 instructions = "..."         # optional: extra step after the cast step
 notes = "..."                # optional: shown at the end of the case
 combat = true                # default: true when any spawn is hostile
@@ -89,11 +90,19 @@ expect = [
   { target = "host", status_removed = ["FRIGHTENED"] },     # present before, gone after
   { target = "host", status_present = ["X"], status_absent = ["Y"] },
   { resource = "SpellSlot", level = 1, change = -1 },       # host by default; level 0 for non-slot resources
+  { roll = "ath", pass = [30, 30] },                        # passes out of a `rolls` batch (below)
 ]
+rolls = [{ as = "ath", type = "SkillCheck", id = "Athletics", dc = 8, n = 30 }]  # real passive rolls by the host
+                             # after setup (SavingThrow/SkillCheck/RawAbility); add a control batch (another
+                             # ability/skill) to show a boost doesn't leak
 ```
 Templates: `wolf`, `boar`, `bear`, `skeleton`, `zombie`, or any root-template GUID. Factions: `hostile`,
 `friendly`, `neutral`, or a faction GUID. `bg3_test_list` validates every case against the index
 (unknown spells, statuses, aliases, keys).
+
+Scripted casts (`Osi.UseSpell`) skip the target's saving throw: the effect lands as if the save failed (seen
+in game 2026-10-01: a wolf's Bash knocked the host prone 25/25 with no save in the combat log). Test save
+modifiers with `rolls`, or with a real enemy turn, not with a scripted save spell.
 
 ## How it works
 The harness (`bg3data/lua/harness.lua`) is written as a loose file under `<game>/Data/Public/BG3DataTest/`

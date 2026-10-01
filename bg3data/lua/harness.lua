@@ -17,6 +17,7 @@ T.events = T.events or {}
 T.seq = T.seq or 0
 T.recording = T.recording or false
 T.safety = T.safety or { enabled = true, floor = 35, tripped = false }
+T.rolls = T.rolls or {}        -- tag -> { pass, fail, n } from passive rolls requested by T.roll
 
 local NULL = "NULL_00000000-0000-0000-0000-000000000000"
 
@@ -201,6 +202,32 @@ function T.castAt(caster, spell, dx)
     Osi.UseSpellAtPosition(caster, spell, x + (dx or 3), y, z, 1)
 end
 
+-- ------------------------------------------------------------------ passive rolls
+-- A DifficultyClass GUID whose (first) difficulty is `value` (the game ships Legacy_<n> ones).
+function T.dc(value)
+    local best
+    for _, g in ipairs(Ext.StaticData.GetAll("DifficultyClass")) do
+        local d = Ext.StaticData.Get(g, "DifficultyClass")
+        if d and d.Difficulties and d.Difficulties[1] == value then
+            if tostring(d.Name):find("Legacy_", 1, true) == 1 then return g end
+            best = best or g
+        end
+    end
+    return best
+end
+
+-- Request n passive rolls (rollType SavingThrow/SkillCheck/RawAbility, id Strength/Athletics/...) against DC
+-- `dc`; results tally into T.rolls[tag] through RollResult. Real engine rolls with every boost applied
+-- (MinimumRollResult, RollBonus, advantage). Note: a passive save sets no CheckedAbility/HitDescription,
+-- so save boosts conditioned on the ability don't apply to it (seen in game 2026-10-01).
+function T.roll(tag, rollType, id, dc, n, roller)
+    local g = T.dc(dc)
+    if not g then return nil, "no DifficultyClass with value " .. tostring(dc) end
+    T.rolls[tag] = { pass = 0, fail = 0, n = n }
+    for _ = 1, n do Osi.RequestPassiveRoll(uuid(roller) or T.host(), NULL, rollType, id, g, 0, "BG3T_ROLL_" .. tag) end
+    return g
+end
+
 function T.drain(since)
     local out = {}
     for _, ev in ipairs(T.events) do if ev.seq > (since or 0) then out[#out + 1] = ev end end
@@ -288,10 +315,16 @@ T.on = {
         if isTracked(ch) or Osi.IsPartyMember(ch, 1) == 1 then push({ kind = "LeveledUp", who = uuid(ch), level = Osi.GetLevel(ch) }) end
     end,
     HitpointsChanged = function(entity, pct) safetyCheck(entity, pct) end,
+    RollResult = function(ev, roller, subject, result)
+        if type(ev) == "string" and ev:sub(1, 10) == "BG3T_ROLL_" then
+            local r = T.rolls[ev:sub(11)]
+            if r then if result == 1 then r.pass = r.pass + 1 else r.fail = r.fail + 1 end end
+        end
+    end,
 }
 
 local ARITY = { StatusApplied = 4, StatusRemoved = 4, CastedSpell = 5, UsingSpellOnTarget = 6, AttackedBy = 7, Died = 1,
-                TurnStarted = 1, CombatStarted = 1, CombatEnded = 1, LeveledUp = 1, HitpointsChanged = 2 }
+                TurnStarted = 1, CombatStarted = 1, CombatEnded = 1, LeveledUp = 1, HitpointsChanged = 2, RollResult = 6 }
 T.listen_errors = {}
 T.registered = T.registered or {}
 for name, arity in pairs(ARITY) do

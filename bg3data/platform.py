@@ -184,6 +184,15 @@ def tasklist():
         return ""
 
 
+def not_responding(images=("bg3_dx11.exe", "bg3.exe")):
+    """Images whose window Windows reports as Not Responding (a hung load looks like this, not like a crash)."""
+    try:
+        out = run_win(["tasklist.exe" if IS_WSL else "tasklist", "/fi", "STATUS eq NOT RESPONDING"], timeout=20).stdout.lower()
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [i for i in images if i in out]
+
+
 def launch_detached(exe, args):
     """Start a Windows program without waiting for it."""
     if IS_WINDOWS:

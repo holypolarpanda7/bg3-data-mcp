@@ -336,7 +336,9 @@ def find_case(layer, case_id):
 
 
 EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
-               "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change"}
+               "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
+               "roll", "pass"}
+ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
 def validate(store, active, c):
@@ -364,6 +366,16 @@ def validate(store, active, c):
             errs.append(f"expect: unknown keys {sorted(bad)}")
         if e.get("target", "host") not in aliases:
             errs.append(f"expect target {e.get('target')!r} unknown")
+    tags = set()
+    for r in c.get("rolls", []):
+        tags.add(r.get("as"))
+        if r.get("type") not in ROLL_TYPES:
+            errs.append(f"rolls {r.get('as')}: type must be one of {sorted(ROLL_TYPES)}")
+        if not r.get("id") or not isinstance(r.get("dc"), int):
+            errs.append(f"rolls {r.get('as')}: needs id (ability or skill) and an integer dc")
+    for e in c.get("expect", []):
+        if "roll" in e and e["roll"] not in tags:
+            errs.append(f"expect roll {e['roll']!r} isn't a rolls alias")
     for st in c.get("setup", []):
         for s in ([st.get("status")] if st.get("status") else []):
             if not store.resolve(s, active):
@@ -516,12 +528,19 @@ def stage(store, active, layer, case_id):
     _save_state(state)
     if c.get("grant_passive"):  # the case's action is gaining a feature (e.g. a boon's max HP increase)
         lua(f"BG3T.addPassive(BG3T.host(), {se._lua_string(c['grant_passive'])}); return true")
+    for r in c.get("rolls", []):  # passive rolls after setup (any mode), tallied by the harness
+        lua(f"BG3T.roll({se._lua_string(r['as'])}, {se._lua_string(r['type'])}, {se._lua_string(r['id'])}, "
+            f"{int(r['dc'])}, {int(r.get('n', 20))}); return true")
     if mode in ("auto", "script") and c.get("spell"):
         if c.get("target") == "ground":
             lua(f"BG3T.castAt(BG3T.host(), {se._lua_string(c['spell'])}, {float(c.get('distance', 3))}); return true")
         else:
             tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
-            lua(f"BG3T.cast(BG3T.host(), {se._lua_string(c['spell'])}, {tgt}); return true")
+            # repeat = N casts the spell N times, `repeat_wait` seconds apart (e.g. an Extra Attack chain)
+            for i in range(max(1, int(c.get("repeat", 1)))):
+                if i:
+                    time.sleep(float(c.get("repeat_wait", 3)))
+                lua(f"BG3T.cast(BG3T.host(), {se._lua_string(c['spell'])}, {tgt}); return true")
     return {"ok": True, "case": c, "notes": notes, "combat": combat, "first_turn": first_turn,
             "spell_name": _name(store, active, c["spell"]) if c.get("spell") else None, "before": before}
 
@@ -607,6 +626,16 @@ def verify(store, active, cleanup=True, wait=2.0):
         if e.get("damage_type"):
             hits = [x for x in events if x.get("kind") == "Damage" and x.get("who") == guid]
             row(any(x.get("type") == e["damage_type"] for x in hits), f"{label} took {e['damage_type']} damage (seen: {sorted({x.get('type') for x in hits}) or 'none'})")
+    if any("roll" in e for e in c.get("expect", [])):
+        tallies = lua("return BG3T.rolls", timeout=30) or {}
+        for e in c.get("expect", []):
+            if "roll" in e:
+                t_ = tallies.get(e["roll"]) or {}
+                lo, hi = e.get("pass", [0, 10 ** 6])
+                got, n = t_.get("pass", 0), t_.get("n", 0)
+                done = got + t_.get("fail", 0)
+                row(lo <= got <= hi and done == n, f"roll {e['roll']}: {got}/{n} passed, expected [{lo}, {hi}]"
+                    + ("" if done == n else f" (only {done} results came back)"))
     safety = [x for x in events if x.get("kind") == "SAFETY"]
     where = " in real combat (initiative)" if state["combat"] else " out of combat"
     fid = ("player cast" + where) if player else ("scripted cast" + where + "; costs checked against the loaded UseCosts, not charged"
@@ -1081,9 +1110,16 @@ def _tasklist():
     return platform.tasklist()
 
 
-def kill_game():
+def kill_game(graceful=True):
+    """Stop the game: a clean Quit through its own UI first (a killed load makes the next launch start in a
+    no-mods safe mode), taskkill if that doesn't work (hung game, no Script Extender)."""
     _, g = game_cfg()
     killed = []
+    running = [p for p in g["processes"] if p.lower() in _tasklist()]
+    if graceful and running:
+        from . import gameui, platform
+        if not platform.not_responding() and gameui.quit_game(g["processes"], _tasklist):
+            return [p + " (quit cleanly)" for p in running]
     for p in g["processes"]:
         if p.lower() in _tasklist():
             from . import platform
@@ -1094,6 +1130,41 @@ def kill_game():
             break
         time.sleep(1)
     return killed
+
+
+def _unstick_menu(log, relaunched):
+    """The game is up but no save is loaded: dismiss the splash, continue from the main menu, and get out of the
+    no-mods safe mode (clean quit + relaunch, once) that follows a killed or hung load."""
+    from . import deploy, gameui, sources as src
+    ui = gameui.screen()
+    if not ui:
+        return None
+    if "SplashScreen" in ui:
+        gameui.press_key()
+        log.append("splash screen: pressed Enter")
+        return "key"
+    if "MainMenu" in ui and "Dialog_box" not in ui:
+        loaded = set(gameui.loaded_modules() or [])
+        want = {}
+        for m in src.load_config()["mods"]:
+            try:
+                want[m["name"]] = deploy.mod_info(m["name"])[2]["UUID"]
+            except (ValueError, OSError):
+                pass
+        missing = [n for n, u in want.items() if u and u not in loaded]
+        if missing and loaded:
+            if relaunched:
+                log.append(f"main menu without mods {', '.join(missing)} again - check the in-game mod manager")
+                return None
+            log.append(f"main menu in no-mods safe mode (not loaded: {', '.join(missing)}): quitting cleanly to relaunch")
+            _, g = game_cfg()
+            return "relaunch" if gameui.quit_game(g["processes"], _tasklist) else None
+        gameui.main_menu_command("ContinueGameCommand")
+        log.append("main menu: pressed Continue")
+        return "continue"
+    if "Dialog_box" in ui:
+        log.append(f"a message box is open ({', '.join(ui)}) - not answering it automatically")
+    return None
 
 
 def newest_save():
@@ -1140,6 +1211,7 @@ def restart(deploy_layer=None, launch=True, timeout=300):
     else:
         return "\n".join(log + ["no launcher: set game.launcher / game.game_exe in layers.json"])
     t0 = time.time()
+    last_ui, relaunched = 0, False
     while time.time() - t0 < timeout:
         time.sleep(5)
         try:
@@ -1149,14 +1221,30 @@ def restart(deploy_layer=None, launch=True, timeout=300):
                 return "\n".join(log)
         except (RuntimeError, TimeoutError):
             pass
+        if time.time() - t0 > 45 and time.time() - last_ui > 20:  # no session yet: see what the game shows
+            last_ui = time.time()
+            note = _unstick_menu(log, relaunched)
+            if note == "relaunch":
+                relaunched = True
+                if g["launcher"] == "steam" and g.get("steam_exe"):
+                    platform.launch_detached(g["steam_exe"], ["-applaunch", str(g["app_id"])] + g["launch_args"])
+                elif g.get("game_exe"):
+                    platform.launch_detached(g["game_exe"], g["launch_args"])
+                log.append("relaunched after a clean quit")
+                t0 = time.time()
     state = ""
-    try:
-        name, lines = se.log_tail(None, 40)
-        if any("Cannot queue server commands in game state Uninitialized" in l for l in lines):
-            state = (" The game is at the MAIN MENU (no server session): -continueGame didn't load the save, usually "
-                     "because a dialog is waiting (e.g. the save was made with a different mod build). Accept it or "
-                     "load the save by hand.")
-    except RuntimeError:
-        pass
+    hung = platform.not_responding()
+    if hung:
+        state = (f" The game window is NOT RESPONDING ({', '.join(hung)}): it hung while loading. Suspect the last "
+                 "deploy (a new .khn/stats/Lua file); bisect by removing the change and restarting.")
+    else:
+        try:
+            name, lines = se.log_tail(None, 40)
+            if any("Cannot queue server commands in game state Uninitialized" in l for l in lines):
+                state = (" No server session yet (main menu, or a load still running): -continueGame didn't load the "
+                         "save, often because a dialog is waiting (e.g. the save was made with a different mod build). "
+                         "Accept it or load the save by hand.")
+        except RuntimeError:
+            pass
     log.append(f"not loaded within {timeout}s.{state or ' Check the game window (main menu? crash?)'}")
     return "\n".join(log)

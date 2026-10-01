@@ -7,7 +7,8 @@ plus any mod layers below): a value no shipped content ever uses is very likely 
 
 Checks for every entry a layer defines:
   - enum fields (Cooldown, StatsFunctorContext, RemoveEvents, SpellFlags, TickType, ...): unknown values
-  - functors / conditions / boosts (any `Name(` in an expression field): unknown names
+  - functors / conditions / boosts (any `Name(` in an expression field): unknown names (functions defined in any
+    active layer's Scripts/thoth/helpers/*.khn count as known)
   - references: statuses in ApplyStatus/RemoveStatus/DownedStatus, UnlockSpell/UnlockInterrupt, using,
     ContainerSpells, SpellContainerID: must exist in the active layers
   - resources in UseCosts/Cost/HitCosts and ActionResource(...): must be used or defined somewhere
@@ -40,7 +41,7 @@ TARGET_ARGS = {"SELF", "SWAP", "TARGET", "SOURCE", "OBSERVER_OBSERVER", "OBSERVE
                "CASTER", "OWNER", "GROUND", "AI_ONLY", "AI_IGNORE"}
 CALL = re.compile(r"(?<![\w.])([A-Z][A-Za-z0-9_]*)\s*\(")
 STATUS_REF = re.compile(r"\b(ApplyStatus|RemoveStatus|DownedStatus|StatusImmunity|RemoveUniqueStatus|ApplyEquipmentStatus)\(([^)]*)\)")
-UNLOCK_REF = re.compile(r"\b(UnlockSpell|UnlockInterrupt|UnlockSpellVariant)\(\s*([A-Za-z0-9_]+)")
+UNLOCK_REF = re.compile(r"\b(UnlockSpell|UnlockInterrupt)\(\s*([A-Za-z0-9_]+)")  # UnlockSpellVariant takes conditions, not a spell
 RES_COST = re.compile(r"([A-Za-z][A-Za-z0-9_]*):\d")
 RES_BOOST = re.compile(r"\bActionResource(?:Override|Multiplier|Block|ReplenishTypeOverride)?\(\s*([A-Za-z][A-Za-z0-9_]*)")
 
@@ -91,6 +92,9 @@ def vocabulary(store, active, layer):
                 resources.update(RES_COST.findall(v))
             resources.update(RES_BOOST.findall(v))
     resources |= _resource_names(store.cfg, active)
+    # functions defined in any active layer's .khn helpers (including this layer's own) are callable
+    wk, pk = store._where(active)
+    calls |= {n for (n,) in store.db.execute(f"SELECT DISTINCT name FROM staticdata WHERE kind='KhnFunction' AND {wk}", pk) if n}
     wr, pr = store._where(active)
     resources |= {n for (n,) in store.db.execute(f"SELECT DISTINCT name FROM staticdata WHERE kind='ActionResourceDefinition' AND {wr}", pr) if n}
     wa, pa = store._where(active)
@@ -161,6 +165,11 @@ def lint_stats(store, active, layer, limit=200):
         if not fl or fl.get("ContainerSpells", ("",))[0] or not fl.get("DisplayName", ("",))[0]:
             continue
         if "ImmediateCast" in (fl.get("SpellFlags", ("",))[0] or ""):
+            # verified in game 2026-09-30: an ImmediateCast shout with an AreaRadius only resolves on the caster,
+            # never on the creatures in its area (base game: only two helper spells combine them)
+            if (fl.get("SpellType", ("",))[0] == "Shout" and (fl.get("AreaRadius", ("",))[0] or "0") not in ("", "0")
+                    and not (fl.get("TargetConditions", ("",))[0] or "").strip().startswith("Self()")):
+                add("SPELL", name, file, "ImmediateCast shout with an AreaRadius: the area never resolves (drop ImmediateCast)")
             continue  # immediate casts skip the animation (verified in game: Shout_SpellMastery resolves)
         if not fl.get("SpellAnimation", ("",))[0]:
             add("SPELL", name, file, "no SpellAnimation (own or inherited): a normal cast never resolves")
@@ -170,7 +179,7 @@ def lint_stats(store, active, layer, limit=200):
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't)"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")

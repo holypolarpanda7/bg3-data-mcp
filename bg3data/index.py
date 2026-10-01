@@ -1,13 +1,14 @@
 """SQLite index of every layer. A layer is rebuilt only when its source signature changes."""
 import json
 import os
+import re
 import sqlite3
 import time
 
 from . import parse, sources
 
 DB = os.path.join(sources.CACHE, "index.sqlite")
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"  # 3: condition functions from .khn helpers (staticdata kind KhnFunction)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -145,6 +146,15 @@ def _ingest(db, layer, base_rank, files_by_kind):
                 rows.append((layer, rank, source, node, a.get("UUID"), a.get("Name"), json.dumps(a)))
         db.executemany("INSERT INTO staticdata VALUES(?,?,?,?,?,?,?)", rows)
         counts["staticdata"] += len(rows)
+    # condition/functor helper functions (Scripts/thoth/helpers/*.khn): the names stats expressions can call
+    rows = []
+    for source, path in files_by_kind.get("khn", []):
+        text = open(path, encoding="utf-8", errors="replace").read()
+        for fn, args in re.findall(r"^\s*function\s+([A-Za-z_]\w*)\s*\(([^)]*)\)", text, re.M):
+            rank += 1
+            rows.append((layer, rank, source, "KhnFunction", None, fn, json.dumps({"args": args, "file": os.path.basename(path)})))
+    db.executemany("INSERT INTO staticdata VALUES(?,?,?,?,?,?,?)", rows)
+    counts["staticdata"] += len(rows)
     return counts
 
 
@@ -156,13 +166,13 @@ def build_layer(db, cfg, layer, log=print):
         sig, newest = sources.base_signature(cfg)
         log(f"[base] extracting from game paks (newest pak {sources.iso(newest)})")
         sources.extract_base(cfg, log=log)
-        files = {k: sources.base_files(cfg, k) for k in ("stats", "templates", "progressions", "lists", "mei", "fxbanks", "staticdata")}
+        files = {k: sources.base_files(cfg, k) for k in ("stats", "templates", "progressions", "lists", "mei", "fxbanks", "staticdata", "khn")}
         files["loca"] = [("base/Localization", f) for f in sources.base_loca_files()]
     else:
         mod = layer["mod"]
         sig, newest = sources.mod_signature(cfg, mod)
         files = {k: [(name, f) for f in sources.mod_files(cfg, mod, k)]
-                 for k in ("stats", "templates", "progressions", "lists", "loca", "mei", "fxbanks", "staticdata")}
+                 for k in ("stats", "templates", "progressions", "lists", "loca", "mei", "fxbanks", "staticdata", "khn")}
     # atomic: a failure mid-ingest rolls back and leaves the previous index for this layer intact
     db.execute("BEGIN")
     try:

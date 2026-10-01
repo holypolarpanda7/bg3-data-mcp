@@ -41,6 +41,7 @@ BASE_GLOBS = [
     "Public/*/Levelmaps/*.lsf", "Public/*/Levelmaps/*.lsx",
     "Public/*/ActionResourceDefinitions/*.lsf", "Public/*/ActionResourceDefinitions/*.lsx",
     "Public/*/Feats/*.lsf", "Public/*/Feats/*.lsx",
+    "Mods/*/Scripts/thoth/helpers/*.khn",
 ]  # Divine's -x glob has no [..] classes, so list each extension
 
 
@@ -206,6 +207,7 @@ def base_files(cfg, kind):
         "mei": "Public/*/MultiEffectInfos/*.lsx",
         "fxbanks": "Public/*/Content/Assets/Effects/**/_merged.lsx",
         "staticdata": STATIC_PATTERNS_LSX,
+        "khn": "Mods/*/Scripts/thoth/helpers/*.khn",
     }
     found = []
     for pak_dir in [os.path.join(root, os.path.splitext(os.path.basename(p))[0]) for p in base_paks(cfg)]:
@@ -254,6 +256,7 @@ def mod_files(cfg, mod, kind):
         "mei": ["Public/*/MultiEffectInfos/*.lsx", "Public/*/MultiEffectInfos/*.lsf"],
         "fxbanks": ["Public/*/Content/Assets/Effects/**/_merged.lsx", "Public/*/Content/Assets/Effects/**/_merged.lsf"],
         "staticdata": STATIC_PATTERNS_LSX + [x[:-1] + "f" for x in STATIC_PATTERNS_LSX],
+        "khn": ["Mods/*/Scripts/thoth/helpers/*.khn"],
     }
     files = []
     if not os.path.isdir(root):
@@ -298,7 +301,8 @@ def mod_signature(cfg, mod):
     for pat in ["Public/*/RootTemplates/*.ls[fx]", "Public/*/Progressions/*.ls[fx]", "Public/*/Lists/*.ls[fx]",
                 "Public/*/MultiEffectInfos/*.ls[fx]", "Public/*/Content/Assets/Effects/**/_merged.ls[fx]",
                 "Public/*/ClassDescriptions/*.ls[fx]", "Public/*/Levelmaps/*.ls[fx]",
-                "Public/*/ActionResourceDefinitions/*.ls[fx]", "Public/*/Feats/*.ls[fx]"]:
+                "Public/*/ActionResourceDefinitions/*.ls[fx]", "Public/*/Feats/*.ls[fx]",
+                "Mods/*/Scripts/thoth/helpers/*.khn"]:
         files += glob.glob(os.path.join(path, pat), recursive=True)
     stats = sorted((os.path.relpath(f, path), int(os.path.getmtime(f)), os.path.getsize(f)) for f in files)
     newest = max((s[1] for s in stats), default=0)
