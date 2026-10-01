@@ -1,7 +1,9 @@
 [project]
 name = "bg3-data-mcp"
 version = "0.1.0"
-description = "Layered Baldur's Gate 3 game-data lookup (base game + additive mod layers) as an MCP server"
+description = "Baldur's Gate 3 modding MCP server: layered game data, stats lint, Script Extender testing, Toolkit export"
+license = "MIT"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["mcp>=2.2,<3"]
 

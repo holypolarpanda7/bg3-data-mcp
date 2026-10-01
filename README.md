@@ -1,22 +1,30 @@
 # bg3-data-mcp
 
-Layered Baldur's Gate 3 game-data lookup, as an MCP server (and a CLI).
+An MCP server (and CLI) for **Baldur's Gate 3 modding**: layered game-data lookup, static checks that catch
+what the engine silently ignores, in-game testing through Script Extender, and export to the Larian Toolkit
+for mod.io publishing. Works natively on Windows or under WSL, finds the game and tools itself, and isn't
+tied to any one mod.
 
-- **Base game layer (always on):** read straight from the installed game's paks: `Shared` → `Gustav`
-  → `GustavX` → hotfix paks (`Patch*.pak`, in number order), using LSLib's `Divine.exe` with filtered
-  extraction. It always reflects the current patch, unlike a one-time unpack that goes stale. The
-  Honour Mode and Photo Mode modules are excluded by default.
-- **Mod layers (additive, in load order):** unpacked mod folders (`Public/` + `Mods/`) or `.pak` files.
-  Configured in `layers.json`, or added and removed at runtime.
-- **Per-query layer choice:** omit `layers` for everything, or pass mod names to stack on base, e.g.
-  `["dnd55e"]` gives vanilla + dnd55e.
+- **Layered data:** the base game read straight from the installed paks (`Shared` → `Gustav` → `GustavX` →
+  hotfix `Patch*.pak`, via LSLib's `Divine.exe`), so it always matches the current patch, plus your mod
+  layers (unpacked folders or `.pak`s) in load order. Every resolved field says which layer set it.
+  Indexed: stats, English localization, root templates, progressions, lists, class descriptions, level
+  maps, action resources, feats, MultiEffectInfos and named `.lsfx` effects.
+- **Static checks:** `bg3_lint_stats` (values, functions and fields no shipped content uses - the engine
+  drops them silently - missing references, spells that can't resolve) and `bg3_lint_progressions`
+  (invalid node UUIDs, dangling lists, stacked choices).
+- **Running game (Script Extender):** Lua eval, console commands, hot-loading stats without a restart,
+  ground-truth comparison of what the game actually loaded, and a test framework: level up by XP,
+  check a level against its progression, and TOML test cases run as real encounters
+  ([docs/TESTING.md](docs/TESTING.md)).
+- **Deploy and Toolkit:** pack/deploy/enable any mod (`bg3_deploy`), restart the game into the newest
+  save, and generate or diff the Toolkit's editor copy ([docs/TOOLKIT.md](docs/TOOLKIT.md)).
 
-Indexed: stats (`Stats/Generated/Data/*.txt`), English localization, root templates, progressions,
-lists (spell/passive/skill/ability/equipment), **MultiEffectInfos** (what stats `*Effect` fields point to)
-and **effect resources** (named `.lsfx` VFX from `Content/Assets/Effects` banks). The SQLite index lives in
-`~/.cache/bg3-data-mcp/cache` (override with `BG3_DATA_CACHE`; keep it on the Linux filesystem). A layer
-is rebuilt only when its sources' timestamps or sizes change, and the server re-checks at most once a
-minute. Rebuilds are atomic: a failed rebuild keeps serving the previous index and `bg3_layers` reports it.
+The SQLite index is cached per machine (see Configuration). A layer is rebuilt only when its sources'
+timestamps or sizes change; rebuilds are atomic, so a failed rebuild keeps serving the previous index.
+
+Not affiliated with Larian Studios. Requires a legal copy of the game; nothing from the game is
+redistributed - data is read from your own install.
 
 ## Resolution rules (stats)
 - The highest-ranked `new entry NAME` among the active layers wins.
@@ -52,7 +60,7 @@ minute. Rebuilds are atomic: a failed rebuild keeps serving the previous index a
 
 ## Install
 Works natively on **Windows** or under **WSL**; the game, Script Extender and LSLib are Windows programs either way.
-Needs [uv](https://docs.astral.sh/uv/), Python 3.12+, and LSLib v1.20.4+
+Needs [uv](https://docs.astral.sh/uv/), Python 3.11+, and LSLib v1.20.4+
 ([releases](https://github.com/Norbyte/lslib/releases); Vortex's bundled `divine.exe` is too old for current LSF files).
 
 **Windows (PowerShell):**
@@ -61,14 +69,15 @@ git clone <this repo> C:\Mods\bg3-data-mcp
 cd C:\Mods\bg3-data-mcp
 copy layers.example.json layers.json        # then list your mod folders (see below)
 uv run python tests\env_check.py            # what it found: game, Divine.exe, mod managers, Script Extender
-uv run bg3-data layers                      # first index build: a few minutes (extracts from the game paks)
+uv run bg3-data refresh                     # first index build: a few minutes (extracts from the game paks)
 claude mcp add bg3-data -- uv run --quiet --directory C:\Mods\bg3-data-mcp bg3-data-mcp
 ```
 
 **WSL:** keep the environment on the Linux filesystem (fast), the project anywhere:
 ```bash
 export UV_PROJECT_ENVIRONMENT=$HOME/.cache/bg3-data-mcp/venv
-uv run python tests/env_check.py && uv run bg3-data layers
+cp layers.example.json layers.json          # then list your mod folders
+uv run python tests/env_check.py && uv run bg3-data refresh
 claude mcp add bg3-data -e UV_PROJECT_ENVIRONMENT=$HOME/.cache/bg3-data-mcp/venv -- \
   uv run --quiet --directory /mnt/d/path/to/bg3-data-mcp bg3-data-mcp
 ```
@@ -79,8 +88,8 @@ Paths may be written Windows-style (`D:\\Mods\\MyMod`) or WSL-style (`/mnt/d/Mod
 ```json
 {
   "mods": [
-    {"name": "dnd55e", "path": "D:\\BG3Modding\\dnd55e"},
-    {"name": "mymod", "path": "D:\\BG3Modding\\MyMod", "tests": "tests/bg3", "deploy": "optional custom command"}
+    {"name": "dnd55e", "path": "C:\\BG3Mods\\dnd55e"},
+    {"name": "mymod", "path": "C:\\BG3Mods\\MyMod", "tests": "tests/bg3", "deploy": "optional custom command"}
   ],
   "base":  {"game_data": "E:\\Games\\Baldurs Gate 3\\Data"},
   "divine": "C:\\Tools\\LSLib\\Packed\\Tools\\Divine.exe",
@@ -105,7 +114,7 @@ mod after its dependencies), or add your dev mod to the manager. The **in-game m
 under Installed and needs nothing extra.
 
 ## Script Extender bridge (running game)
-These tools talk to the live game through the SE console, using `References/Dev/dnd55e-tools/se_inject.ps1`
+These tools talk to the live game through the SE console, using the bundled `bg3data/ps/se_inject.ps1`
 (AttachConsole + WriteConsoleInput, so no window focus is needed). Output is read back from the current
 run's `Extender Runtime` log. Log file names are UTC; the bridge compares real modification times with
 the game's start time.

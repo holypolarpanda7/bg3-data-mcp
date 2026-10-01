@@ -1,6 +1,6 @@
 {
   "mods": [
-    {"name": "dnd55e", "path": "D:\\BG3Modding\\Mod_Projects\\dnd55e"},
-    {"name": "mymod", "path": "D:\\BG3Modding\\Mod_Projects\\MyMod"}
+    {"name": "dnd55e", "path": "C:\\BG3Mods\\dnd55e"},
+    {"name": "mymod", "path": "C:\\BG3Mods\\MyMod"}
   ]
 }

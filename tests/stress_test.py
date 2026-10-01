@@ -189,7 +189,8 @@ async def mcp_tests():
                 rec("se", True, f"SKIPPED (game not running): {st.splitlines()[0]}")
 
             # 6. layer management with a real .pak
-            paks = glob.glob("/mnt/d/vortex/BG3/mods/PHB_2024_Bladesinger*/*.pak")
+            # any extra .pak to test layer management with: set BG3_STRESS_PAK (skipped when unset)
+            paks = [os.environ["BG3_STRESS_PAK"]] if os.environ.get("BG3_STRESS_PAK") else []
             cfg_before = json.load(open(sources.CONFIG))
             if paks:
                 out, err, dt = await call(session, "bg3_add_mod_layer", {"name": "stress_bladesinger", "path": paks[0]})

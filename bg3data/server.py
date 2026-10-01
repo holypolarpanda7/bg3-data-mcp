@@ -330,7 +330,7 @@ def bg3_search_effects(text: str, layers: list[str] | None = None, limit: int = 
 
 
 # ---------------------------------------------------------------------------- Script Extender
-# These talk to the RUNNING game through the SE console (References/Dev/dnd55e-tools/se_inject.ps1).
+# These talk to the RUNNING game through the SE console (bundled bg3data/ps/se_inject.ps1).
 # They don't take the index lock, so data lookups stay responsive while the game is busy.
 
 def se_guarded(fn):
