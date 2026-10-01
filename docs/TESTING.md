@@ -67,6 +67,8 @@ mode = "auto"                # default; or "player" / "script"
 prep = "..."                 # optional: shown as "Before casting: ..."
 grant_passive = "Feature"     # optional action instead of/before a spell: add a passive after the before-snapshot
 repeat = 4                    # optional (auto/script): cast the spell N times, repeat_wait seconds apart (default 3)
+casts = [{ spell = "Shout_X" }, { spell = "Shout_Y", target = "A", wait = 2 }]  # optional: scripted casts in order
+                             # after setup, before `spell` (a feature's setup steps, e.g. pick then use)
 instructions = "..."         # optional: extra step after the cast step
 notes = "..."                # optional: shown at the end of the case
 combat = true                # default: true when any spawn is hostile

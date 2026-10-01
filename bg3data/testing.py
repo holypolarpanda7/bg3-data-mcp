@@ -366,6 +366,11 @@ def validate(store, active, c):
             errs.append(f"expect: unknown keys {sorted(bad)}")
         if e.get("target", "host") not in aliases:
             errs.append(f"expect target {e.get('target')!r} unknown")
+    for cs in c.get("casts", []):
+        if not cs.get("spell") or not store.resolve(cs["spell"], active):
+            errs.append(f"casts: spell {cs.get('spell')!r} not found")
+        if cs.get("target", "host") not in aliases:
+            errs.append(f"casts: target {cs.get('target')!r} unknown")
     tags = set()
     for r in c.get("rolls", []):
         tags.add(r.get("as"))
@@ -436,7 +441,16 @@ def stage(store, active, layer, case_id):
         blockers.append(f"host lacks subclass {c['subclass']}")
     if c.get("spell"):
         src = {s["id"]: s["source"] for s in st["spells"]}.get(c["spell"])
-        if src is None and mode != "script":
+        granter = None  # a setup status/passive whose UnlockSpell grants the spell (e.g. a feature's unlock status)
+        for s in c.get("setup", []):
+            name = s.get("status") or s.get("passive")
+            r = store.resolve(name, active) if name else None
+            boosts = str(((r or {}).get("fields") or {}).get("Boosts", ("",))[0])
+            if f"UnlockSpell({c['spell']}" in boosts.replace(" ", ""):
+                granter = name
+        if src is None and granter:
+            notes.append(f"{c['spell']} is granted by setup {granter} (UnlockSpell)")
+        elif src is None and mode != "script":
             blockers.append(f"host doesn't know {c['spell']} - learn it through level-up / the class spell list")
         elif src in SCRIPT_SPELL_SOURCES and mode != "script":
             blockers.append(f"{c['spell']} was added by script (source {src}): it won't pay costs - learn it via level-up")
@@ -528,6 +542,14 @@ def stage(store, active, layer, case_id):
     _save_state(state)
     if c.get("grant_passive"):  # the case's action is gaining a feature (e.g. a boon's max HP increase)
         lua(f"BG3T.addPassive(BG3T.host(), {se._lua_string(c['grant_passive'])}); return true")
+    for i, cs in enumerate(c.get("casts", [])):  # a scripted sequence before the case's own spell (any mode)
+        if i:
+            time.sleep(float(cs.get("wait", 2)))
+        tgt = cs.get("target", "host")
+        tgt = "BG3T.host()" if tgt == "host" else f"BG3T.spawns[{se._lua_string(tgt)}]"
+        lua(f"BG3T.cast(BG3T.host(), {se._lua_string(cs['spell'])}, {tgt}); return true")
+    if c.get("casts"):
+        time.sleep(float(c.get("casts_wait", 2)))
     for r in c.get("rolls", []):  # passive rolls after setup (any mode), tallied by the harness
         lua(f"BG3T.roll({se._lua_string(r['as'])}, {se._lua_string(r['type'])}, {se._lua_string(r['id'])}, "
             f"{int(r['dc'])}, {int(r.get('n', 20))}); return true")
