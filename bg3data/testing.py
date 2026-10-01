@@ -1193,9 +1193,20 @@ def _unstick_menu(log, relaunched):
     if not ui:
         return None
     if "SplashScreen" in ui:
-        gameui.press_key()
-        log.append("splash screen: pressed Enter")
+        _unstick_menu.splash = getattr(_unstick_menu, "splash", 0) + 1
+        if _unstick_menu.splash > 3 and not relaunched:  # the key isn't landing: clean quit + relaunch, once
+            log.append("splash screen: still up after 3 presses - quitting cleanly to relaunch")
+            _unstick_menu.splash = 0
+            _, g = game_cfg()
+            if gameui.quit_game(g["processes"], _tasklist):
+                return "relaunch"
+            kill_game(graceful=False)  # the splash may not take the menu's Quit; safe mode after this is handled
+            log.append("splash screen: no clean quit available - killed the game")
+            return "relaunch_killed"
+        ok = gameui.press_key()
+        log.append("splash screen: pressed Enter" + ("" if ok else " (no game window found)"))
         return "key"
+    _unstick_menu.splash = 0
     if "MainMenu" in ui and "Dialog_box" not in ui:
         loaded = set(gameui.loaded_modules() or [])
         want = {}
@@ -1265,6 +1276,7 @@ def restart(deploy_layer=None, launch=True, timeout=300):
         return "\n".join(log + ["no launcher: set game.launcher / game.game_exe in layers.json"])
     t0 = time.time()
     last_ui, relaunched = 0, False
+    _unstick_menu.splash = 0
     while time.time() - t0 < timeout:
         time.sleep(5)
         try:
@@ -1277,8 +1289,8 @@ def restart(deploy_layer=None, launch=True, timeout=300):
         if time.time() - t0 > 45 and time.time() - last_ui > 20:  # no session yet: see what the game shows
             last_ui = time.time()
             note = _unstick_menu(log, relaunched)
-            if note == "relaunch":
-                relaunched = True
+            if note in ("relaunch", "relaunch_killed"):
+                relaunched = note == "relaunch"  # after a kill, the safe-mode relaunch must still be allowed
                 if g["launcher"] == "steam" and g.get("steam_exe"):
                     platform.launch_detached(g["steam_exe"], ["-applaunch", str(g["app_id"])] + g["launch_args"])
                 elif g.get("game_exe"):
