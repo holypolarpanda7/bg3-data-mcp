@@ -307,7 +307,10 @@ T.on = {
         if T.recording and isTracked(ch) then push({ kind = "Died", who = uuid(ch) }) end
     end,
     TurnStarted = function(ch)
-        if T.recording then push({ kind = "TurnStarted", who = uuid(ch), tracked = isTracked(ch) }) end
+        -- incap: the engine still starts a turn for a creature that can't act (sleeping, frozen...) and skips it;
+        -- item: scenery with an environment turn (e.g. the beach's clamshells, seen 2026-10-01)
+        if T.recording then push({ kind = "TurnStarted", who = uuid(ch), tracked = isTracked(ch), name = (function() local ok, n = pcall(function() return Ext.Loca.GetTranslatedString(Osi.GetDisplayName(ch)) end) return ok and n or nil end)(),
+            incap = Osi.HasAppliedStatusOfType(ch, "INCAPACITATED") == 1, item = Osi.IsItem(ch) == 1 }) end
     end,
     CombatStarted = function() if T.recording then push({ kind = "CombatStarted" }) end end,
     CombatEnded = function() if T.recording then push({ kind = "CombatEnded" }) end end,

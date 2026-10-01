@@ -337,7 +337,7 @@ def find_case(layer, case_id):
 
 EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
-               "roll", "pass"}
+               "roll", "pass", "consecutive_turns", "count", "took_turn"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -563,6 +563,16 @@ def stage(store, active, layer, case_id):
                 if i:
                     time.sleep(float(c.get("repeat_wait", 3)))
                 lua(f"BG3T.cast(BG3T.host(), {se._lua_string(c['spell'])}, {tgt}); return true")
+    if c.get("end_turns"):  # end the host's turn N times through the HUD (turn-order features, enemy turns)
+        from . import gameui
+        for _ in range(int(c["end_turns"])):
+            if not gameui.wait_host_turn():
+                notes.append("end_turns: the host's turn never came back")
+                break
+            time.sleep(1.5)
+            gameui.end_turn()
+            time.sleep(3)
+        gameui.wait_host_turn()
     return {"ok": True, "case": c, "notes": notes, "combat": combat, "first_turn": first_turn,
             "spell_name": _name(store, active, c["spell"]) if c.get("spell") else None, "before": before}
 
@@ -645,6 +655,22 @@ def verify(store, active, cleanup=True, wait=2.0):
         if e.get("acted_first"):
             ft = state.get("first_turn")
             row(bool(ft) and ft.get("who") == host, f"you acted first in initiative" + ("" if ft else " (no turn recorded)"))
+        if e.get("consecutive_turns") or e.get("took_turn"):
+            # turns started after the case's cast, in order (aliases; None = an untracked creature)
+            i0 = next((i for i, x in enumerate(events) if x.get("kind") == "CastedSpell" and x.get("who") == host
+                       and x.get("spell") == c.get("spell")), None)
+            # creatures' turns only: one started while incapacitated is skipped by the engine; items' turns are scenery
+            seq = [x.get("tracked") or f"other:{x.get('name') or x.get('who')}" for x in events[(i0 or 0):]
+                   if x.get("kind") == "TurnStarted" and not x.get("incap") and not x.get("item")]
+            if e.get("consecutive_turns"):
+                n = 0
+                while n < len(seq) and seq[n] == e["consecutive_turns"]:
+                    n += 1
+                lo, hi = e.get("count", [1, 10 ** 6])
+                row(i0 is not None and lo <= n <= hi, f"{e['consecutive_turns']} took {n} turns in a row after the cast, "
+                    f"expected [{lo}, {hi}] (order: {seq[:12]})")
+            if e.get("took_turn"):
+                row(e["took_turn"] in seq, f"{e['took_turn']} took a turn after the cast")
         if e.get("damage_type"):
             hits = [x for x in events if x.get("kind") == "Damage" and x.get("who") == guid]
             row(any(x.get("type") == e["damage_type"] for x in hits), f"{label} took {e['damage_type']} damage (seen: {sorted({x.get('type') for x in hits}) or 'none'})")
@@ -1025,6 +1051,11 @@ def _expect_text(store, active, c, e):
         out.append(f"one {e['resource']}" + (f" (level {lvl})" if lvl else "") + f" is spent" if e.get("change", -1) == -1 else f"{e['resource']} changes by {e.get('change')}")
     if e.get("acted_first"):
         out.append("you act first in initiative")
+    if e.get("consecutive_turns"):
+        lo, hi = e.get("count", [1, 10 ** 6])
+        out.append(f"{e['consecutive_turns']} takes {lo}-{hi} turns in a row")
+    if e.get("took_turn"):
+        out.append(f"{e['took_turn']} gets a turn again")
     if e.get("damage_type"):
         out.append(f"{v('takes', 'take')} {e['damage_type']} damage")
     if e.get("note"):

@@ -69,6 +69,8 @@ grant_passive = "Feature"     # optional action instead of/before a spell: add a
 repeat = 4                    # optional (auto/script): cast the spell N times, repeat_wait seconds apart (default 3)
 casts = [{ spell = "Shout_X" }, { spell = "Shout_Y", target = "A", wait = 2 }]  # optional: scripted casts in order
                              # after setup, before `spell` (a feature's setup steps, e.g. pick then use)
+end_turns = 7                # optional (combat): after the cast, end the host's turn N times via the HUD's
+                             # End Turn (Osi.EndTurn doesn't end it), waiting for the host's turn each time
 instructions = "..."         # optional: extra step after the cast step
 notes = "..."                # optional: shown at the end of the case
 combat = true                # default: true when any spawn is hostile
@@ -92,6 +94,8 @@ expect = [
   { target = "host", status_removed = ["FRIGHTENED"] },     # present before, gone after
   { target = "host", status_present = ["X"], status_absent = ["Y"] },
   { resource = "SpellSlot", level = 1, change = -1 },       # host by default; level 0 for non-slot resources
+  { consecutive_turns = "host", count = [2, 5] },          # turns in a row right after the cast (with end_turns)
+  { took_turn = "A" },                                      # A took a turn after the cast
   { roll = "ath", pass = [30, 30] },                        # passes out of a `rolls` batch (below)
 ]
 rolls = [{ as = "ath", type = "SkillCheck", id = "Athletics", dc = 8, n = 30 }]  # real passive rolls by the host
@@ -122,3 +126,7 @@ cache (`test_state.json`), so it survives an MCP restart.
 - The Nautiloid tutorial (`TUT_SUMMON_BLOCK`) blocks summons: test summon spells after the crash site.
 - The engine can't require a spell's second target to be within a distance of the first. Check that by eye.
 - `Ext.StaticData` reads occasionally come back empty for a tick; host snapshots retry.
+
+Turn order counts creatures' turns only. The engine still fires TurnStarted for a creature that can't act
+(an INCAPACITATED status: sleeping, frozen) and for scenery items with an environment turn (the beach's
+clamshells), so those are recorded with `incap` / `item` and left out (seen in game 2026-10-01).

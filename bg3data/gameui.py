@@ -63,6 +63,29 @@ return true""")
     return bool(res)
 
 
+def end_turn():
+    """Press the combat HUD's End Turn for the host (a scripted Osi.EndTurn doesn't end it; verified 2026-10-01)."""
+    res, _ = _client(FIND + """
+find(Ext.UI.GetRoot(), "ContentRoot", 0):VisualChild(1).DataContext.EndTurn:Execute(nil)
+return true""")
+    return bool(res)
+
+
+def wait_host_turn(timeout=60):
+    """Wait until it's the host's turn in combat. True when it is."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            r = se.eval_lua("local tb = Ext.Entity.Get(Osi.GetHostCharacter()).TurnBased "
+                            "return tb ~= nil and tb.IsActiveCombatTurn == true", "server", timeout=8)
+            if r.get("ok") and r.get("result"):
+                return True
+        except (RuntimeError, TimeoutError):
+            pass
+        time.sleep(1)
+    return False
+
+
 def accept_dialog(uuid_property=None):
     """Press the first (accept) action of the open message box; optionally only if its UUIDProperty matches."""
     want = f'"{uuid_property}"' if uuid_property else "nil"
