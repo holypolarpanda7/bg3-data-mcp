@@ -171,6 +171,20 @@ function T.refill(g)
     e:Replicate("ActionResources")
 end
 
+-- Spell cooldowns ("until rest" ones too): cleared before a case so it can be repeated, and after it so
+-- test casts don't leave cooldowns in a save.
+function T.clearCooldowns(g)
+    g = uuid(g)
+    local e = Ext.Entity.Get(g)
+    local n = 0
+    pcall(function()
+        n = #e.SpellBookCooldowns.Cooldowns
+        e.SpellBookCooldowns.Cooldowns = {}
+        e:Replicate("SpellBookCooldowns")
+    end)
+    return n
+end
+
 function T.enterCombat()
     local h = T.host()
     for _, g in pairs(T.spawns) do pcall(Osi.EnterCombat, g, h) end
@@ -194,7 +208,7 @@ function T.drain(since)
 end
 
 function T.cleanup()
-    local report = { spawns = 0, grants = 0, statuses = 0, passives = 0 }
+    local report = { spawns = 0, grants = 0, statuses = 0, passives = 0, cooldowns = T.clearCooldowns(T.host()) }
     for _, ps in ipairs(T.added_passives) do
         pcall(Osi.RemovePassive, ps[1], ps[2])
         report.passives = report.passives + 1

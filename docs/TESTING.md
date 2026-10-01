@@ -70,7 +70,7 @@ instructions = "..."         # optional: extra step after the cast step
 notes = "..."                # optional: shown at the end of the case
 combat = true                # default: true when any spawn is hostile
 initiative = "host_first"    # default in combat: temporary Initiative(50) boost on the host
-refill = true                # default: host action resources (slots, action points...) restored to max first
+refill = true                # default: host action resources (slots, action points...) restored to max and spell cooldowns cleared first
 safety = true                # default: kill spawns + heal if a party member drops below safety_floor
 safety_floor = 35            # percent HP
 spawn = [{ as = "A", template = "wolf", faction = "hostile", hp = 40, distance = 8 }]

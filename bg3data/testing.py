@@ -487,7 +487,7 @@ def stage(store, active, layer, case_id):
         if st_.get("dead"):  # e.g. a corpse for revive spells
             post.append(f"pcall(Osi.Die, {_who(st_)}, 0, 'NULL_00000000-0000-0000-0000-000000000000', 0, 1)")
     if c.get("refill", True):
-        post.append("BG3T.refill(BG3T.host())")
+        post.append("BG3T.refill(BG3T.host()); BG3T.clearCooldowns(BG3T.host())")
     # a case that deliberately starts you at low HP mustn't trip the safety watch by itself
     post.append("local h=BG3T.host(); local p=Osi.GetHitpoints(h)*100/math.max(1,Osi.GetMaxHitpoints(h)); "
                 "if p<=BG3T.safety.floor then BG3T.safety.floor=math.max(1,math.floor(p)-1) end")
@@ -634,7 +634,7 @@ def verify(store, active, cleanup=True, wait=2.0):
             lua("local h=BG3T.host(); " + " ".join(f"pcall(Osi.RemoveStatus,h,{se._lua_string(x)});" for x in gained) + " return true")
             lines.append(f"  removed from you: {', '.join(gained)}")
         rep = lua("return BG3T.cleanup()")
-        lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses, {rep.get('passives', 0)} passives removed")
+        lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses, {rep.get('passives', 0)} passives, {rep.get('cooldowns', 0)} cooldowns removed")
         try:
             os.remove(STATE_FILE)
         except OSError:

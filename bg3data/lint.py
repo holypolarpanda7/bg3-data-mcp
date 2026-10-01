@@ -160,6 +160,8 @@ def lint_stats(store, active, layer, limit=200):
         fl = r["fields"] if r else {}
         if not fl or fl.get("ContainerSpells", ("",))[0] or not fl.get("DisplayName", ("",))[0]:
             continue
+        if "ImmediateCast" in (fl.get("SpellFlags", ("",))[0] or ""):
+            continue  # immediate casts skip the animation (verified in game: Shout_SpellMastery resolves)
         if not fl.get("SpellAnimation", ("",))[0]:
             add("SPELL", name, file, "no SpellAnimation (own or inherited): a normal cast never resolves")
     by_kind = {}
