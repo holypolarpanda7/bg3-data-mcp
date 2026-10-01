@@ -410,6 +410,7 @@ def stage(store, active, layer, case_id):
     if blockers:
         return {"ok": False, "blockers": blockers, "notes": notes}
 
+    pre_statuses = lua("return BG3T.statuses(BG3T.host())") or []  # anything not here at the end was added by the run
     spawns = c.get("spawn", [])
     hostile = any(s.get("faction", "hostile") == "hostile" for s in spawns)
     combat = c.get("combat", hostile)
@@ -483,7 +484,7 @@ def stage(store, active, layer, case_id):
                 first_turn = turns[0]
                 break
             time.sleep(0.5)
-    state = {"layer": layer, "case": c["id"], "mode": mode, "combat": combat, "since": since, "before": before,
+    state = {"layer": layer, "case": c["id"], "mode": mode, "combat": combat, "since": since, "before": before, "pre_statuses": pre_statuses,
              "first_turn": first_turn, "staged_at": time.time()}
     _save_state(state)
     if c.get("grant_passive"):  # the case's action is gaining a feature (e.g. a boon's max HP increase)
@@ -597,7 +598,8 @@ def verify(store, active, cleanup=True, wait=2.0):
         lines.append("  events: " + ", ".join(ev))
     if cleanup:
         # statuses the test run left on you (e.g. a scripted Mage Armour) must not end up in a save
-        gained = [x for x in (ent(after, "host").get("statuses") or []) if x not in (ent(before, "host").get("statuses") or [])]
+        pre = state.get("pre_statuses") or ent(before, "host").get("statuses") or []
+        gained = [x for x in (ent(after, "host").get("statuses") or []) if x not in pre]
         if gained:
             lua("local h=BG3T.host(); " + " ".join(f"pcall(Osi.RemoveStatus,h,{se._lua_string(x)});" for x in gained) + " return true")
             lines.append(f"  removed from you: {', '.join(gained)}")
