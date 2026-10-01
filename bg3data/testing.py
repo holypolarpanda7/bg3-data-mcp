@@ -1209,8 +1209,8 @@ def _unstick_menu(log, relaunched):
         return None
     if "SplashScreen" in ui:
         _unstick_menu.splash = getattr(_unstick_menu, "splash", 0) + 1
-        if _unstick_menu.splash > 3 and not relaunched:  # the key isn't landing: clean quit + relaunch, once
-            log.append("splash screen: still up after 3 presses - quitting cleanly to relaunch")
+        if _unstick_menu.splash > 5 and not relaunched:  # the key isn't landing (~40 s of presses): clean quit + relaunch, once
+            log.append("splash screen: still up after 5 presses - quitting cleanly to relaunch")
             _unstick_menu.splash = 0
             _, g = game_cfg()
             if gameui.quit_game(g["processes"], _tasklist):
@@ -1301,7 +1301,10 @@ def restart(deploy_layer=None, launch=True, timeout=300):
                 return "\n".join(log)
         except (RuntimeError, TimeoutError):
             pass
-        if time.time() - t0 > 45 and time.time() - last_ui > 20:  # no session yet: see what the game shows
+        # no session yet: see what the game shows. Check early and often: the first launch after quitting a loaded
+        # game always comes up in no-mods safe mode (5/5 restarts on 2026-10-01, with or without a deploy; a quit
+        # from the main menu doesn't do this), so the relaunch below is the normal path, not a rare fallback.
+        if time.time() - t0 > 10 and time.time() - last_ui > 8:
             last_ui = time.time()
             note = _unstick_menu(log, relaunched)
             if note in ("relaunch", "relaunch_killed"):
