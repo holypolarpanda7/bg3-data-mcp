@@ -337,7 +337,8 @@ def find_case(layer, case_id):
 
 EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
-               "roll", "pass", "consecutive_turns", "count", "took_turn"}
+               "roll", "pass", "consecutive_turns", "count", "took_turn",
+               "status_applied_count"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -348,6 +349,9 @@ def validate(store, active, c):
         if not c.get(k):
             errs.append(f"missing `{k}`")
     aliases = {"host"} | {s.get("as") for s in c.get("spawn", [])}
+    for who in [c.get("caster")] + [cs.get("by") for cs in c.get("casts", [])]:
+        if who and who not in aliases:
+            errs.append(f"caster `{who}` isn't host or a spawn alias")
     if c.get("console") and not c.get("expect_log"):
         errs.append("console case needs `expect_log` (the log line that means PASS)")
     if c.get("spell") and not store.resolve(c["spell"], active):
@@ -439,7 +443,7 @@ def stage(store, active, layer, case_id):
         notes.append(f"host is {cl['class']} {cl['level']} (case written for {c['level']})")
     if c.get("subclass") and not any(x.get("subclass") == c["subclass"] for x in st["classes"]):
         blockers.append(f"host lacks subclass {c['subclass']}")
-    if c.get("spell"):
+    if c.get("spell") and c.get("caster", "host") == "host":
         src = {s["id"]: s["source"] for s in st["spells"]}.get(c["spell"])
         granter = None  # a setup status/passive whose UnlockSpell grants the spell (e.g. a feature's unlock status)
         for s in c.get("setup", []):
@@ -547,7 +551,8 @@ def stage(store, active, layer, case_id):
             time.sleep(float(cs.get("wait", 2)))
         tgt = cs.get("target", "host")
         tgt = "BG3T.host()" if tgt == "host" else f"BG3T.spawns[{se._lua_string(tgt)}]"
-        lua(f"BG3T.cast(BG3T.host(), {se._lua_string(cs['spell'])}, {tgt}); return true")
+        by = "BG3T.host()" if cs.get("by", "host") == "host" else f"BG3T.spawns[{se._lua_string(cs['by'])}]"
+        lua(f"BG3T.cast({by}, {se._lua_string(cs['spell'])}, {tgt}, {'true' if cs.get('real_rolls') else 'false'}); return true")
     if c.get("casts"):
         time.sleep(float(c.get("casts_wait", 2)))
     for r in c.get("rolls", []):  # passive rolls after setup (any mode), tallied by the harness
@@ -558,11 +563,16 @@ def stage(store, active, layer, case_id):
             lua(f"BG3T.castAt(BG3T.host(), {se._lua_string(c['spell'])}, {float(c.get('distance', 3))}); return true")
         else:
             tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
+            # caster = "A": a spawn casts the case's spell (e.g. an enemy's save effect against the host)
+            who = "BG3T.host()" if c.get("caster", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['caster'])}]"
+            rolled = "true" if c.get("real_rolls") else "false"
             # repeat = N casts the spell N times, `repeat_wait` seconds apart (e.g. an Extra Attack chain)
             for i in range(max(1, int(c.get("repeat", 1)))):
                 if i:
                     time.sleep(float(c.get("repeat_wait", 3)))
-                lua(f"BG3T.cast(BG3T.host(), {se._lua_string(c['spell'])}, {tgt}); return true")
+                for st_ in c.get("clear_between", []):  # e.g. PRONE, so every cast can land it again
+                    lua(f"local g = {tgt} if Osi.HasActiveStatus(g, {se._lua_string(st_)}) == 1 then Osi.RemoveStatus(g, {se._lua_string(st_)}) end return true")
+                lua(f"BG3T.cast({who}, {se._lua_string(c['spell'])}, {tgt}, {rolled}); return true")
     if c.get("end_turns"):  # end the host's turn N times through the HUD (turn-order features, enemy turns)
         from . import gameui
         for _ in range(int(c["end_turns"])):
@@ -628,6 +638,11 @@ def verify(store, active, cleanup=True, wait=2.0):
         for s in e.get("status_applied", []):
             hit = any(x.get("kind") == "StatusApplied" and x.get("who") == guid and x.get("status") == s for x in events)
             row(hit, f"{s} applied to {label}")
+        if e.get("status_applied_count"):  # {status, count = [lo, hi]}: how many times it landed during the run
+            sc = e["status_applied_count"]
+            n = sum(1 for x in events if x.get("kind") == "StatusApplied" and x.get("who") == guid and x.get("status") == sc["status"])
+            lo, hi = sc.get("count", [1, 10 ** 6])
+            row(lo <= n <= hi, f"{sc['status']} applied to {label} {n} times, expected [{lo}, {hi}]")
         if e.get("status_applied_any"):
             seen = sorted({x.get("status") for x in events if x.get("kind") == "StatusApplied" and x.get("who") == guid} & set(e["status_applied_any"]))
             row(bool(seen), f"any of {', '.join(e['status_applied_any'])} applied to {label}" + (f" (got {', '.join(seen)})" if seen else ""))

@@ -191,7 +191,35 @@ function T.enterCombat()
     for _, g in pairs(T.spawns) do pcall(Osi.EnterCombat, g, h) end
 end
 
-function T.cast(caster, spell, target)
+-- realRolls: Osiris queues UseSpell with the IgnoreSpellRolls cast option, so the target's saving throw (and the
+-- attack roll) is never made (seen in game 2026-10-01). Strip that option from our request when it reaches the
+-- server's cast queue (a tick or two later) so the spell rolls like a real cast.
+T.pendingRolled = T.pendingRolled or {}
+function T.cast(caster, spell, target, realRolls)
+    if realRolls then
+        table.insert(T.pendingRolled, { spell = spell, ticks = 0 })
+        if not T.castSub then
+            T.castSub = Ext.Events.Tick:Subscribe(function()
+                if #T.pendingRolled == 0 then return end
+                for _, r in ipairs(Ext.System.ServerCastRequest.OsirisCastRequests) do
+                    for i, p in ipairs(T.pendingRolled) do
+                        if r.Spell.OriginatorPrototype == p.spell then
+                            local keep = {}
+                            for _, o in ipairs(r.CastOptions) do if o ~= "IgnoreSpellRolls" then keep[#keep + 1] = o end end
+                            r.CastOptions = keep
+                            table.remove(T.pendingRolled, i)
+                            break
+                        end
+                    end
+                end
+                for i = #T.pendingRolled, 1, -1 do  -- give up on requests that never showed up
+                    local p = T.pendingRolled[i]
+                    p.ticks = p.ticks + 1
+                    if p.ticks > 60 then table.remove(T.pendingRolled, i) end
+                end
+            end)
+        end
+    end
     Osi.UseSpell(uuid(caster), spell, uuid(target))
 end
 

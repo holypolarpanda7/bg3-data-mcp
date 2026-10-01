@@ -69,6 +69,9 @@ grant_passive = "Feature"     # optional action instead of/before a spell: add a
 repeat = 4                    # optional (auto/script): cast the spell N times, repeat_wait seconds apart (default 3)
 casts = [{ spell = "Shout_X" }, { spell = "Shout_Y", target = "A", wait = 2 }]  # optional: scripted casts in order
                              # after setup, before `spell` (a feature's setup steps, e.g. pick then use)
+caster = "A"                 # optional: a spawn casts the case's `spell` (casts entries take `by = "A"`)
+real_rolls = true            # optional: the cast rolls saves/attacks for real (strips Osiris' IgnoreSpellRolls)
+clear_between = ["PRONE"]    # optional, with repeat: statuses removed from the target before each cast
 end_turns = 7                # optional (combat): after the cast, end the host's turn N times via the HUD's
                              # End Turn (Osi.EndTurn doesn't end it), waiting for the host's turn each time
 instructions = "..."         # optional: extra step after the cast step
@@ -95,7 +98,8 @@ expect = [
   { target = "host", status_present = ["X"], status_absent = ["Y"] },
   { resource = "SpellSlot", level = 1, change = -1 },       # host by default; level 0 for non-slot resources
   { consecutive_turns = "host", count = [2, 5] },          # turns in a row right after the cast (with end_turns)
-  { took_turn = "A" },                                      # A took a turn after the cast
+  { took_turn = "A" },
+  { target = "host", status_applied_count = { status = "PRONE", count = [0, 0] } },  # times it landed                                      # A took a turn after the cast
   { roll = "ath", pass = [30, 30] },                        # passes out of a `rolls` batch (below)
 ]
 rolls = [{ as = "ath", type = "SkillCheck", id = "Athletics", dc = 8, n = 30 }]  # real passive rolls by the host
@@ -106,9 +110,11 @@ Templates: `wolf`, `boar`, `bear`, `skeleton`, `zombie`, or any root-template GU
 `friendly`, `neutral`, or a faction GUID. `bg3_test_list` validates every case against the index
 (unknown spells, statuses, aliases, keys).
 
-Scripted casts (`Osi.UseSpell`) skip the target's saving throw: the effect lands as if the save failed (seen
-in game 2026-10-01: a wolf's Bash knocked the host prone 25/25 with no save in the combat log). Test save
-modifiers with `rolls`, or with a real enemy turn, not with a scripted save spell.
+Scripted casts (`Osi.UseSpell`) are queued with the `IgnoreSpellRolls` cast option, so by default the target's
+saving throw is never rolled and the effect lands as if it failed. `real_rolls = true` strips that option from the
+queued request (Ext.System.ServerCastRequest.OsirisCastRequests), so the save is rolled for real (verified
+2026-10-01: wolf Bash vs the host, prone 5/8 with real Strength saves). Passive rolls (`rolls`) and status-tick
+saves never go through OnPostRoll interrupts.
 
 ## How it works
 The harness (`bg3data/lua/harness.lua`) is written as a loose file under `<game>/Data/Public/BG3DataTest/`
