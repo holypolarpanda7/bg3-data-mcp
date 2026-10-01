@@ -13,7 +13,9 @@ import threading
 import time
 import uuid
 
-from . import sources
+from . import platform, sources
+
+INJECTOR = os.path.join(os.path.dirname(__file__), "ps", "se_inject.ps1")
 
 _console_lock = threading.Lock()
 
@@ -21,8 +23,9 @@ _console_lock = threading.Lock()
 def _cfg():
     cfg = sources.load_config()
     se = cfg.get("se") or {}
-    se.setdefault("inject_script", "/mnt/d/BG3Modding/Mod_Projects/References/Dev/dnd55e-tools/se_inject.ps1")
-    se.setdefault("log_dir", "/mnt/c/Users/holyp/AppData/Local/Larian Studios/Baldur's Gate 3/Script Extender Logs")
+    se["inject_script"] = platform.to_native(se["inject_script"]) if se.get("inject_script") else INJECTOR
+    ld = platform.larian_dir(cfg)
+    se["log_dir"] = platform.to_native(se["log_dir"]) if se.get("log_dir") else (os.path.join(ld, "Script Extender Logs") if ld else "")
     se.setdefault("enabled", True)
     return se
 
@@ -33,7 +36,7 @@ def game_process():
           "ForEach-Object { $_.Id.ToString() + '|' + $_.ProcessName + '|' + "
           "([DateTimeOffset]$_.StartTime).ToUnixTimeSeconds().ToString() }")
     try:
-        out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=20).stdout.strip()
+        out = platform.run_win(["powershell.exe", "-NoProfile", "-Command", ps], timeout=20).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return None
     if not out or "|" not in out:
@@ -109,13 +112,12 @@ def _lua_string(s):
 
 def _inject(lines, pid):
     se = _cfg()
-    tmp = f"/mnt/c/Users/holyp/AppData/Local/Temp/bg3data_se_{uuid.uuid4().hex[:8]}.txt"
+    tmp = os.path.join(platform.windows_temp(), f"bg3data_se_{uuid.uuid4().hex[:8]}.txt")
     with open(tmp, "w", encoding="utf-8", newline="\r\n") as f:
         f.write("\n".join(lines) + "\n")
     try:
-        r = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                            sources.winpath(se["inject_script"]), "-LinesFile", sources.winpath(tmp), "-ProcId", str(pid)],
-                           capture_output=True, text=True, timeout=60)
+        r = platform.run_win(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                              platform.to_win(se["inject_script"]), "-LinesFile", platform.to_win(tmp), "-ProcId", str(pid)], timeout=60)
     finally:
         try:
             os.remove(tmp)

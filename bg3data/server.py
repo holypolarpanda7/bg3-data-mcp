@@ -480,11 +480,34 @@ def _testing_store(layers):
 
 
 @mcp.tool()
+@guarded
+def bg3_environment() -> str:
+    """What this machine looks like to bg3-data: Windows or WSL, the discovered game install (Steam library,
+    GOG or configured), game exe, Divine.exe, the Larian user folder (Mods, modsettings.lsx, Script Extender
+    logs), Script Extender presence, detected mod managers (Vortex, BG3 Mod Manager, in-game) and what they
+    mean for hand-deployed paks, and each mod layer's deploy/enable state."""
+    from . import deploy
+    return deploy.environment()
+
+
+@mcp.tool()
+@se_guarded
+def bg3_deploy(layer: str, enable: bool = True) -> str:
+    """Pack a mod layer (Mods/<folder> + Public/<folder>, via Divine), deploy the pak to the user Mods folder
+    (refused while the game runs; previous pak backed up) and enable it in the active profile's
+    modsettings.lsx after its dependencies. Works for any mod; no per-mod scripts. Re-run after a mod
+    manager rewrites the load order."""
+    from . import deploy
+    lines, ok = deploy.deploy(layer, enable)
+    return "\n".join(lines)
+
+
+@mcp.tool()
 @se_guarded
 def bg3_game_restart(deploy_layer: str | None = None, launch: bool = True) -> str:
-    """Kill the game, optionally run a mod layer's `deploy` command (layers.json), relaunch through Steam
-    (--skip-launcher -continueGame: loads the NEWEST save) and wait until a host character is loaded.
-    Unsaved progress in the running game is lost."""
+    """Kill the game, optionally deploy a mod layer (its layers.json `deploy` command, else the built-in
+    bg3_deploy), relaunch (Steam -applaunch, or the game exe for GOG/other installs; --skip-launcher
+    -continueGame loads the NEWEST save) and wait until a host character is loaded. Unsaved progress is lost."""
     from . import testing
     return testing.restart(deploy_layer, launch)
 

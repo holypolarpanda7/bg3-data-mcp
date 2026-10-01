@@ -13,11 +13,20 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 
+from . import platform
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Keep the cache on the Linux filesystem: fast, and directory renames are reliable there (they
-# fail on /mnt/* Windows drives while Divine.exe still holds handles). Override with BG3_DATA_CACHE.
-CACHE = os.environ.get("BG3_DATA_CACHE", os.path.join(os.path.expanduser("~"), ".cache", "bg3-data-mcp", "cache"))
-CONFIG = os.path.join(ROOT, "layers.json")
+# Under WSL the cache stays on the Linux filesystem: fast, and directory renames are reliable there (they
+# fail on /mnt/* Windows drives while Divine.exe still holds handles). On Windows: %LOCALAPPDATA%.
+# Override with BG3_DATA_CACHE.
+CACHE = platform.cache_dir()
+CONFIG = os.environ.get("BG3_DATA_CONFIG", os.path.join(ROOT, "layers.json"))
+BASE_DEFAULTS = {
+    "paks": ["Shared.pak", "Gustav.pak", "GustavX.pak", "Patch*.pak"],
+    "module_order": ["Shared", "SharedDev", "Gustav", "GustavDev", "GustavX"],
+    "exclude_modules": ["Honour", "HonourX", "PhotoMode"],
+    "localization_pak": "Localization/English.pak",
+}
 
 BASE_GLOBS = [
     "Public/*/Stats/Generated/Data/*.txt",
@@ -39,24 +48,63 @@ class ConfigError(RuntimeError):
     pass
 
 
+_DISCOVERED = {}
+
+
+def _discover(key, fn):
+    if key not in _DISCOVERED:
+        _DISCOVERED[key] = fn()
+    return _DISCOVERED[key]
+
+
 def load_config():
-    with open(CONFIG, encoding="utf-8") as f:
-        cfg = json.load(f)
-    if not os.path.isfile(cfg.get("divine", "")):
-        raise ConfigError(f"Divine.exe not found at {cfg.get('divine')!r} (layers.json 'divine'); LSLib v1.20.4+ is required")
-    if not os.path.isdir(cfg["base"]["game_data"]):
-        raise ConfigError(f"game Data folder not found: {cfg['base']['game_data']!r} (layers.json base.game_data)")
+    """layers.json with every machine-specific path optional: missing ones are discovered, and Windows-style
+    (D:\\...) or WSL-style (/mnt/d/...) paths both work. The raw file is kept for save_config."""
+    raw = {}
+    if os.path.exists(CONFIG):
+        with open(CONFIG, encoding="utf-8") as f:
+            raw = json.load(f)
+    cfg = json.loads(json.dumps(raw))
+    cfg["_raw"] = raw
+    base = cfg.setdefault("base", {})
+    for k, v in BASE_DEFAULTS.items():
+        base.setdefault(k, v)
+    if base.get("game_data"):
+        base["game_data"] = platform.to_native(base["game_data"])
+    else:
+        install, store = _discover("game", platform.find_game)
+        if not install:
+            raise ConfigError("Baldur's Gate 3 not found (Steam libraries, GOG, common folders); set base.game_data in layers.json")
+        base["game_data"] = os.path.join(install, "Data")
+        base["_store"] = store
+    cfg["divine"] = platform.to_native(cfg["divine"]) if cfg.get("divine") else _discover("divine", lambda: platform.find_divine(raw))
+    cfg.setdefault("mods", [])
+    for m in cfg["mods"]:
+        m["_raw_path"] = m["path"]
+        m["path"] = platform.to_native(m["path"])
+    if not cfg["divine"] or not os.path.isfile(cfg["divine"]):
+        raise ConfigError(f"Divine.exe not found ({cfg.get('divine')!r}); install LSLib v1.20.4+ "
+                          "(https://github.com/Norbyte/lslib/releases) and set 'divine' in layers.json or BG3_DIVINE")
+    if not os.path.isdir(base["game_data"]):
+        raise ConfigError(f"game Data folder not found: {base['game_data']!r} (layers.json base.game_data)")
     return cfg
 
 
 def save_config(cfg):
+    """Write back only what the user configured (discovered paths stay discovered; mod paths keep their spelling)."""
+    out = json.loads(json.dumps(cfg.get("_raw") or {}))
+    out["mods"] = []
+    for m in cfg.get("mods", []):
+        e = {k: v for k, v in m.items() if not k.startswith("_")}
+        e["path"] = m.get("_raw_path") or m["path"]
+        out["mods"].append(e)
     with open(CONFIG, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(cfg, f, indent=2)
+        json.dump(out, f, indent=2)
         f.write("\n")
 
 
 def winpath(p):
-    return subprocess.check_output(["wslpath", "-w", p], text=True).strip()
+    return platform.to_win(p)
 
 
 def divine(cfg, *args):

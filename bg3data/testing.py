@@ -40,12 +40,23 @@ GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 
 # ------------------------------------------------------------------ config
 def game_cfg():
+    """Launch/lifecycle settings: layers.json "game" overrides, otherwise discovered for this machine."""
+    from . import platform
     cfg = sources.load_config()
     g = dict(cfg.get("game") or {})
-    g.setdefault("steam_exe", r"C:\Program Files (x86)\Steam\steam.exe")
-    g.setdefault("app_id", 1086940)
+    install = os.path.dirname(cfg["base"]["game_data"])
+    store = cfg["base"].get("_store") or ("steam" if "steamapps" in install.lower() else "direct")
+    g.setdefault("launcher", "auto")
+    if g["launcher"] == "auto":
+        g["launcher"] = "steam" if store == "steam" and platform.steam_dir() else "direct"
+    sd = platform.steam_dir()
+    g["steam_exe"] = platform.to_native(g["steam_exe"]) if g.get("steam_exe") else (os.path.join(sd, "steam.exe") if sd else None)
+    g["game_exe"] = platform.to_native(g["game_exe"]) if g.get("game_exe") else platform.game_exe(install)
+    g.setdefault("app_id", platform.STEAM_APP_ID)
     g.setdefault("launch_args", ["--skip-launcher", "-continueGame"])
-    g.setdefault("savegames", "/mnt/c/Users/holyp/AppData/Local/Larian Studios/Baldur's Gate 3/PlayerProfiles/Public/Savegames/Story")
+    ld = platform.larian_dir(cfg)
+    g["savegames"] = platform.to_native(g["savegames"]) if g.get("savegames") else \
+        os.path.join(ld or "", "PlayerProfiles", g.get("profile", "Public"), "Savegames", "Story")
     g.setdefault("processes", ["bg3.exe", "bg3_dx11.exe"])
     return cfg, g
 
@@ -1047,10 +1058,8 @@ def _number(steps):
 
 # ------------------------------------------------------------------ game lifecycle
 def _tasklist():
-    try:
-        return subprocess.run(["tasklist.exe"], capture_output=True, text=True, timeout=20).stdout.lower()
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
+    from . import platform
+    return platform.tasklist()
 
 
 def kill_game():
@@ -1058,7 +1067,8 @@ def kill_game():
     killed = []
     for p in g["processes"]:
         if p.lower() in _tasklist():
-            subprocess.run(["taskkill.exe", "/IM", p, "/F"], capture_output=True, timeout=30)
+            from . import platform
+            platform.run_win(["taskkill.exe", "/IM", p, "/F"], timeout=30)
             killed.append(p)
     for _ in range(30):
         if not any(p.lower() in _tasklist() for p in g["processes"]):
@@ -1081,24 +1091,35 @@ def restart(deploy_layer=None, launch=True, timeout=300):
     killed = kill_game()
     log.append("killed: " + (", ".join(killed) or "game wasn't running"))
     if deploy_layer:
+        from . import deploy, platform
         m = mod_entry(deploy_layer)
         cmd = m.get("deploy")
-        if not cmd:
-            raise ValueError(f"layer {deploy_layer!r} has no `deploy` command in layers.json")
-        r = subprocess.run(["bash", "-lc", cmd], cwd=m["path"], capture_output=True, text=True, timeout=600)
-        tail = (r.stdout + r.stderr).strip().splitlines()[-8:]
-        log.append(f"deploy ({cmd}) exit {r.returncode}:\n    " + "\n    ".join(tail))
-        if r.returncode != 0:
-            return "\n".join(log + ["deploy failed - not launching"])
+        if cmd:  # the mod's own deploy command (run in its folder)
+            r = subprocess.run(platform.shell_command(cmd), cwd=m["path"], capture_output=True, text=True, timeout=600)
+            tail = (r.stdout + r.stderr).strip().splitlines()[-8:]
+            log.append(f"deploy ({cmd}) exit {r.returncode}:\n    " + "\n    ".join(tail))
+            if r.returncode != 0:
+                return "\n".join(log + ["deploy failed - not launching"])
+        else:  # built in: pack, deploy, enable
+            lines, ok = deploy.deploy(deploy_layer)
+            log += [f"deploy: {l}" for l in lines]
+            if not ok:
+                return "\n".join(log + ["deploy failed - not launching"])
     if not launch:
         return "\n".join(log)
     ns = newest_save()
     log.append(f"newest save (what -continueGame loads): {ns[0]} ({ns[1]})" if ns else "no saves found")
+    from . import platform
     _, g = game_cfg()
     args = " ".join(g["launch_args"])
-    subprocess.run(["cmd.exe", "/c", "start", "", g["steam_exe"], "-applaunch", str(g["app_id"])] + g["launch_args"],
-                   cwd="/mnt/c", capture_output=True, timeout=30)
-    log.append(f"launched via Steam -applaunch {g['app_id']} {args}")
+    if g["launcher"] == "steam" and g.get("steam_exe"):
+        platform.launch_detached(g["steam_exe"], ["-applaunch", str(g["app_id"])] + g["launch_args"])
+        log.append(f"launched via Steam -applaunch {g['app_id']} {args}")
+    elif g.get("game_exe"):
+        platform.launch_detached(g["game_exe"], g["launch_args"])
+        log.append(f"launched {g['game_exe']} {args}")
+    else:
+        return "\n".join(log + ["no launcher: set game.launcher / game.game_exe in layers.json"])
     t0 = time.time()
     while time.time() - t0 < timeout:
         time.sleep(5)

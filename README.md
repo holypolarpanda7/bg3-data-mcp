@@ -50,17 +50,59 @@ minute. Rebuilds are atomic: a failed rebuild keeps serving the previous index a
 | `bg3_toolkit_status` / `bg3_toolkit_export` / `bg3_toolkit_check` | Larian Toolkit (mod.io publishing): where the Toolkit expects the mod, generate its editor copy (.stats/.tbl) from the game-ready files, and diff the two copies - formats learned from vanilla + dnd55e editor data |
 | `bg3_ingame_check(layer)` | every stats entry a layer defines vs what the running game loaded (invalid values the engine dropped) |
 
-## Setup
-```bash
-# the environment lives on the Linux filesystem (fast); the project stays on /mnt/d
-export UV_PROJECT_ENVIRONMENT=$HOME/.cache/bg3-data-mcp/venv
-uv run bg3-data refresh            # first build: extracts from game paks (a few minutes)
-uv run bg3-data entry Target_Heal --layers dnd55e
-claude mcp add bg3-data -e UV_PROJECT_ENVIRONMENT=$HOME/.cache/bg3-data-mcp/venv -- \
-  uv run --quiet --directory /mnt/d/BG3Modding/Mod_Projects/bg3-data-mcp bg3-data-mcp
+## Install
+Works natively on **Windows** or under **WSL**; the game, Script Extender and LSLib are Windows programs either way.
+Needs [uv](https://docs.astral.sh/uv/), Python 3.12+, and LSLib v1.20.4+
+([releases](https://github.com/Norbyte/lslib/releases); Vortex's bundled `divine.exe` is too old for current LSF files).
+
+**Windows (PowerShell):**
+```powershell
+git clone <this repo> C:\Mods\bg3-data-mcp
+cd C:\Mods\bg3-data-mcp
+copy layers.example.json layers.json        # then list your mod folders (see below)
+uv run python tests\env_check.py            # what it found: game, Divine.exe, mod managers, Script Extender
+uv run bg3-data layers                      # first index build: a few minutes (extracts from the game paks)
+claude mcp add bg3-data -- uv run --quiet --directory C:\Mods\bg3-data-mcp bg3-data-mcp
 ```
-`layers.json` holds the `Divine.exe` path (LSLib v1.20.4+; Vortex's bundled copy is too old for LSF v7)
-and the game `Data` path.
+
+**WSL:** keep the environment on the Linux filesystem (fast), the project anywhere:
+```bash
+export UV_PROJECT_ENVIRONMENT=$HOME/.cache/bg3-data-mcp/venv
+uv run python tests/env_check.py && uv run bg3-data layers
+claude mcp add bg3-data -e UV_PROJECT_ENVIRONMENT=$HOME/.cache/bg3-data-mcp/venv -- \
+  uv run --quiet --directory /mnt/d/path/to/bg3-data-mcp bg3-data-mcp
+```
+
+### Configuration (`layers.json`)
+Only your mod layers are required; everything machine-specific is **discovered** and can be overridden.
+Paths may be written Windows-style (`D:\\Mods\\MyMod`) or WSL-style (`/mnt/d/Mods/MyMod`) - both work on both.
+```json
+{
+  "mods": [
+    {"name": "dnd55e", "path": "D:\\BG3Modding\\dnd55e"},
+    {"name": "mymod", "path": "D:\\BG3Modding\\MyMod", "tests": "tests/bg3", "deploy": "optional custom command"}
+  ],
+  "base":  {"game_data": "E:\\Games\\Baldurs Gate 3\\Data"},
+  "divine": "C:\\Tools\\LSLib\\Packed\\Tools\\Divine.exe",
+  "game":  {"launcher": "auto", "profile": "Public", "larian_dir": "...", "steam_exe": "...", "game_exe": "..."}
+}
+```
+| Setting | Discovered from (when omitted) |
+| --- | --- |
+| `base.game_data` | Steam (registry + every library in `libraryfolders.vdf` + the app manifest), GOG (registry), common folders |
+| `divine` | `BG3_DIVINE` env, `PATH`, `*\\LSLib\\Packed\\Tools\\Divine.exe` under your user folder / C: / D:, Vortex's copy (last) |
+| `game.larian_dir` | `%LOCALAPPDATA%\\Larian Studios\\Baldur's Gate 3` (Mods, PlayerProfiles, Script Extender Logs) |
+| `game.launcher` | `steam` (`steam.exe -applaunch 1086940`) for Steam installs, else `direct` (`bin\\bg3_dx11.exe`); GOG uses direct |
+| `game.profile` | `Public` (the profile whose `modsettings.lsx` and saves are used) |
+| mod `deploy` | none: `bg3_deploy` packs `Mods/<folder>` + `Public/<folder>` with Divine, deploys and enables the mod |
+| cache | `%LOCALAPPDATA%\\bg3-data-mcp\\cache` (Windows), `~/.cache/bg3-data-mcp/cache` (WSL); `BG3_DATA_CACHE` overrides |
+
+### Mod managers
+`bg3_environment` reports what manages the game's Mods folder. **Vortex** (detected from its deployment
+manifest) and **BG3 Mod Manager** (detected while running) rewrite `modsettings.lsx` when they deploy or
+export a load order, which disables mods they don't manage: re-run `bg3_deploy` afterwards (it re-enables the
+mod after its dependencies), or add your dev mod to the manager. The **in-game mod manager** lists local paks
+under Installed and needs nothing extra.
 
 ## Script Extender bridge (running game)
 These tools talk to the live game through the SE console, using `References/Dev/dnd55e-tools/se_inject.ps1`
