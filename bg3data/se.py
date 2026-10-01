@@ -247,7 +247,10 @@ def log_tail(filter_text=None, lines=60):
     log = current_log()
     if not log:
         raise RuntimeError("no Extender Runtime log from the current game run")
-    text = _read_from(log, max(0, os.path.getsize(log) - 400_000)).splitlines()
+    # unfiltered: the tail is what matters; filtered: search (almost) the whole run - eval traffic can push
+    # early lines (bootstrap, load errors) far back in the file
+    window = 64_000_000 if filter_text else 400_000
+    text = _read_from(log, max(0, os.path.getsize(log) - window)).splitlines()
     if filter_text:
         text = [l for l in text if filter_text.lower() in l.lower()]
     return os.path.basename(log), text[-lines:]
