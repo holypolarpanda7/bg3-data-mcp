@@ -62,7 +62,7 @@ id = "wiz-01-magic-missile"  # unique within the layer
 level = 1                    # class level the case is written for (stage blocks below it)
 title = "Magic Missile hits a hostile wolf and spends a 1st-level slot"
 spell = "Projectile_MagicMissile"
-target = "A"                 # "host" or a spawn alias
+target = "A"                 # "host", a spawn alias, or "ground" (cast at a point `distance` m ahead)
 mode = "auto"                # default; or "player" / "script"
 prep = "..."                 # optional: shown as "Before casting: ..."
 grant_passive = "Feature"     # optional action instead of/before a spell: add a passive after the before-snapshot
@@ -76,7 +76,8 @@ safety_floor = 35            # percent HP
 spawn = [{ as = "A", template = "wolf", faction = "hostile", hp = 40, distance = 8 }]
 setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", turns = 10 },
          { target = "A", boost = "Resistance(Fire,Resistant)" }, { target = "host", max_hp = 20 },
-         { target = "host", passive = "SomeFeature" }]   # passive: added for the case, removed at cleanup
+         { target = "host", passive = "SomeFeature" },   # passive: added for the case, removed at cleanup
+         { target = "A", dead = true }]                  # a corpse, e.g. for revive spells
 expect = [
   { acted_first = true },                                   # first recorded turn was the host's
   { cast = true },                                          # the host cast `spell` (or cast = "OtherSpell")

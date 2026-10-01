@@ -76,11 +76,20 @@ def _harness_source():
     return src.replace("__VERSION__", version), version
 
 
+_HARNESS_SEEN = {"key": None, "at": 0.0}
+
+
 def ensure_harness():
-    """Install (or upgrade) the harness in the running game; cheap no-op when the current version is loaded."""
+    """Install (or upgrade) the harness in the running game. The check costs a console round trip, so a
+    confirmed (game process, version) is trusted for 60 s; a failing call (e.g. after a Lua reset) re-checks."""
     src, version = _harness_source()
+    proc = se.game_process()
+    key = (proc[0] if proc else None, version)
+    if _HARNESS_SEEN["key"] == key and time.time() - _HARNESS_SEEN["at"] < 60:
+        return version
     r = se.eval_lua(f"return BG3T and BG3T.version or ''", "server", timeout=15)
     if r["ok"] and r["result"] == version:
+        _HARNESS_SEEN.update(key=key, at=time.time())
         return version
     cfg = sources.load_config()
     folder = os.path.join(cfg["base"]["game_data"], "Public", "BG3DataTest")
@@ -93,6 +102,7 @@ def ensure_harness():
                     'return {r=r, errors=BG3T and BG3T.listen_errors}', "server", timeout=20)
     if not r["ok"] or not isinstance(r["result"], dict):
         raise RuntimeError(f"harness install failed: {r['result']}")
+    _HARNESS_SEEN.update(key=key, at=time.time())
     errs = r["result"].get("errors") or []
     if errs:
         raise RuntimeError("harness installed but some Osiris listeners failed: " + "; ".join(map(str, errs)))
@@ -103,6 +113,10 @@ def lua(code, timeout=20):
     """Eval with the harness guaranteed present; raise on Lua errors."""
     ensure_harness()
     r = se.eval_lua(code, "server", timeout=timeout)
+    if not r["ok"] and "BG3T" in str(r["result"]):  # harness gone (Lua reset): reinstall once and retry
+        _HARNESS_SEEN["key"] = None
+        ensure_harness()
+        r = se.eval_lua(code, "server", timeout=timeout)
     if not r["ok"]:
         raise RuntimeError(f"in-game error: {r['result']}")
     return r["result"]
@@ -336,7 +350,7 @@ def validate(store, active, c):
         errs.append("console case needs `expect_log` (the log line that means PASS)")
     if c.get("spell") and not store.resolve(c["spell"], active):
         errs.append(f"spell {c['spell']} not found in layers {active}")
-    if c.get("target") and c["target"] not in aliases:
+    if c.get("target") and c["target"] not in aliases | {"ground"}:
         errs.append(f"target {c['target']!r} is not host or a spawn alias")
     for s in c.get("spawn", []):
         t = s.get("template", "")
@@ -470,6 +484,8 @@ def stage(store, active, layer, case_id):
             post.append(f"BG3T.apply({_who(st_)}, {se._lua_string(st_['status'])}, {int(st_.get('turns', 10))})")
         if st_.get("boost"):
             post.append(f"BG3T.grant({_who(st_)}, {se._lua_string(st_['boost'])})")
+        if st_.get("dead"):  # e.g. a corpse for revive spells
+            post.append(f"pcall(Osi.Die, {_who(st_)}, 0, 'NULL_00000000-0000-0000-0000-000000000000', 0, 1)")
     if c.get("refill", True):
         post.append("BG3T.refill(BG3T.host())")
     # a case that deliberately starts you at low HP mustn't trip the safety watch by itself
@@ -501,8 +517,11 @@ def stage(store, active, layer, case_id):
     if c.get("grant_passive"):  # the case's action is gaining a feature (e.g. a boon's max HP increase)
         lua(f"BG3T.addPassive(BG3T.host(), {se._lua_string(c['grant_passive'])}); return true")
     if mode in ("auto", "script") and c.get("spell"):
-        tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
-        lua(f"BG3T.cast(BG3T.host(), {se._lua_string(c['spell'])}, {tgt}); return true")
+        if c.get("target") == "ground":
+            lua(f"BG3T.castAt(BG3T.host(), {se._lua_string(c['spell'])}, {float(c.get('distance', 3))}); return true")
+        else:
+            tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
+            lua(f"BG3T.cast(BG3T.host(), {se._lua_string(c['spell'])}, {tgt}); return true")
     return {"ok": True, "case": c, "notes": notes, "combat": combat, "first_turn": first_turn,
             "spell_name": _name(store, active, c["spell"]) if c.get("spell") else None, "before": before}
 

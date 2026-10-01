@@ -5,6 +5,7 @@ Transport: se_inject.ps1 attaches to the game's SE console and writes keystrokes
 which must be newer than the game process (log file names are UTC; we compare real mtimes).
 Each eval is wrapped in unique BEGIN/END markers so concurrent log noise can't be mistaken for it.
 """
+import contextlib
 import glob
 import json
 import os
@@ -20,6 +21,45 @@ INJECTOR = os.path.join(os.path.dirname(__file__), "ps", "se_inject.ps1")
 _console_lock = threading.Lock()
 
 
+@contextlib.contextmanager
+def _console_guard(timeout=120.0):
+    """One console conversation at a time - across threads AND processes (the MCP server and a CLI run
+    typing into the same game console interleave their keystrokes and hang the injector)."""
+    with _console_lock:
+        os.makedirs(sources.CACHE, exist_ok=True)
+        fh = open(os.path.join(sources.CACHE, "console.lock"), "a+")
+        deadline = time.time() + timeout
+        try:
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.time() > deadline:
+                        raise RuntimeError("another bg3-data process has been using the game console for "
+                                           f"{timeout:.0f}s; wait for it or stop it")
+                    time.sleep(0.2)
+            yield
+        finally:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            fh.close()
+
+
 def _cfg():
     cfg = sources.load_config()
     se = cfg.get("se") or {}
@@ -30,8 +70,20 @@ def _cfg():
     return se
 
 
-def game_process():
-    """(pid, name, start_epoch) of the running game, or None."""
+_PROC_CACHE = {"at": 0.0, "value": None}
+
+
+def game_process(max_age=10.0):
+    """(pid, name, start_epoch) of the running game, or None. Finding it spawns PowerShell (~1-2 s), and a
+    running game's pid/start don't change, so a positive answer is reused for `max_age` seconds."""
+    if _PROC_CACHE["value"] and time.time() - _PROC_CACHE["at"] < max_age:
+        return _PROC_CACHE["value"]
+    v = _game_process()
+    _PROC_CACHE.update(at=time.time(), value=v)
+    return v
+
+
+def _game_process():
     ps = ("Get-Process bg3,bg3_dx11 -ErrorAction SilentlyContinue | Select-Object -First 1 | "
           "ForEach-Object { $_.Id.ToString() + '|' + $_.ProcessName + '|' + "
           "([DateTimeOffset]$_.StartTime).ToUnixTimeSeconds().ToString() }")
@@ -124,6 +176,7 @@ def _inject(lines, pid):
         except OSError:
             pass
     if "ok" not in r.stdout:
+        _PROC_CACHE["value"] = None  # the game may have exited or restarted
         raise RuntimeError(f"console injection failed: {r.stdout.strip() or r.stderr.strip()}")
 
 
@@ -144,7 +197,7 @@ def eval_lua(code, context="server", timeout=15.0):
     """Run Lua in the game; return {'ok', 'result', 'output': [printed lines]}."""
     if context not in ("server", "client"):
         raise ValueError("context must be 'server' or 'client'")
-    with _console_lock:
+    with _console_guard():
         (pid, _, _), log = _preflight()
         tag = uuid.uuid4().hex[:10]
         chunk = (
@@ -182,7 +235,7 @@ def command(line, wait=3.0, context="server"):
     """Send one raw console line (e.g. '!apofeature X') and return the log lines it produced."""
     if "\n" in line or "\r" in line:
         raise ValueError("one console line at a time")
-    with _console_lock:
+    with _console_guard():
         (pid, _, _), log = _preflight()
         offset = os.path.getsize(log)
         _inject([context, line], pid)

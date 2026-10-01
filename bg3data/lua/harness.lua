@@ -180,6 +180,13 @@ function T.cast(caster, spell, target)
     Osi.UseSpell(uuid(caster), spell, uuid(target))
 end
 
+-- ground-targeted spells (summons, zones): cast at a point dx metres in front of the caster
+function T.castAt(caster, spell, dx)
+    caster = uuid(caster)
+    local x, y, z = Osi.GetPosition(caster)
+    Osi.UseSpellAtPosition(caster, spell, x + (dx or 3), y, z, 1)
+end
+
 function T.drain(since)
     local out = {}
     for _, ev in ipairs(T.events) do if ev.seq > (since or 0) then out[#out + 1] = ev end end
