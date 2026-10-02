@@ -45,6 +45,14 @@ def loaded_modules():
     return res
 
 
+def focus_game():
+    """Bring the game window to the foreground (Alt tap + SetForegroundWindow). True when it is in front."""
+    ps = os.path.join(os.path.dirname(__file__), "ps", "focus_game.ps1")
+    r = platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                          "-File", platform.to_win(ps)], timeout=30)
+    return "foreground" in (r.stdout or "") and "not" not in (r.stdout or "")
+
+
 def press_key(vk=0x0D):
     """Post a key to the game window (no focus needed). Dismisses the splash screen."""
     ps = os.path.join(os.path.dirname(__file__), "ps", "postkey.ps1")

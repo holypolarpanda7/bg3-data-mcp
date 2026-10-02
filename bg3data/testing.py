@@ -338,7 +338,7 @@ def find_case(layer, case_id):
 EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
-               "status_applied_count", "cast_count", "saves", "cast_only"}
+               "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -587,6 +587,14 @@ def stage(store, active, layer, case_id):
         if c.get("clear_between"):
             tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
             lua(f"table.insert(BG3T.aiClear, {{ caster = {cst}, target = {tgt}, statuses = {{{', '.join(se._lua_string(s) for s in c['clear_between'])}}} }}); return true")
+        if c.get("focus"):  # game window in front (player-side decisions; made no difference for #22 on 2026-10-02)
+            from . import gameui as _g
+            notes.append("game window focused" if _g.focus_game() else "couldn't focus the game window")
+        if c.get("auto_reactions", True):  # reactions of the target/host on auto (Enabled, no Ask), after a tick
+            time.sleep(0.6)  # a freshly added passive's interrupt preference appears a moment later
+            for who in {"host", c.get("target", "host")}:
+                g = "BG3T.host()" if who == "host" else f"BG3T.spawns[{se._lua_string(who)}]"
+                lua(f"return BG3T.autoReactions({g})")
         if c.get("sanctuary", True):  # keep the enemy AI off the host so it uses the spell on the target
             lua("Osi.ApplyStatus(BG3T.host(), 'SANCTUARY', 600, 1, BG3T.host()); return true")
         time.sleep(1.5)
@@ -836,9 +844,19 @@ def verify(store, active, cleanup=True, wait=2.0):
                     + (f" - below: {', '.join(str(x.get('natural')) + '->' + str(x.get('total')) for x in low)}" if low else f" ({len(rows_)} saves)"))
             lo, hi = sv.get("n", [1, 10 ** 6]); flo, fhi = sv.get("failed", [0, 10 ** 6])
             detail = ", ".join(f"{x.get('natural')}->{x.get('total')} vs {x.get('dc')}{'' if x.get('spellcast') else ' (not a spell roll)'}" for x in rows_[:10])
+            if sv.get("effect_status"):  # save events show the dice BEFORE interrupts: count what actually landed
+                landed = sum(1 for x in events if x.get("kind") == "StatusApplied" and x.get("who") == guid and x.get("status") == sv["effect_status"])
+                row(landed <= nf and (landed == 0 if sv.get("rescued") else True),
+                    f"{label}: {sv['effect_status']} landed {landed} times for {nf} failed rolls (rescued by interrupts: {nf - landed})")
             row(lo <= len(rows_) <= hi and flo <= nf <= fhi,
                 f"{label}: {len(rows_)} {sv.get('ability', '')} saves{' vs ' + sv['by'] if sv.get('by') else ''}, {nf} failed "
                 f"(expected n [{lo}, {hi}], failed [{flo}, {fhi}]) [{detail}]")
+        if e.get("interrupt_used"):  # {name, count = [lo, hi]}: also reports how often it was considered
+            iu = e["interrupt_used"]
+            used = sum(1 for x in events if x.get("kind") == "InterruptUsed" and x.get("interrupt") == iu["name"])
+            seen = sum(1 for x in events if x.get("kind") == "InterruptConsidered" and x.get("interrupt") == iu["name"])
+            lo, hi = iu.get("count", [1, 10 ** 6])
+            row(lo <= used <= hi, f"{iu['name']} used {used} times, expected [{lo}, {hi}] (considered {seen} times)")
         if e.get("status_applied_count"):  # {status, count = [lo, hi]}: how many times it landed during the run
             sc = e["status_applied_count"]
             n = sum(1 for x in events if x.get("kind") == "StatusApplied" and x.get("who") == guid and x.get("status") == sc["status"])

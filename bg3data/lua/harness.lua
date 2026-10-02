@@ -463,6 +463,34 @@ do
     end)
 end
 
+-- interrupts the engine considers (an InterruptDecision entity appears) and uses (ServerInterruptUsed), by name.
+-- "considered but not used" = conditions passed but nobody decided to use it (NPC AI declined, or no player decision)
+local function interruptName(e) local ok, n = pcall(function() return e.InterruptData.Interrupt end) return ok and n or nil end
+for _, s in ipairs(T.interruptSubs or {}) do pcall(Ext.Entity.Unsubscribe, s) end
+T.interruptSubs = {}
+table.insert(T.interruptSubs, Ext.Entity.OnCreate("InterruptDecision", function(e)
+    if T.recording then push({ kind = "InterruptConsidered", interrupt = interruptName(e) }) end
+end))
+table.insert(T.interruptSubs, Ext.Entity.OnCreate("ServerInterruptUsed", function(e)
+    if not T.recording then return end
+    pcall(function()
+        for ent in pairs(e.ServerInterruptUsed.Interrupts) do push({ kind = "InterruptUsed", interrupt = interruptName(ent) }) end
+    end)
+end))
+
+-- reactions on auto (Enabled, Ask off) for every interrupt the character has. Set key by key: assigning the
+-- whole Preferences map back clears it (seen 2026-10-02).
+function T.autoReactions(g)
+    local e = Ext.Entity.Get(uuid(g))
+    local n = 0
+    for _, ie in ipairs(e.InterruptContainer.Interrupts) do
+        local name = interruptName(ie)
+        if name then e.InterruptPreferences.Preferences[name] = { "Enabled" } n = n + 1 end
+    end
+    e:Replicate("InterruptPreferences")
+    return n
+end
+
 local ARITY = { StatusApplied = 4, StatusRemoved = 4, CastedSpell = 5, UsingSpellOnTarget = 6, AttackedBy = 7, Died = 1,
                 TurnStarted = 1, CombatStarted = 1, CombatEnded = 1, LeveledUp = 1, HitpointsChanged = 2, RollResult = 6 }
 T.listen_errors = {}

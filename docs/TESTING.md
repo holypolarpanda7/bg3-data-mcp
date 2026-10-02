@@ -134,9 +134,11 @@ expect = [
   { target = "host", status_applied_count = { status = "PRONE", count = [0, 0] } },  # times it landed
   { cast_only = "A" },                                      # the spawn cast nothing but the case's spell (ai)
   { cast_count = { by = "A", count = [1, 99] } },           # casts of the case's spell by a spawn
+  { interrupt_used = { name = "Interrupt_X", count = [1, 9] } },  # used N times (and how often considered)
   { target = "B", saves = { ability = "Strength", spell_only = true, n = [1, 99], failed = [0, 0], min_total = 16 } },
                              # recorded saving throws: spell_only = the spell's own roll (not a status/surface
-                             # tick); min_total = every total at least this (exact floor check)                                      # A took a turn after the cast
+                             # tick); min_total = every total at least this (exact floor check);
+                             # effect_status = "X" counts X landing per failed roll, rescued = true: never                                      # A took a turn after the cast
   { roll = "ath", pass = [30, 30] },                        # passes out of a `rolls` batch (below)
 ]
 rolls = [{ as = "ath", type = "SkillCheck", id = "Athletics", dc = 8, n = 30 }]  # real passive rolls by the host
@@ -176,8 +178,18 @@ cache (`test_state.json`), so it survives an MCP restart.
 - `Osi.RemoveSpell` doesn't remove a template's innate attacks: the harness locks them with cooldowns.
 - Writing a cast's pre-rolled saves (`SpellCastRolls`) back from Lua froze the server thread: don't.
 - The first launch after quitting a loaded game is always in no-mods safe mode; restart handles it.
-- In this setup even base Legendary Resistance didn't fire for the host on AI spell saves (2026-10-02): treat
-  save-interrupt features as unverifiable here and spot-check them by hand.
+- Save events show the dice BEFORE interrupts. Judge an interrupt by outcome (`saves.effect_status`: did the
+  effect land for each failed roll; `rescued = true`: never) and by `interrupt_used` (the harness records
+  InterruptConsidered / InterruptUsed by name).
+- Legendary Resistance needs its status (`LEGENDARY_RESISTANCE_<ABILITY>`, which sets 3 charges);
+  `ActionResource(LegendaryResistanceCharge, ...)` only raises the maximum, leaving 0 charges.
+- Interrupts are considered on real (AI) spell saves. An NPC's AI may decline them (Legendary Resistance vs
+  Strength Drain was declined). For the player, `auto_reactions` (default on in ai mode) sets every reaction to
+  Enabled without Ask. Even so, a roll interrupt (OnPostRoll) on the PLAYER is considered but never used - with
+  auto reactions, the window focused (`focus = true`), and even a condition of only HasInterruptedSavingThrow()
+  (2026-10-02; base Legendary Resistance on the host behaves the same). Player roll reactions likely go through
+  the roll prompt; verify them by hand. NPC roll interrupts are decided by their AI.
+- `InterruptPreferences.Preferences`: set keys one by one - assigning the whole map back wipes it.
 
 ## Known limits
 - The Nautiloid tutorial (`TUT_SUMMON_BLOCK`) blocks summons: test summon spells after the crash site.
