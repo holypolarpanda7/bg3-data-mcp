@@ -58,7 +58,18 @@ def game_cfg():
     g["savegames"] = platform.to_native(g["savegames"]) if g.get("savegames") else \
         os.path.join(ld or "", "PlayerProfiles", g.get("profile", "Public"), "Savegames", "Story")
     g.setdefault("processes", ["bg3.exe", "bg3_dx11.exe"])
+    g["larian_dir"] = ld
     return cfg, g
+
+
+def clear_mod_crash_check(g, log):
+    """The game keeps <larian dir>/ModCrashSanityCheck while it loads mods and deletes it once loaded. Found at the
+    next launch (the game was killed or quit mid-load), it starts in no-mods safe mode - remove it before launching."""
+    d = os.path.join(g.get("larian_dir") or "", "ModCrashSanityCheck")
+    if g.get("larian_dir") and os.path.isdir(d):
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+        log.append("cleared ModCrashSanityCheck (would have started in no-mods safe mode)")
 
 
 def mod_entry(layer):
@@ -519,7 +530,7 @@ def stage(store, active, layer, case_id):
         lua("BG3T.cleanup(); return true")
         raise RuntimeError(f"spawn failed for {missing}")
     time.sleep(0.4)  # boosts (initiative, max HP) apply on the next tick (a frame; was 1.2 s)
-    post = []
+    post, late = [], []
     for s in spawns:
         if s.get("hp") is not None:
             post.append(f"BG3T.setHp(BG3T.spawns[{se._lua_string(s['as'])}], {int(s['hp'])})")
@@ -534,7 +545,7 @@ def stage(store, active, layer, case_id):
         if "hp" in st_:
             post.append(f"BG3T.setHp({_who(st_)}, {st_['hp'] if isinstance(st_['hp'], int) else repr('full')})")
         if "resource" in st_ and "amount" in st_:  # e.g. { target = "host", resource = "SpellSlot", level = 1, amount = 0 }
-            post.append(f"BG3T.setResource({_who(st_)}, {se._lua_string(st_['resource'])}, {int(st_.get('level', 0))}, {float(st_['amount'])})")
+            late.append((st_, f"return BG3T.setResource({_who(st_)}, {se._lua_string(st_['resource'])}, {int(st_.get('level', 0))}, {float(st_['amount'])})"))
         if st_.get("status"):
             post.append(f"BG3T.apply({_who(st_)}, {se._lua_string(st_['status'])}, {int(st_.get('turns', 10))})")
         if st_.get("boost"):
@@ -548,10 +559,20 @@ def stage(store, active, layer, case_id):
         fac = FACTIONS.get(s.get("faction", "hostile"), s.get("faction"))
         if fac != FACTIONS["neutral"]:
             post.append(f"pcall(Osi.SetFaction, BG3T.spawns[{se._lua_string(s['as'])}], {se._lua_string(fac)})")
-    if combat:
+    if combat and combat != "after_setup":
         post.append("BG3T.enterCombat()")
     post.append("return true")
     lua("; ".join(post), timeout=30)
+    # resources set after a tick: one granted by a setup boost (ActionResource(...)) only exists from the next tick
+    for st_, code_ in late:
+        n_ = 0
+        for _ in range(6):
+            time.sleep(0.25)
+            n_ = lua(code_, timeout=10) or 0
+            if n_:
+                break
+        if not n_:
+            raise RuntimeError(f"setup: {st_.get('target', 'host')} has no {st_['resource']} resource to set")
     # your own reactions off unless the case names the ones it measures (`reactions = ["Fate"]`, or ["*"]): a
     # Shield / Arcane or Projected Ward / opportunity attack changes the rolls a case checks (Last Stand's bite was
     # eaten by Projected Ward, 2026-10-02). AI mode keeps them all on unless the case lists some.
@@ -560,6 +581,8 @@ def stage(store, active, layer, case_id):
     lua(f"return BG3T.setReactions(BG3T.host(), {{{', '.join(se._lua_string(k) for k in keep)}}})", timeout=15)
     time.sleep(0.2)
     before = lua("return BG3T.world()", timeout=30)
+    if combat == "after_setup":  # the fight starts after the snapshot, so "when you roll Initiative" effects count
+        lua("BG3T.enterCombat(); return true")
     first_turn = None
     if combat:
         for _ in range(12):
@@ -1579,6 +1602,7 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
     from . import platform
     _, g = game_cfg()
     args = " ".join(g["launch_args"])
+    clear_mod_crash_check(g, log)
     if g["launcher"] == "steam" and g.get("steam_exe"):
         platform.launch_detached(g["steam_exe"], ["-applaunch", str(g["app_id"])] + g["launch_args"])
         log.append(f"launched via Steam -applaunch {g['app_id']} {args}")
@@ -1615,6 +1639,7 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
             note = _unstick_menu(log, relaunched)
             if note in ("relaunch", "relaunch_killed"):
                 relaunched = note == "relaunch"  # after a kill, the safe-mode relaunch must still be allowed
+                clear_mod_crash_check(g, log)
                 if g["launcher"] == "steam" and g.get("steam_exe"):
                     platform.launch_detached(g["steam_exe"], ["-applaunch", str(g["app_id"])] + g["launch_args"])
                 elif g.get("game_exe"):

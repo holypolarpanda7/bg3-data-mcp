@@ -112,7 +112,8 @@ end_turns = 7                # optional (combat): after the cast, end the host's
                              # End Turn (Osi.EndTurn doesn't end it), waiting for the host's turn each time
 instructions = "..."         # optional: extra step after the cast step
 notes = "..."                # optional: shown at the end of the case
-combat = true                # default: true when any spawn is hostile
+combat = true                # default: true when any spawn is hostile; "after_setup" starts the fight
+                             # after the before-snapshot (test "when you roll Initiative" features)
 initiative = "host_first"    # default in combat: temporary Initiative(50) boost on the host
 refill = true                # default: host action resources (slots, action points...) restored to max and spell cooldowns cleared first
 safety = true                # default: kill spawns + heal if a party member drops below safety_floor
@@ -219,7 +220,10 @@ Stats facts found while testing (2026-10-02):
   `HasStatus('X', context.Source)` (dnd55e Fractured_6_BrainsAndBrawn).
 - Caster-side Disadvantage on a spell's saves = `UnlockSpellVariant(<spell conditions>, ModifySavingThrowDisadvantage())`
   on the caster (Heightened Spell's mechanism). A target-side status/aura boost did nothing for spell saves.
-- `GainTemporaryHitPoints(N)` is only a tooltip macro; grant temp HP with a status `Boosts TemporaryHP(N)`.
+- `GainTemporaryHitPoints(10)` in the OnApplyFunctors of a duration-0 status granted nothing (Fortifying Light,
+  2026-10-02; it is a real functor); a status with `Boosts TemporaryHP(N)` works.
+- `Kill()` works in a spell's properties but did nothing in an interrupt's Properties; apply a status whose
+  `OnApplyFunctors` is `Kill()` instead (Headshot, 2026-10-02).
 - In SE Lua, `stat.SpellProperties`/`SpellSuccess` are parsed functor arrays, not text: read `TooltipDamageList`/`DamageType`.
 - A container spell with 44 children (`ContainerSpells` ~2080 chars) hangs the game at LoadModule; 43 / 2030 loaded.
   `bg3_lint_stats` reports SIZE issues; `bg3_game_restart` reports a hung load after ~60 s Not Responding.

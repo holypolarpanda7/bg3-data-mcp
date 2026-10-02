@@ -186,13 +186,15 @@ end
 function T.setResource(g, name, level, amount)
     g = uuid(g)
     local e = Ext.Entity.Get(g)
+    local n = 0
     for u, entries in pairs(e.ActionResources.Resources) do
         local def = Ext.StaticData.Get(u, "ActionResource")
         if def and def.Name == name then
-            for _, x in ipairs(entries) do if (x.ResourceId or 0) == (level or 0) then x.Amount = amount end end
+            for _, x in ipairs(entries) do if (x.ResourceId or 0) == (level or 0) then x.Amount = amount n = n + 1 end end
         end
     end
     e:Replicate("ActionResources")
+    return n
 end
 
 function T.removeStatuses(g, pattern)

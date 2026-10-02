@@ -36,6 +36,15 @@ EXPR_FIELDS = {
     "Boosts", "SpellRoll", "TooltipDamageList", "TooltipAttackSave", "Roll", "Success", "Failure", "OnTickRoll",
     "ToggleOnFunctors", "ToggleOffFunctors", "SuccessProperties", "FailProperties",
 }
+# The engine's functor names (Ext.Enums.StatsFunctorId, SE v20 / game 2026-10-02): always valid in functor fields
+ENGINE_FUNCTORS = set("""AdjustRoll ApplyEquipmentStatus ApplyStatus BreakConcentration CameraWait Counterspell CreateConeSurface
+CreateExplosion CreateSurface CreateWall CreateZone CustomDescription DealDamage DisarmAndStealWeapon DisarmWeapon DoTeleport
+Douse Drop ExecuteWeaponFunctors Extender FireProjectile Force GainTemporaryHitPoints Kill MaximizeRoll ModifySpellCameraFocus
+Pickup RegainHitPoints RegainTemporaryHitPoints RemoveAuraByChildStatus RemoveStatus RemoveStatusByLevel RemoveUniqueStatus
+ResetCombatTurn ResetCooldowns RestoreResource Resurrect Sabotage SetAdvantage SetDamageResistance SetDisadvantage SetReroll
+SetRoll SetStatusDuration ShortRest Spawn SpawnExtraProjectiles SpawnInInventory Stabilize Summon SummonInInventory SurfaceChange
+SurfaceClearLayer SwapPlaces SwitchDeathType TeleportSource TriggerRandomCast TutorialEvent Unlock Unsummon UseActionResource
+UseAttack UseSpell""".split())
 TOOLTIP_FIELDS = {"DescriptionParams", "ExtraDescriptionParams", "ShortDescriptionParams", "TooltipStatusApply",
                   "TooltipDamageList"}
 KEYWORDS = {"IF", "NOT", "AND", "OR", "TARGET", "SELF", "GROUND", "SWAP", "AI_ONLY", "AI_IGNORE", "CAST", "CASTER"}
@@ -106,7 +115,7 @@ def vocabulary(store, active, layer):
     names = {}
     for n, t in store.db.execute(f"SELECT DISTINCT name, type FROM stats WHERE {wa}", pa):
         names.setdefault(n, set()).add(t)
-    return enums, calls, resources, names, fields, desc_calls - calls
+    return enums, calls | ENGINE_FUNCTORS, resources, names, fields, desc_calls - calls - ENGINE_FUNCTORS
 
 
 def lint_stats(store, active, layer, limit=200):
@@ -138,8 +147,8 @@ def lint_stats(store, active, layer, limit=200):
                         add("ENUM", name, file, f"{k} '{val}' isn't used by any other layer (the engine may drop it)")
             if _is_expr(k, typ):
                 for c in sorted(set(CALL.findall(v)) - calls - KEYWORDS - (desc_only if k in TOOLTIP_FIELDS else set())):
-                    if c in desc_only:  # e.g. GainTemporaryHitPoints: a tooltip macro the engine won't run
-                        add("CALL", name, file, f"{k}: '{c}(' is only a DescriptionParams/tooltip macro, not a functor/boost (silently ignored)")
+                    if c in desc_only:  # a name only tooltips use (DescriptionParams macros), not an engine functor
+                        add("CALL", name, file, f"{k}: '{c}(' only appears in tooltips (DescriptionParams) elsewhere - not a functor/boost any layer uses")
                     else:
                         add("CALL", name, file, f"{k}: '{c}(' isn't used by any other layer")
                 for fn, args in STATUS_REF.findall(v):
