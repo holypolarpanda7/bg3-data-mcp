@@ -97,6 +97,7 @@ prep = "..."                 # optional: shown as "Before casting: ..."
 grant_passive = "Feature"     # optional action instead of/before a spell: add a passive after the before-snapshot
 repeat = 4                    # optional (auto/script): cast the spell N times, repeat_wait seconds apart (default 3)
 casts = [{ spell = "Shout_X" }, { spell = "Shout_Y", target = "A", wait = 2 }]  # optional: scripted casts in order
+                             # target = "ground", distance = 0: at the host's spot (e.g. a Darkness cloud)
                              # after setup, before `spell` (a feature's setup steps, e.g. pick then use)
 caster = "A"                 # optional: a spawn casts the case's `spell` (casts entries take `by = "A"`)
 real_rolls = true            # optional: the cast rolls saves/attacks for real (strips Osiris' IgnoreSpellRolls)
@@ -112,12 +113,14 @@ combat = true                # default: true when any spawn is hostile
 initiative = "host_first"    # default in combat: temporary Initiative(50) boost on the host
 refill = true                # default: host action resources (slots, action points...) restored to max and spell cooldowns cleared first
 safety = true                # default: kill spawns + heal if a party member drops below safety_floor
-safety_floor = 35            # percent HP
+safety_floor = 35            # percent HP (safety = false for cases that need the host near 0 HP, e.g. Last Stand:
+                             # the watch heals a party member below the floor and would undo `hp = 1`)
 spawn = [{ as = "A", template = "wolf", faction = "hostile", hp = 40, distance = 8 }]
 setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", turns = 10 },
          { target = "A", boost = "Resistance(Fire,Resistant)" }, { target = "host", max_hp = 20 },
          { target = "host", passive = "SomeFeature" },   # passive: added for the case, removed at cleanup
-         { target = "A", dead = true }]                  # a corpse, e.g. for revive spells
+         { target = "A", dead = true },                  # a corpse, e.g. for revive spells
+         { target = "host", resource = "SpellSlot", level = 1, amount = 0 }]  # set a pool's current amount
 expect = [
   { acted_first = true },                                   # first recorded turn was the host's
   { cast = true },                                          # the host cast `spell` (or cast = "OtherSpell")
@@ -133,6 +136,9 @@ expect = [
   { took_turn = "A" },
   { target = "host", status_applied_count = { status = "PRONE", count = [0, 0] } },  # times it landed
   { cast_only = "A" },                                      # the spawn cast nothing but the case's spell (ai)
+  { resource = "EpicBoonFate", level = 0, amount_change = -1 },  # the character's pool before/after (not a cost)
+  { resource = "Movement", level = 0, max_change = 9 },     # its maximum
+  { target = "host", skill = "Athletics", change = 2 },     # exact skill bonus change; also ability = "Strength"
   { cast_count = { by = "A", count = [1, 99] } },           # casts of the case's spell by a spawn
   { interrupt_used = { name = "Interrupt_X", count = [1, 9] } },  # used N times (and how often considered)
   { target = "B", saves = { ability = "Strength", spell_only = true, n = [1, 99], failed = [0, 0], min_total = 16 } },
@@ -195,6 +201,12 @@ cache (`test_state.json`), so it survives an MCP restart.
 - An `InterruptDecision` component appears when an interrupt is UNLOCKED, not when it's checked on a roll, and
   `ServerInterruptUsed` (one-frame, deferred) is unreliable - the harness's InterruptConsidered/Used events are
   hints only.
+- Roll interrupts on ATTACKS must say whose roll: `IsFlatValueInterruptInteresting(8, context.Source)` (as base Cutting
+  Words). Without the second argument a reaction to an enemy's attack never fires (Boon of Fate, 2026-10-02).
+- A scripted melee attack from range makes the host walk in; the target's opportunity attack then cancels the
+  attack (no damage). Give the target `ActionResourceBlock(ReactionActionPoint)` in setup for melee cases.
+- The host's own features interfere: an Abjuration wizard's Arcane Ward absorbs the damage a Last Stand-style case
+  needs (`remove_status = "ARCANE_WARD*"`), and the harness safety watch heals below 35% (`safety = false`).
 - An NPC's AI decides its own interrupts and may decline (Legendary Resistance vs Strength Drain was declined).
 - `InterruptPreferences.Preferences`: set keys one by one - assigning the whole map back wipes it.
 

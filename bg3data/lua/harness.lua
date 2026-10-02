@@ -106,6 +106,19 @@ function T.snapshot(g, full)
         guid = g, hp = Osi.GetHitpoints(g), max_hp = Osi.GetMaxHitpoints(g), dead = Osi.IsDead(g) == 1,
         in_combat = Osi.IsInCombat(g) == 1, statuses = T.statuses(g), resources = T.resources(g),
     }
+    pcall(function()  -- ability scores and skill bonuses, by name (exact checks for boosts like Boon of Skill)
+        local st = Ext.Entity.Get(g).Stats
+        s.abilities, s.skills = {}, {}
+        for i, name in ipairs({ "None", "Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma" }) do
+            if i > 1 then s.abilities[name] = st.Abilities[i] end
+        end
+        for name, v in pairs(Ext.Enums.SkillId) do
+            if type(name) == "string" and name ~= "Sentinel" and name ~= "Invalid" then
+                local ok, val = pcall(function() return st.Skills[v.Value + 1] end)
+                if ok and val then s.skills[name] = val end
+            end
+        end
+    end)
     if full then
         local e = Ext.Entity.Get(g)
         s.level = Osi.GetLevel(g)
@@ -168,6 +181,27 @@ function T.apply(g, status, turns)
 end
 
 -- HP to an exact value; above max needs grant(IncreaseMaxHP) first and a tick before calling this.
+-- set a resource's current amount (e.g. spell slots of a level to 0, to watch a refund)
+function T.setResource(g, name, level, amount)
+    g = uuid(g)
+    local e = Ext.Entity.Get(g)
+    for u, entries in pairs(e.ActionResources.Resources) do
+        local def = Ext.StaticData.Get(u, "ActionResource")
+        if def and def.Name == name then
+            for _, x in ipairs(entries) do if (x.ResourceId or 0) == (level or 0) then x.Amount = amount end end
+        end
+    end
+    e:Replicate("ActionResources")
+end
+
+function T.removeStatuses(g, pattern)
+    g = uuid(g)
+    local prefix = pattern:sub(-1) == "*" and pattern:sub(1, -2) or nil
+    for _, s in ipairs(T.statuses(g)) do
+        if s == pattern or (prefix and s:sub(1, #prefix) == prefix) then Osi.RemoveStatus(g, s) end
+    end
+end
+
 function T.setHp(g, hp)
     g = uuid(g)
     if hp == "full" then Osi.SetHitpointsPercentage(g, 100) else Osi.SetHitpoints(g, hp) end

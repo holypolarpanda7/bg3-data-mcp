@@ -338,7 +338,8 @@ def find_case(layer, case_id):
 EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
-               "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used"}
+               "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used",
+               "amount_change", "max_change", "skill", "ability", "damage_count"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -388,7 +389,7 @@ def validate(store, active, c):
     for cs in c.get("casts", []):
         if not cs.get("spell") or not store.resolve(cs["spell"], active):
             errs.append(f"casts: spell {cs.get('spell')!r} not found")
-        if cs.get("target", "host") not in aliases:
+        if cs.get("target", "host") not in aliases | {"ground"}:
             errs.append(f"casts: target {cs.get('target')!r} unknown")
     tags = set()
     for r in c.get("rolls", []):
@@ -522,19 +523,24 @@ def stage(store, active, layer, case_id):
     for s in spawns:
         if s.get("hp") is not None:
             post.append(f"BG3T.setHp(BG3T.spawns[{se._lua_string(s['as'])}], {int(s['hp'])})")
+    if c.get("refill", True):  # first, so setup steps (e.g. a resource set to 0) aren't undone by the top-up
+        post.append("BG3T.refill(BG3T.host()); BG3T.clearCooldowns(BG3T.host())")
     for st_ in c.get("setup", []):
+        if "remove_status" in st_:  # exact names, or a prefix ending in * (e.g. ARCANE_WARD*)
+            for name in ([st_["remove_status"]] if isinstance(st_["remove_status"], str) else st_["remove_status"]):
+                post.append(f"BG3T.removeStatuses({_who(st_)}, {se._lua_string(name)})")
         if st_.get("max_hp") and st_.get("target", "host") != "host":
             post.append(f"BG3T.grant({_who(st_)}, 'IncreaseMaxHP({int(st_['max_hp'])})')")
         if "hp" in st_:
             post.append(f"BG3T.setHp({_who(st_)}, {st_['hp'] if isinstance(st_['hp'], int) else repr('full')})")
+        if "resource" in st_ and "amount" in st_:  # e.g. { target = "host", resource = "SpellSlot", level = 1, amount = 0 }
+            post.append(f"BG3T.setResource({_who(st_)}, {se._lua_string(st_['resource'])}, {int(st_.get('level', 0))}, {float(st_['amount'])})")
         if st_.get("status"):
             post.append(f"BG3T.apply({_who(st_)}, {se._lua_string(st_['status'])}, {int(st_.get('turns', 10))})")
         if st_.get("boost"):
             post.append(f"BG3T.grant({_who(st_)}, {se._lua_string(st_['boost'])})")
         if st_.get("dead"):  # e.g. a corpse for revive spells
             post.append(f"pcall(Osi.Die, {_who(st_)}, 0, 'NULL_00000000-0000-0000-0000-000000000000', 0, 1)")
-    if c.get("refill", True):
-        post.append("BG3T.refill(BG3T.host()); BG3T.clearCooldowns(BG3T.host())")
     # a case that deliberately starts you at low HP mustn't trip the safety watch by itself
     post.append("local h=BG3T.host(); local p=Osi.GetHitpoints(h)*100/math.max(1,Osi.GetMaxHitpoints(h)); "
                 "if p<=BG3T.safety.floor then BG3T.safety.floor=math.max(1,math.floor(p)-1) end")
@@ -569,8 +575,11 @@ def stage(store, active, layer, case_id):
             _wait_casts(since, prev, sum(1 for x in c["casts"][:i] if x["spell"] == prev), float(c["casts"][i - 1].get("wait", 2)) + 4)
             _settle(since, quiet=0.5, cap=3)
         tgt = cs.get("target", "host")
-        tgt = "BG3T.host()" if tgt == "host" else f"BG3T.spawns[{se._lua_string(tgt)}]"
         by = "BG3T.host()" if cs.get("by", "host") == "host" else f"BG3T.spawns[{se._lua_string(cs['by'])}]"
+        if tgt == "ground":  # e.g. a Darkness cloud on the host's spot: distance = 0
+            lua(f"BG3T.castAt({by}, {se._lua_string(cs['spell'])}, {float(cs.get('distance', 0))}); return true")
+            continue
+        tgt = "BG3T.host()" if tgt == "host" else f"BG3T.spawns[{se._lua_string(tgt)}]"
         lua(f"BG3T.cast({by}, {se._lua_string(cs['spell'])}, {tgt}, {'true' if cs.get('real_rolls') else 'false'}); return true")
     if c.get("casts"):
         last = c["casts"][-1]["spell"]
@@ -831,6 +840,30 @@ def verify(store, active, cleanup=True, wait=2.0):
             n = sum(1 for x in events if x.get("kind") == "CastedSpell" and x.get("spell") == sp and x.get("who") == bg)
             lo, hi = cc.get("count", [1, 10 ** 6])
             row(lo <= n <= hi, f"{cc.get('by', 'host')} cast {sp} {n} times, expected [{lo}, {hi}]")
+        if "amount_change" in e or "max_change" in e:  # the character's pool before/after (not a spell's cost)
+            lvl = str(e.get("level", 0))
+            bv = ((b.get("resources") or {}).get(e["resource"]) or {}).get(lvl) or [0, 0]
+            av = ((a.get("resources") or {}).get(e["resource"]) or {}).get(lvl) or [0, 0]
+            if "amount_change" in e:
+                want = e["amount_change"]; d = av[0] - bv[0]
+                ok = (want[0] <= d <= want[1]) if isinstance(want, list) else d == want
+                row(ok, f"{label} {e['resource']}[{lvl}] amount {bv[0]:g} -> {av[0]:g} (change {d:+g}, expected {want})")
+            if "max_change" in e:
+                d = av[1] - bv[1]
+                row(d == e["max_change"], f"{label} {e['resource']}[{lvl}] max {bv[1]:g} -> {av[1]:g} (change {d:+g}, expected {e['max_change']:+})")
+        for key in ("skill", "ability"):  # { skill = "Athletics", change = 2 } / { ability = "Strength", change = 1 }
+            if e.get(key):
+                bv = ((b.get(key + "s") or {}).get(e[key]))
+                av = ((a.get(key + "s") or {}).get(e[key]))
+                ok = bv is not None and av is not None and av - bv == e.get("change", 0)
+                row(ok, f"{label} {e[key]} {bv} -> {av} (expected change {e.get('change', 0):+})")
+        if e.get("damage_count"):  # {count = [lo, hi], by = alias}: separate hits that damaged `target`
+            dc = e["damage_count"]
+            src = ent(before, dc["by"]).get("guid") if dc.get("by") and dc["by"] != "host" else (host if dc.get("by") == "host" else None)
+            n = sum(1 for x in events if x.get("kind") == "Damage" and x.get("who") == guid and (src is None or x.get("by") == src)
+                    and (x.get("amount") or 0) > 0)
+            lo, hi = dc.get("count", [1, 10 ** 6])
+            row(lo <= n <= hi, f"{label} damaged {n} times{' by ' + dc['by'] if dc.get('by') else ''}, expected [{lo}, {hi}]")
         if e.get("cast_only"):  # alias: every spell that spawn cast during the run was the case's spell (or ai_keep)
             bg = ent(before, e["cast_only"]).get("guid")
             allowed = {c.get("spell")} | set(c.get("ai_keep", []))
@@ -875,7 +908,7 @@ def verify(store, active, cleanup=True, wait=2.0):
         for s in e.get("status_removed", []):
             was = s in (b.get("statuses") or [])
             row(was and s not in (a.get("statuses") or []), f"{s} removed from {label}" + ("" if was else " (it wasn't present before!)"))
-        if "resource" in e:
+        if "resource" in e and "amount_change" not in e and "max_change" not in e:  # spell-cost check
             lvl = str(e.get("level", 0))
             bv = ((b.get("resources") or {}).get(e["resource"]) or {}).get(lvl)
             av = ((a.get("resources") or {}).get(e["resource"]) or {}).get(lvl)
@@ -953,11 +986,15 @@ def verify(store, active, cleanup=True, wait=2.0):
     if cleanup:
         # statuses the test run left on you (e.g. a scripted Mage Armour) must not end up in a save
         pre = state.get("pre_statuses") or ent(before, "host").get("statuses") or []
-        gained = [x for x in (ent(after, "host").get("statuses") or []) if x not in pre]
+        # never strip downed/dying states: removing DOWNED leaves the host alive at 0 HP with no way back (2026-10-02)
+        gained = [x for x in (ent(after, "host").get("statuses") or []) if x not in pre
+                  and "DOWNED" not in x and "DYING" not in x and x not in ("UNCONSCIOUS", "KNOCKED_OUT")]
         if gained:
             lua("local h=BG3T.host(); " + " ".join(f"pcall(Osi.RemoveStatus,h,{se._lua_string(x)});" for x in gained) + " return true")
             lines.append(f"  removed from you: {', '.join(gained)}")
         rep = lua("return BG3T.cleanup()")
+        # back on your feet: a run that downed the host (e.g. a Last Stand test) ends with them up at full HP
+        lua("Osi.SetHitpointsPercentage(BG3T.host(), 100) return true")
         lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses, {rep.get('passives', 0)} passives, {rep.get('cooldowns', 0)} cooldowns removed")
         try:
             os.remove(STATE_FILE)
