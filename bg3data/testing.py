@@ -33,7 +33,7 @@ FACTIONS = {
     "friendly": "80182081-6bb1-95f1-c40f-4c3cea368269",
     "neutral": "a66b2d45-1b6c-082d-8a01-c6d975ead314",
 }
-MODES = ("auto", "player", "script")
+MODES = ("ai", "auto", "player", "script")
 SCRIPT_SPELL_SOURCES = {"Osiris"}  # spells added by script (Osi.AddSpell): not class-sourced
 GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
@@ -338,7 +338,7 @@ def find_case(layer, case_id):
 EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
-               "status_applied_count"}
+               "status_applied_count", "cast_count", "saves"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -349,6 +349,13 @@ def validate(store, active, c):
         if not c.get(k):
             errs.append(f"missing `{k}`")
     aliases = {"host"} | {s.get("as") for s in c.get("spawn", [])}
+    if c.get("mode") == "ai":
+        if not c.get("caster") or c.get("caster") == "host":
+            errs.append("mode ai needs `caster` = a spawn alias (the host is player-controlled)")
+        for sp in [c.get("spell")] + list(c.get("ai_keep", [])):
+            r = store.resolve(sp, active) if sp else None
+            if r and "CanNotUse" in str((r.get("fields") or {}).get("AIFlags", ("",))[0]):
+                errs.append(f"{sp} has AIFlags CanNotUse - the AI never casts it; use mode script + real_rolls")
     for who in [c.get("caster")] + [cs.get("by") for cs in c.get("casts", [])]:
         if who and who not in aliases:
             errs.append(f"caster `{who}` isn't host or a spawn alias")
@@ -558,6 +565,19 @@ def stage(store, active, layer, case_id):
     for r in c.get("rolls", []):  # passive rolls after setup (any mode), tallied by the harness
         lua(f"BG3T.roll({se._lua_string(r['as'])}, {se._lua_string(r['type'])}, {se._lua_string(r['id'])}, "
             f"{int(r['dc'])}, {int(r.get('n', 20))}); return true")
+    if mode == "ai":
+        cst = f"BG3T.spawns[{se._lua_string(c['caster'])}]"
+        keep = [c["spell"]] + list(c.get("ai_keep", []))
+        lua(f"BG3T.aiOnly({cst}, {{{', '.join(se._lua_string(s) for s in keep)}}}); return true")
+        if c.get("clear_between"):
+            tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
+            lua(f"table.insert(BG3T.aiClear, {{ caster = {cst}, target = {tgt}, statuses = {{{', '.join(se._lua_string(s) for s in c['clear_between'])}}} }}); return true")
+        if c.get("sanctuary", True):  # keep the enemy AI off the host so it uses the spell on the target
+            lua("Osi.ApplyStatus(BG3T.host(), 'SANCTUARY', 600, 1, BG3T.host()); return true")
+        time.sleep(1.5)
+        book = lua(f"return BG3T.spellbook({cst})") or []
+        notes.append(f"{c['caster']} spellbook: {', '.join(book)}")
+        c = dict(c, end_turns=int(c.get("ai_rounds", 8)))
     if mode in ("auto", "script") and c.get("spell"):
         if c.get("target") == "ground":
             lua(f"BG3T.castAt(BG3T.host(), {se._lua_string(c['spell'])}, {float(c.get('distance', 3))}); return true")
@@ -638,6 +658,24 @@ def verify(store, active, cleanup=True, wait=2.0):
         for s in e.get("status_applied", []):
             hit = any(x.get("kind") == "StatusApplied" and x.get("who") == guid and x.get("status") == s for x in events)
             row(hit, f"{s} applied to {label}")
+        if e.get("cast_count"):  # {spell (default the case's), by = alias, count = [lo, hi]}
+            cc = e["cast_count"]
+            sp = cc.get("spell", c.get("spell"))
+            bg = ent(before, cc.get("by", "host")).get("guid") if cc.get("by", "host") != "host" else host
+            n = sum(1 for x in events if x.get("kind") == "CastedSpell" and x.get("spell") == sp and x.get("who") == bg)
+            lo, hi = cc.get("count", [1, 10 ** 6])
+            row(lo <= n <= hi, f"{cc.get('by', 'host')} cast {sp} {n} times, expected [{lo}, {hi}]")
+        if e.get("saves"):  # {ability, by = alias (source), n = [lo, hi], failed = [lo, hi]} for `target`
+            sv = e["saves"]
+            src = ent(before, sv["by"]).get("guid") if sv.get("by") and sv["by"] != "host" else (host if sv.get("by") == "host" else None)
+            rows_ = [x for x in events if x.get("kind") == "Save" and x.get("who") == guid
+                     and (not sv.get("ability") or x.get("ability") == sv["ability"]) and (src is None or x.get("by") == src)]
+            nf = sum(1 for x in rows_ if not x.get("saved"))
+            lo, hi = sv.get("n", [1, 10 ** 6]); flo, fhi = sv.get("failed", [0, 10 ** 6])
+            detail = ", ".join(f"{x.get('natural')}->{x.get('total')} vs {x.get('dc')}" for x in rows_[:10])
+            row(lo <= len(rows_) <= hi and flo <= nf <= fhi,
+                f"{label}: {len(rows_)} {sv.get('ability', '')} saves{' vs ' + sv['by'] if sv.get('by') else ''}, {nf} failed "
+                f"(expected n [{lo}, {hi}], failed [{flo}, {fhi}]) [{detail}]")
         if e.get("status_applied_count"):  # {status, count = [lo, hi]}: how many times it landed during the run
             sc = e["status_applied_count"]
             n = sum(1 for x in events if x.get("kind") == "StatusApplied" and x.get("who") == guid and x.get("status") == sc["status"])

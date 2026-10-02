@@ -263,6 +263,7 @@ function T.drain(since)
 end
 
 function T.cleanup()
+    T.aiClear, T.seenRolls = {}, {}
     local report = { spawns = 0, grants = 0, statuses = 0, passives = 0, cooldowns = T.clearCooldowns(T.host()) }
     for _, ps in ipairs(T.added_passives) do
         pcall(Osi.RemovePassive, ps[1], ps[2])
@@ -335,6 +336,11 @@ T.on = {
         if T.recording and isTracked(ch) then push({ kind = "Died", who = uuid(ch) }) end
     end,
     TurnStarted = function(ch)
+        for _, cl in ipairs(T.aiClear) do
+            if uuid(ch) == cl.caster then
+                for _, st in ipairs(cl.statuses) do if Osi.HasActiveStatus(cl.target, st) == 1 then Osi.RemoveStatus(cl.target, st) end end
+            end
+        end
         -- incap: the engine still starts a turn for a creature that can't act (sleeping, frozen...) and skips it;
         -- item: scenery with an environment turn (e.g. the beach's clamshells, seen 2026-10-01)
         if T.recording then push({ kind = "TurnStarted", who = uuid(ch), tracked = isTracked(ch), name = (function() local ok, n = pcall(function() return Ext.Loca.GetTranslatedString(Osi.GetDisplayName(ch)) end) return ok and n or nil end)(),
@@ -353,6 +359,53 @@ T.on = {
         end
     end,
 }
+
+-- ------------------------------------------------------------------ AI-driven casts (mode = "ai")
+-- The caster spawn keeps only the spells under test, so its own AI casts them on its turns: real rolls,
+-- interrupts and reactions, unlike Osi.UseSpell (verified 2026-10-02: Osiris casts never raise OnPostRoll
+-- interrupts). Spells flagged AIFlags CanNotUse are never chosen (e.g. Target_Bash).
+function T.aiOnly(caster, keep)
+    caster = uuid(caster)
+    local want = {}
+    for _, s in ipairs(keep) do want[s] = true end
+    for _, sp in ipairs(Ext.Entity.Get(caster).SpellBook.Spells) do
+        local id = sp.Id.OriginatorPrototype
+        if not want[id] then pcall(Osi.RemoveSpell, caster, id, 0) end
+    end
+    for s in pairs(want) do if Osi.HasSpell(caster, s) ~= 1 then Osi.AddSpell(caster, s, 0, 1) end end
+end
+
+function T.spellbook(g)
+    local out = {}
+    for _, sp in ipairs(Ext.Entity.Get(uuid(g)).SpellBook.Spells) do out[#out + 1] = sp.Id.OriginatorPrototype end
+    return out
+end
+
+-- statuses cleared from a target at the start of the caster's turns, so the AI keeps choosing the spell
+T.aiClear = T.aiClear or {}
+
+-- every saving throw while recording (deduped per roll): saver, source, ability, natural, total, DC.
+-- SavingThrowRolledEvent fires twice per roll with opposite Success, so success is total >= DC here.
+T.seenRolls = T.seenRolls or {}
+if not T.saveSub then
+    T.saveSub = Ext.Entity.OnCreate("SavingThrowRolledEvent", function(_, _, c)
+        if not T.recording then return end
+        local ok, err = pcall(function()
+            local cr = c.ConditionRoll
+            local key = tostring(cr.RollUuid)
+            if T.seenRolls[key] then return end
+            T.seenRolls[key] = true
+            local r = cr.Roll.Result
+            local function g(h) local ok2, v = pcall(function() return h.Uuid.EntityUuid end) return ok2 and v or nil end
+            local saver, source = g(c.Target), g(c.Source)
+            if cr.SwappedSourceAndTarget then saver, source = source, saver end
+            if not (isTracked(saver) or isTracked(source)) then return end
+            push({ kind = "Save", who = saver, by = source, ability = tostring(c.Ability), natural = r.NaturalRoll,
+                   total = r.Total, dc = cr.Difficulty, saved = r.Total >= cr.Difficulty, swapped = cr.SwappedSourceAndTarget })
+        end)
+        if not ok then Ext.Utils.PrintWarning("[BG3T] Save: " .. tostring(err)) end
+    end)
+end
 
 local ARITY = { StatusApplied = 4, StatusRemoved = 4, CastedSpell = 5, UsingSpellOnTarget = 6, AttackedBy = 7, Died = 1,
                 TurnStarted = 1, CombatStarted = 1, CombatEnded = 1, LeveledUp = 1, HitpointsChanged = 2, RollResult = 6 }

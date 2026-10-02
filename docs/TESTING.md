@@ -14,6 +14,10 @@ combat, even for a class-learned spell (verified 2026-09-30: slot and Action Poi
 - `mode = "player"`: stage, you cast from the class spell bar, `bg3_test_verify`. Measures the real
   resource change; use it as a spot check (e.g. once per resource type).
 - `mode = "script"`: effects only, no class-ownership requirement.
+- `mode = "ai"` (EXPERIMENTAL, 2026-10-02): a spawn (`caster`) casts through its own AI on its turns while the host
+  ends turns (`ai_rounds`) under Sanctuary - real rolls AND interrupts/reactions, which Osiris casts never raise.
+  Known gaps: `Osi.RemoveSpell` doesn't remove a template's innate attacks, so the AI still picks other actions;
+  SavingThrowRolledEvent's source is often an internal cast entity, so `saves.by` filtering is unreliable.
 The spell must be learned through the class (SpellBook source is not `Osiris`) for auto and player cases.
 Every verdict states which kind of run it was.
 
