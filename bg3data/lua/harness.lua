@@ -129,8 +129,19 @@ end
 function T.spawn(alias, template, faction, dx, dz)
     local h = T.host()
     local x, y, z = Osi.GetPosition(h)
-    local g = Osi.CreateAt(template, x + (dx or 6), y, z + (dz or 0), 0, 0, "")
-    if not g then return nil, "CreateAt returned nothing for template " .. tostring(template) end
+    -- the requested spot can be blocked terrain (cliff, water, wall) depending on where the save left the host:
+    -- try it, then the other directions and closer distances (2026-10-02: a new save made every +8 m spawn fail)
+    dx, dz = dx or 6, dz or 0
+    local tries = { { dx, dz }, { -dx, dz }, { dz, dx }, { dz, -dx } }
+    for _, f in ipairs({ 0.6, 0.35 }) do
+        for _, d in ipairs({ { dx, dz }, { -dx, dz }, { dz, dx }, { dz, -dx } }) do tries[#tries + 1] = { d[1] * f, d[2] * f } end
+    end
+    local g
+    for _, d in ipairs(tries) do
+        g = Osi.CreateAt(template, x + d[1], y, z + d[2], 0, 0, "")
+        if g then break end
+    end
+    if not g then return nil, "CreateAt returned nothing for template " .. tostring(template) .. " (12 spots around the host)" end
     g = uuid(g)
     if faction and faction ~= "" then pcall(Osi.SetFaction, g, faction) end
     T.spawns[alias] = g

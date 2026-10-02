@@ -183,12 +183,19 @@ cache (`test_state.json`), so it survives an MCP restart.
   InterruptConsidered / InterruptUsed by name).
 - Legendary Resistance needs its status (`LEGENDARY_RESISTANCE_<ABILITY>`, which sets 3 charges);
   `ActionResource(LegendaryResistanceCharge, ...)` only raises the maximum, leaving 0 charges.
-- Interrupts are considered on real (AI) spell saves. An NPC's AI may decline them (Legendary Resistance vs
-  Strength Drain was declined). For the player, `auto_reactions` (default on in ai mode) sets every reaction to
-  Enabled without Ask. Even so, a roll interrupt (OnPostRoll) on the PLAYER is considered but never used - with
-  auto reactions, the window focused (`focus = true`), and even a condition of only HasInterruptedSavingThrow()
-  (2026-10-02; base Legendary Resistance on the host behaves the same). Player roll reactions likely go through
-  the roll prompt; verify them by hand. NPC roll interrupts are decided by their AI.
+- **Reactions and interrupts never fire on rolls of a spell the caster got through `Osi.AddSpell`** (nor on
+  Osiris casts). Use a creature whose template knows the spell natively (`bg3_save_spells` lists them; staging
+  warns when it had to add the spell). Found 2026-10-02: Larian's own Fighter Indomitable and Bardic Inspiration
+  never prompted vs script-added spells; Indomitable Might rescued 2/2 vs a real Shadow's native Strength Drain.
+- Player reactions do fire in spawned fights (Arcane Ward, Shield) - they show up as CastedSpell of the reaction's
+  spell. Roll-adjusting interrupts (SetRoll/AdjustRoll) cast nothing: judge them by outcome (`saves.effect_status`).
+- `Ext.Events.ExecuteFunctor` is NOT raised for interrupt Properties - a Lua hook can't adjust them.
+- `IsSetInterruptInteresting(n)` didn't fire for SetRoll(n) with n below 20 (it seems to read n as the total);
+  `IsFlatValueInterruptInteresting(30)` = "this roll failed" works.
+- An `InterruptDecision` component appears when an interrupt is UNLOCKED, not when it's checked on a roll, and
+  `ServerInterruptUsed` (one-frame, deferred) is unreliable - the harness's InterruptConsidered/Used events are
+  hints only.
+- An NPC's AI decides its own interrupts and may decline (Legendary Resistance vs Strength Drain was declined).
 - `InterruptPreferences.Preferences`: set keys one by one - assigning the whole map back wipes it.
 
 ## Known limits

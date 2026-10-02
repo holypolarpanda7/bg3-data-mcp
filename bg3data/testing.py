@@ -582,6 +582,11 @@ def stage(store, active, layer, case_id):
     if mode == "ai":
         cst = f"BG3T.spawns[{se._lua_string(c['caster'])}]"
         keep = [c["spell"]] + list(c.get("ai_keep", []))
+        native = lua(f"local g = {cst} local out = {{}} for _, s in ipairs({{{', '.join(se._lua_string(s) for s in keep)}}}) do out[s] = Osi.HasSpell(g, s) == 1 end return out") or {}
+        added = [s for s in keep if not native.get(s)]
+        if added:  # reactions/interrupts never fire on script-added spells (2026-10-02): say so up front
+            notes.append(f"WARNING: {', '.join(added)} not native to {c['caster']} - added by script, so player/NPC "
+                         "reactions and interrupts on its rolls will NOT fire; use a template that knows it (bg3_save_spells)")
         locked = lua(f"return BG3T.aiOnly({cst}, {{{', '.join(se._lua_string(s) for s in keep)}}})")
         notes.append(f"{c['caster']}: {locked} other spells on cooldown (re-applied each of its turns); AI keeps {', '.join(keep)}")
         if c.get("clear_between"):
@@ -684,7 +689,7 @@ _SAVE_RE = re.compile(r"SavingThrow\(\s*Ability\.(\w+)")
 
 # what the AI actually did with a spell in mode ai (in game) - shown by spell_check / save_spells
 AI_OBSERVED = {
-    "Target_StrengthDrain_Shadow": "2026-10-02: an Entangle/Bite-locked wolf cast it every turn it could; own-roll saves recorded",
+    "Target_StrengthDrain_Shadow": "2026-10-02: Shadow_A (749b1e7d-...) casts it natively; reactions fire on its saves",
     "Target_DEN_Entangle_Staff": "2026-10-02: cast ~1 turn in 3; the target's saves came from the vine surface, not the cast",
     "Target_LOW_Poltergeist_Shove": "2026-10-02: never cast in 10 AI rounds",
     "Target_Bite_Wolf": "2026-10-02: cast every turn; its Strength saves come from the wolf's trip-on-hit passive",
@@ -754,6 +759,8 @@ def save_spells(store, active, ability, limit=40):
     lines = [f"AI-castable spells with an own-roll {ability} save (no requirements, no slot): {len(good)}"]
     for _, n, s in good[:limit]:
         seen = f"  [seen: {AI_OBSERVED[n][12:60]}]" if n in AI_OBSERVED else ""
+        natives = [r[1] for r in (store.references(n, active, limit=12) or []) if r[0] == "templates"][:3]
+        seen += f"  native to: {', '.join(natives)}" if natives else "  (no template knows it natively)"
         lines.append(f"  {n:50s} {s['type']:10s} target: {s['target_conditions'][:50]}{'  AREA ' + s['area'] if s['area'] else ''}{seen}")
     return "\n".join(lines)
 
