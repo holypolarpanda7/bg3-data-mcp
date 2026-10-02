@@ -36,6 +36,8 @@ EXPR_FIELDS = {
     "Boosts", "SpellRoll", "TooltipDamageList", "TooltipAttackSave", "Roll", "Success", "Failure", "OnTickRoll",
     "ToggleOnFunctors", "ToggleOffFunctors", "SuccessProperties", "FailProperties",
 }
+TOOLTIP_FIELDS = {"DescriptionParams", "ExtraDescriptionParams", "ShortDescriptionParams", "TooltipStatusApply",
+                  "TooltipDamageList"}
 KEYWORDS = {"IF", "NOT", "AND", "OR", "TARGET", "SELF", "GROUND", "SWAP", "AI_ONLY", "AI_IGNORE", "CAST", "CASTER"}
 TARGET_ARGS = {"SELF", "SWAP", "TARGET", "SOURCE", "OBSERVER_OBSERVER", "OBSERVER_SOURCE", "OBSERVER_TARGET",
                "CASTER", "OWNER", "GROUND", "AI_ONLY", "AI_IGNORE"}
@@ -78,7 +80,7 @@ def vocabulary(store, active, layer):
     """Everything the layers other than `layer` use: enum values per field, callable names, resources, entry names."""
     others = [l for l in active if l != layer]
     w, p = store._where(others)
-    enums, calls, resources, fields = {}, set(), set(), {}
+    enums, calls, resources, fields, desc_calls = {}, set(), set(), {}, set()
     for typ, data in store.db.execute(f"SELECT type, data FROM stats WHERE {w}", p):
         for k, v in _fields(data).items():
             fields.setdefault(typ, set()).add(k)
@@ -86,8 +88,11 @@ def vocabulary(store, active, layer):
                 continue
             if k in ENUM_FIELDS or (k == "Properties" and typ in PASSIVE_PROPERTIES):
                 enums.setdefault(k, set()).update(_enum_values(k, v, typ))
-            if _is_expr(k, typ) or k in ("DescriptionParams", "TooltipStatusApply", "TooltipDamageList"):
+            if k in TOOLTIP_FIELDS:  # tooltip macros (GainTemporaryHitPoints...) the engine never runs as functors
+                desc_calls.update(CALL.findall(v))
+            elif _is_expr(k, typ):
                 calls.update(CALL.findall(v))
+                desc_calls.update(CALL.findall(v))
             if k in ("UseCosts", "Cost", "HitCosts", "DualWieldingUseCosts", "RitualCosts"):
                 resources.update(RES_COST.findall(v))
             resources.update(RES_BOOST.findall(v))
@@ -101,11 +106,11 @@ def vocabulary(store, active, layer):
     names = {}
     for n, t in store.db.execute(f"SELECT DISTINCT name, type FROM stats WHERE {wa}", pa):
         names.setdefault(n, set()).add(t)
-    return enums, calls, resources, names, fields
+    return enums, calls, resources, names, fields, desc_calls - calls
 
 
 def lint_stats(store, active, layer, limit=200):
-    enums, calls, resources, names, known_fields = vocabulary(store, active, layer)
+    enums, calls, resources, names, known_fields, desc_only = vocabulary(store, active, layer)
     rows = store.db.execute("SELECT name, type, file, using_, data FROM stats WHERE layer=? ORDER BY file, name", (layer,)).fetchall()
     issues = []
 
@@ -116,6 +121,12 @@ def lint_stats(store, active, layer, limit=200):
         f = _fields(data)
         if using and using != name and using not in names:
             add("REF", name, file, f"using '{using}' doesn't exist")
+        cs = f.get("ContainerSpells") if typ == "SpellData" else None
+        if isinstance(cs, str) and cs:
+            kids = [x for x in cs.split(";") if x.strip()]
+            if len(kids) > 42 or len(cs) > 1900:  # 44 spells / ~2080 chars hung the game at LoadModule (2026-10-02)
+                add("SIZE", name, file, f"ContainerSpells has {len(kids)} spells / {len(cs)} chars: 44 / ~2080 hung the game "
+                                        "at load (43 / 2030 loaded; shipped max 42 / ~1000) - split the container")
         for k, v in f.items():
             if typ in known_fields and k not in known_fields[typ]:
                 add("FIELD", name, file, f"'{k}' isn't a field any other layer uses on {typ} (the engine ignores unknown fields)")
@@ -126,8 +137,11 @@ def lint_stats(store, active, layer, limit=200):
                     if val not in enums[k] and not (k == "StatusGroups" and val.startswith("SG_")):
                         add("ENUM", name, file, f"{k} '{val}' isn't used by any other layer (the engine may drop it)")
             if _is_expr(k, typ):
-                for c in sorted(set(CALL.findall(v)) - calls - KEYWORDS):
-                    add("CALL", name, file, f"{k}: '{c}(' isn't used by any other layer")
+                for c in sorted(set(CALL.findall(v)) - calls - KEYWORDS - (desc_only if k in TOOLTIP_FIELDS else set())):
+                    if c in desc_only:  # e.g. GainTemporaryHitPoints: a tooltip macro the engine won't run
+                        add("CALL", name, file, f"{k}: '{c}(' is only a DescriptionParams/tooltip macro, not a functor/boost (silently ignored)")
+                    else:
+                        add("CALL", name, file, f"{k}: '{c}(' isn't used by any other layer")
                 for fn, args in STATUS_REF.findall(v):
                     for a in [x.strip() for x in args.split(",")]:
                         if re.fullmatch(r"[A-Z][A-Z0-9_]+", a) and a not in TARGET_ARGS:
@@ -179,7 +193,7 @@ def lint_stats(store, active, layer, limit=200):
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't)"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")

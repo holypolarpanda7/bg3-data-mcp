@@ -106,6 +106,7 @@ function T.snapshot(g, full)
         guid = g, hp = Osi.GetHitpoints(g), max_hp = Osi.GetMaxHitpoints(g), dead = Osi.IsDead(g) == 1,
         in_combat = Osi.IsInCombat(g) == 1, statuses = T.statuses(g), resources = T.resources(g),
     }
+    pcall(function() s.temp_hp = Ext.Entity.Get(g).Health.TemporaryHp end)
     pcall(function()  -- ability scores and skill bonuses, by name (exact checks for boosts like Boon of Skill)
         local st = Ext.Entity.Get(g).Stats
         s.abilities, s.skills = {}, {}
@@ -331,6 +332,7 @@ function T.cleanup()
         report.statuses = report.statuses + 1
     end
     T.spawns, T.grants, T.applied = {}, {}, {}
+    if T.restoreReactions then T.restoreReactions() end
     T.recording = false
     T.safety.tripped = false
     return report
@@ -501,6 +503,7 @@ do
             -- spellcast: the save is a spell's own roll (SpellCastUuid set) - the only kind OnPostRoll interrupts see;
             -- surface/status/passive saves (vines, trip-on-hit...) have none
             push({ kind = "Save", who = saver, by = source, ability = tostring(c.Ability), natural = r.NaturalRoll,
+                   advantage = c.Advantage, disadvantage = c.Disadvantage,
                    total = r.Total, dc = cr.Difficulty, saved = r.Total >= cr.Difficulty, swapped = cr.SwappedSourceAndTarget,
                    spellcast = spellcast })
         end)
@@ -534,6 +537,46 @@ function T.autoReactions(g)
     end
     e:Replicate("InterruptPreferences")
     return n
+end
+
+-- reactions off for a test: every interrupt the character has is disabled except names containing one of `keep`
+-- (those go on auto). Stops the character's own reactions (Shield, Arcane/Projected Ward, opportunity attacks)
+-- from changing the rolls a case measures. The previous preferences come back in T.cleanup().
+T.savedPrefs = T.savedPrefs or {}
+function T.setReactions(g, keep)
+    local id = uuid(g)
+    local e = Ext.Entity.Get(id)
+    local saved = T.savedPrefs[id] or {}
+    local off, on = 0, 0
+    for _, ie in ipairs(e.InterruptContainer.Interrupts) do
+        local name = interruptName(ie)
+        if name then
+            if saved[name] == nil then
+                local cur = e.InterruptPreferences.Preferences[name]
+                local copy = {}
+                if cur then for _, f in pairs(cur) do copy[#copy + 1] = f end end
+                saved[name] = copy
+            end
+            local wanted = false
+            for _, k in ipairs(keep or {}) do if k == "*" or name:find(k, 1, true) then wanted = true end end
+            e.InterruptPreferences.Preferences[name] = wanted and { "Enabled" } or {}
+            if wanted then on = on + 1 else off = off + 1 end
+        end
+    end
+    T.savedPrefs[id] = saved
+    e:Replicate("InterruptPreferences")
+    return { off = off, on = on }
+end
+
+function T.restoreReactions()
+    for id, saved in pairs(T.savedPrefs) do
+        pcall(function()
+            local e = Ext.Entity.Get(id)
+            for name, flags in pairs(saved) do e.InterruptPreferences.Preferences[name] = flags end
+            e:Replicate("InterruptPreferences")
+        end)
+    end
+    T.savedPrefs = {}
 end
 
 local ARITY = { StatusApplied = 4, StatusRemoved = 4, CastedSpell = 5, UsingSpellOnTarget = 6, AttackedBy = 7, Died = 1,

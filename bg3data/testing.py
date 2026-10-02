@@ -339,7 +339,7 @@ EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_ab
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
                "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used",
-               "amount_change", "max_change", "skill", "ability", "damage_count"}
+               "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -552,7 +552,13 @@ def stage(store, active, layer, case_id):
         post.append("BG3T.enterCombat()")
     post.append("return true")
     lua("; ".join(post), timeout=30)
-    time.sleep(0.4)
+    # your own reactions off unless the case names the ones it measures (`reactions = ["Fate"]`, or ["*"]): a
+    # Shield / Arcane or Projected Ward / opportunity attack changes the rolls a case checks (Last Stand's bite was
+    # eaten by Projected Ward, 2026-10-02). AI mode keeps them all on unless the case lists some.
+    keep = c.get("reactions", ["*"] if mode == "ai" else [])
+    time.sleep(0.6)  # a freshly added passive's interrupt appears a moment later
+    lua(f"return BG3T.setReactions(BG3T.host(), {{{', '.join(se._lua_string(k) for k in keep)}}})", timeout=15)
+    time.sleep(0.2)
     before = lua("return BG3T.world()", timeout=30)
     first_turn = None
     if combat:
@@ -606,9 +612,8 @@ def stage(store, active, layer, case_id):
             notes.append("game window focused" if _g.focus_game() else "couldn't focus the game window")
         if c.get("auto_reactions", True):  # reactions of the target/host on auto (Enabled, no Ask), after a tick
             time.sleep(0.6)  # a freshly added passive's interrupt preference appears a moment later
-            for who in {"host", c.get("target", "host")}:
-                g = "BG3T.host()" if who == "host" else f"BG3T.spawns[{se._lua_string(who)}]"
-                lua(f"return BG3T.autoReactions({g})")
+            for who in {"host", c.get("target", "host")} - {"host"}:  # the host's were set at staging (`reactions`)
+                lua(f"return BG3T.autoReactions(BG3T.spawns[{se._lua_string(who)}])")
         if c.get("sanctuary", True):  # keep the enemy AI off the host so it uses the spell on the target
             lua("Osi.ApplyStatus(BG3T.host(), 'SANCTUARY', 600, 1, BG3T.host()); return true")
         time.sleep(1.5)
@@ -853,10 +858,17 @@ def verify(store, active, cleanup=True, wait=2.0):
                 row(d == e["max_change"], f"{label} {e['resource']}[{lvl}] max {bv[1]:g} -> {av[1]:g} (change {d:+g}, expected {e['max_change']:+})")
         for key in ("skill", "ability"):  # { skill = "Athletics", change = 2 } / { ability = "Strength", change = 1 }
             if e.get(key):
-                bv = ((b.get(key + "s") or {}).get(e[key]))
-                av = ((a.get(key + "s") or {}).get(e[key]))
+                plural = "abilities" if key == "ability" else "skills"
+                bv = ((b.get(plural) or {}).get(e[key]))
+                av = ((a.get(plural) or {}).get(e[key]))
                 ok = bv is not None and av is not None and av - bv == e.get("change", 0)
                 row(ok, f"{label} {e[key]} {bv} -> {av} (expected change {e.get('change', 0):+})")
+        for key in ("temp_hp", "temp_hp_change"):  # Temporary Hit Points after the run / gained during it
+            if key in e:
+                lo, hi = e[key]
+                v = (a.get("temp_hp") or 0) - ((b.get("temp_hp") or 0) if key == "temp_hp_change" else 0)
+                row(lo <= v <= hi, f"{label} temporary HP {'change ' if key == 'temp_hp_change' else ''}{v} within [{lo}, {hi}] "
+                    f"({b.get('temp_hp')} -> {a.get('temp_hp')})")
         if e.get("damage_count"):  # {count = [lo, hi], by = alias}: separate hits that damaged `target`
             dc = e["damage_count"]
             src = ent(before, dc["by"]).get("guid") if dc.get("by") and dc["by"] != "host" else (host if dc.get("by") == "host" else None)
@@ -884,9 +896,12 @@ def verify(store, active, cleanup=True, wait=2.0):
                     + (f" - below: {', '.join(str(x.get('natural')) + '->' + str(x.get('total')) for x in low)}" if low else f" ({len(rows_)} saves)"))
             lo, hi = sv.get("n", [1, 10 ** 6]); flo, fhi = sv.get("failed", [0, 10 ** 6])
             detail = ", ".join(f"{x.get('natural')}->{x.get('total')} vs {x.get('dc')}{'' if x.get('spellcast') else ' (not a spell roll)'}" for x in rows_[:10])
+            if "disadvantage" in sv:  # every matching save rolled with (or without) Disadvantage
+                bad = [x for x in rows_ if bool(x.get("disadvantage")) != bool(sv["disadvantage"])]
+                row(not bad and rows_ != [], f"{label}: {len(rows_) - len(bad)}/{len(rows_)} saves with Disadvantage={sv['disadvantage']}")
             if sv.get("effect_status"):  # save events show the dice BEFORE interrupts: count what actually landed
                 landed = sum(1 for x in events if x.get("kind") == "StatusApplied" and x.get("who") == guid and x.get("status") == sv["effect_status"])
-                row(landed <= nf and (landed == 0 if sv.get("rescued") else True),
+                row(landed <= nf and (landed == 0 if sv.get("rescued") else True) and nf - landed >= sv.get("rescued_min", 0),
                     f"{label}: {sv['effect_status']} landed {landed} times for {nf} failed rolls (rescued by interrupts: {nf - landed})")
             row(lo <= len(rows_) <= hi and flo <= nf <= fhi,
                 f"{label}: {len(rows_)} {sv.get('ability', '')} saves{' vs ' + sv['by'] if sv.get('by') else ''}, {nf} failed "
@@ -915,7 +930,7 @@ def verify(store, active, cleanup=True, wait=2.0):
             if not player:
                 want = -e.get("change", -1)
                 charged = sum(a_ for n_, lv_, a_ in (costs or []) if _cost_matches(n_, e["resource"]) and str(lv_) == lvl)
-                has = bv is not None and bv[0] >= want
+                has = want <= 0 or (bv is not None and bv[0] >= want)  # an x0 (free) cost needs none of it
                 row(charged == want and has, f"[data] {c.get('spell')} UseCosts charge {e['resource']}[{lvl}] x{charged:g} "
                     f"(expected x{want}); you had {bv[0] if bv else 'none'}{'' if has else ' - not enough to cast'}")
             elif bv is None or av is None:
@@ -1524,7 +1539,21 @@ def newest_save():
     return os.path.basename(s), sources.iso(os.path.getmtime(s))
 
 
+_RESTART_LOCK = __import__("threading").Lock()
+
+
 def restart(deploy_layer=None, launch=True, timeout=300):
+    # one restart at a time: a second one (e.g. after the first was backgrounded by the client) kills the game the
+    # first is waiting on and both misreport (seen 2026-10-02)
+    if not _RESTART_LOCK.acquire(blocking=False):
+        return "another bg3_game_restart is still running in this server - wait for it (or stop it) first"
+    try:
+        return _restart(deploy_layer, launch, timeout)
+    finally:
+        _RESTART_LOCK.release()
+
+
+def _restart(deploy_layer=None, launch=True, timeout=300):
     log = []
     killed = kill_game()
     log.append("killed: " + (", ".join(killed) or "game wasn't running"))
@@ -1559,7 +1588,7 @@ def restart(deploy_layer=None, launch=True, timeout=300):
     else:
         return "\n".join(log + ["no launcher: set game.launcher / game.game_exe in layers.json"])
     t0 = time.time()
-    last_ui, relaunched = 0, False
+    last_ui, relaunched, hung_since = 0, False, None
     _unstick_menu.splash = 0
     while time.time() - t0 < timeout:
         time.sleep(5)
@@ -1575,6 +1604,14 @@ def restart(deploy_layer=None, launch=True, timeout=300):
         # from the main menu doesn't do this), so the relaunch below is the normal path, not a rare fallback.
         if time.time() - t0 > 10 and time.time() - last_ui > 8:
             last_ui = time.time()
+            # a load that hangs (seen 2026-10-02: a bad stats build froze at LoadModule, CPU flat) never recovers:
+            # report it after ~60 s of Not Responding instead of waiting out the whole timeout
+            hung_since = (hung_since or time.time()) if platform.not_responding() else None
+            if hung_since and time.time() - hung_since > 60:
+                log.append(f"HUNG: the game window has been Not Responding for {time.time() - hung_since:.0f}s "
+                           f"({time.time() - t0:.0f}s after launch), a hung module/save load. Suspect the last deploy "
+                           "(stats/.khn/Lua); bisect it. The game was left running - restart kills it.")
+                return "\n".join(log)
             note = _unstick_menu(log, relaunched)
             if note in ("relaunch", "relaunch_killed"):
                 relaunched = note == "relaunch"  # after a kill, the safe-mode relaunch must still be allowed

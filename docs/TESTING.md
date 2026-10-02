@@ -104,6 +104,9 @@ real_rolls = true            # optional: the cast rolls saves/attacks for real (
 mode = "ai"                  # with caster = spawn: its AI casts `spell` on its turns (see Which method)
 ai_rounds = 12               # ai: max host turns to end; ai_samples = 6 stops early once 6 matching saves exist
 ai_keep = ["..."]            # ai: extra spells the caster may use; sanctuary = false lets the AI target the host
+reactions = ["Fate"]         # your interrupts left ON (name substrings, "*" = all). Default: all OFF in auto/script
+                             # mode (Shield, Arcane/Projected Ward, opportunity attacks change what a case measures),
+                             # all on in ai mode. Restored at cleanup.
 clear_between = ["PRONE"]    # optional, with repeat: statuses removed from the target before each cast
 end_turns = 7                # optional (combat): after the cast, end the host's turn N times via the HUD's
                              # End Turn (Osi.EndTurn doesn't end it), waiting for the host's turn each time
@@ -209,6 +212,17 @@ cache (`test_state.json`), so it survives an MCP restart.
   needs (`remove_status = "ARCANE_WARD*"`), and the harness safety watch heals below 35% (`safety = false`).
 - An NPC's AI decides its own interrupts and may decline (Legendary Resistance vs Strength Drain was declined).
 - `InterruptPreferences.Preferences`: set keys one by one - assigning the whole map back wipes it.
+
+Stats facts found while testing (2026-10-02):
+- `IF()` boosts on a passive are re-evaluated only on its `BoostContext` events. Without one, a condition stays as it
+  was when the passive was added. Status-conditioned resistances: `BoostContext OnStatusApplied;OnStatusRemoved` +
+  `HasStatus('X', context.Source)` (dnd55e Fractured_6_BrainsAndBrawn).
+- Caster-side Disadvantage on a spell's saves = `UnlockSpellVariant(<spell conditions>, ModifySavingThrowDisadvantage())`
+  on the caster (Heightened Spell's mechanism). A target-side status/aura boost did nothing for spell saves.
+- `GainTemporaryHitPoints(N)` is only a tooltip macro; grant temp HP with a status `Boosts TemporaryHP(N)`.
+- In SE Lua, `stat.SpellProperties`/`SpellSuccess` are parsed functor arrays, not text: read `TooltipDamageList`/`DamageType`.
+- A container spell with 44 children (`ContainerSpells` ~2080 chars) hangs the game at LoadModule; 43 / 2030 loaded.
+  `bg3_lint_stats` reports SIZE issues; `bg3_game_restart` reports a hung load after ~60 s Not Responding.
 
 ## Known limits
 - The Nautiloid tutorial (`TUT_SUMMON_BLOCK`) blocks summons: test summon spells after the crash site.
