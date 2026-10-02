@@ -14,12 +14,37 @@ combat, even for a class-learned spell (verified 2026-09-30: slot and Action Poi
 - `mode = "player"`: stage, you cast from the class spell bar, `bg3_test_verify`. Measures the real
   resource change; use it as a spot check (e.g. once per resource type).
 - `mode = "script"`: effects only, no class-ownership requirement.
-- `mode = "ai"` (EXPERIMENTAL, 2026-10-02): a spawn (`caster`) casts through its own AI on its turns while the host
-  ends turns (`ai_rounds`) under Sanctuary - real rolls AND interrupts/reactions, which Osiris casts never raise.
-  Known gaps: `Osi.RemoveSpell` doesn't remove a template's innate attacks, so the AI still picks other actions;
-  SavingThrowRolledEvent's source is often an internal cast entity, so `saves.by` filtering is unreliable.
+- `mode = "ai"`: a spawn (`caster`) casts through its own AI on its own turns while the host ends turns under
+  Sanctuary. Real rolls AND interrupts/reactions: the only way to exercise what an enemy's spell does to the
+  party. Every other spell of the caster is put on cooldown each of its turns, so it can only use the case's
+  spell (`cast_only` proves it).
 The spell must be learned through the class (SpellBook source is not `Osiris`) for auto and player cases.
 Every verdict states which kind of run it was.
+
+## Which method
+| What you're testing | Method |
+| --- | --- |
+| A spell's effects: damage, statuses, healing, summons, costs (from data) | `auto` / `script`: a scripted cast. Deterministic and fastest. |
+| Something that depends on the target's saving throw (save bonuses, advantage, floors) | `script` + `real_rolls = true` (the save is rolled), or `ai` |
+| Anything that reacts to a roll or a cast: interrupts (Legendary Resistance-style), reactions | `ai` only - Osiris casts never raise OnPostRoll interrupts |
+| Turn order, enemy turns | `end_turns` (any mode) or `ai` |
+| A spell's real slot/action cost | `player` (hotbar spot check) |
+
+Before writing an `ai` case, run `bg3_test_spell_check(spell)`: it says whether the AI can cast the spell at all
+(`AIFlags CanNotUse`), whether its save is the spell's own roll or comes from a status/surface/passive, and what
+else will trip the run. `bg3_save_spells(ability)` lists AI-castable spells whose own roll is a save of that
+ability. Validation rejects `ai` cases that can't work (CanNotUse, RequirementConditions, a `spell_only` save the
+spell doesn't roll).
+
+## Speed
+- The SE bridge keeps one PowerShell injector running (`ps/se_inject_server.ps1`) instead of starting
+  `powershell.exe` and compiling the C# helper per call: ~0.34 s per `bg3_se_eval` instead of ~2.3 s.
+- Waits are event-driven: casts are awaited by their CastedSpell event and effects by a 0.8 s quiet period
+  (`wait`, `repeat_wait`, `casts.wait` are now caps, not sleeps); End Turn waits for the turn to pass instead of
+  fixed sleeps.
+- `ai_samples = N` stops an `ai` run once N matching saves are recorded instead of playing every `ai_rounds`.
+- Prefer exact per-roll checks (`saves.min_total`) over statistics: one low natural roll is decisive.
+- Measured 2026-10-02: 12 deterministic cases 380 s -> 133 s.
 
 ## Loop per level
 1. `bg3_level_up` grants exactly enough XP (from the active layers' `XPData.txt`) for the next level.
@@ -75,6 +100,9 @@ casts = [{ spell = "Shout_X" }, { spell = "Shout_Y", target = "A", wait = 2 }]  
                              # after setup, before `spell` (a feature's setup steps, e.g. pick then use)
 caster = "A"                 # optional: a spawn casts the case's `spell` (casts entries take `by = "A"`)
 real_rolls = true            # optional: the cast rolls saves/attacks for real (strips Osiris' IgnoreSpellRolls)
+mode = "ai"                  # with caster = spawn: its AI casts `spell` on its turns (see Which method)
+ai_rounds = 12               # ai: max host turns to end; ai_samples = 6 stops early once 6 matching saves exist
+ai_keep = ["..."]            # ai: extra spells the caster may use; sanctuary = false lets the AI target the host
 clear_between = ["PRONE"]    # optional, with repeat: statuses removed from the target before each cast
 end_turns = 7                # optional (combat): after the cast, end the host's turn N times via the HUD's
                              # End Turn (Osi.EndTurn doesn't end it), waiting for the host's turn each time
@@ -103,7 +131,12 @@ expect = [
   { resource = "SpellSlot", level = 1, change = -1 },       # host by default; level 0 for non-slot resources
   { consecutive_turns = "host", count = [2, 5] },          # turns in a row right after the cast (with end_turns)
   { took_turn = "A" },
-  { target = "host", status_applied_count = { status = "PRONE", count = [0, 0] } },  # times it landed                                      # A took a turn after the cast
+  { target = "host", status_applied_count = { status = "PRONE", count = [0, 0] } },  # times it landed
+  { cast_only = "A" },                                      # the spawn cast nothing but the case's spell (ai)
+  { cast_count = { by = "A", count = [1, 99] } },           # casts of the case's spell by a spawn
+  { target = "B", saves = { ability = "Strength", spell_only = true, n = [1, 99], failed = [0, 0], min_total = 16 } },
+                             # recorded saving throws: spell_only = the spell's own roll (not a status/surface
+                             # tick); min_total = every total at least this (exact floor check)                                      # A took a turn after the cast
   { roll = "ath", pass = [30, 30] },                        # passes out of a `rolls` batch (below)
 ]
 rolls = [{ as = "ath", type = "SkillCheck", id = "Athletics", dc = 8, n = 30 }]  # real passive rolls by the host
@@ -131,6 +164,20 @@ recorder, safety watch and Initiative boost are set first, creatures spawn neutr
 only then turn hostile. Verify also removes statuses the run left on the host. Listeners dispatch through
 `BG3T.on`, so a newer harness replaces handlers without stacking listeners. Staging state is kept in the
 cache (`test_state.json`), so it survives an MCP restart.
+
+## Verified engine facts (2026-10-01/02)
+- `Osi.UseSpell` queues casts with IgnoreSpellRolls (+IgnoreHasSpell/CastChecks/TargetChecks): no save, no attack
+  roll, and no OnPostRoll interrupts. `real_rolls` strips IgnoreSpellRolls; interrupts still never fire for it.
+- OnPostRoll interrupts fire only for a spell's own rolls - not passive rolls (`RequestPassiveRoll`), status
+  OnApplyRoll/OnTickRoll saves, surface saves, or saves from passives (e.g. trip-on-hit).
+- `MinimumRollResult(SavingThrow, N)` floors only some real spell saves, even unconditionally.
+- `SavingThrowRolledEvent` fires twice per roll with opposite Success; for a spell's own roll the event's Target is
+  the caster and Source the saver. The harness dedupes per roll and decides success as total >= DC.
+- `Osi.RemoveSpell` doesn't remove a template's innate attacks: the harness locks them with cooldowns.
+- Writing a cast's pre-rolled saves (`SpellCastRolls`) back from Lua froze the server thread: don't.
+- The first launch after quitting a loaded game is always in no-mods safe mode; restart handles it.
+- In this setup even base Legendary Resistance didn't fire for the host on AI spell saves (2026-10-02): treat
+  save-interrupt features as unverifiable here and spot-check them by hand.
 
 ## Known limits
 - The Nautiloid tutorial (`TUT_SUMMON_BLOCK`) blocks summons: test summon spells after the crash site.

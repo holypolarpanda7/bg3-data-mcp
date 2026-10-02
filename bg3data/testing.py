@@ -338,7 +338,7 @@ def find_case(layer, case_id):
 EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_absent", "status_applied", "status_applied_any",
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
-               "status_applied_count", "cast_count", "saves"}
+               "status_applied_count", "cast_count", "saves", "cast_only"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -353,9 +353,17 @@ def validate(store, active, c):
         if not c.get("caster") or c.get("caster") == "host":
             errs.append("mode ai needs `caster` = a spawn alias (the host is player-controlled)")
         for sp in [c.get("spell")] + list(c.get("ai_keep", [])):
-            r = store.resolve(sp, active) if sp else None
-            if r and "CanNotUse" in str((r.get("fields") or {}).get("AIFlags", ("",))[0]):
+            sf = spell_facts(store, active, sp) if sp else None
+            if sf and not sf["ai_can_use"]:
                 errs.append(f"{sp} has AIFlags CanNotUse - the AI never casts it; use mode script + real_rolls")
+            if sf and sf["requirements"]:
+                errs.append(f"{sp} has RequirementConditions ({sf['requirements'][:60]}) - the AI may never meet them")
+        sf = spell_facts(store, active, c["spell"]) if c.get("spell") else None
+        for e in c.get("expect", []):
+            sv = e.get("saves") or {}
+            if sf and sv.get("spell_only") and sv.get("ability") and sv["ability"] not in sf["save_abilities"]:
+                errs.append(f"{c['spell']}'s own roll isn't a {sv['ability']} save ({sf['roll'] or 'no SpellRoll'}) - "
+                            f"spell_only saves will never be recorded; see bg3_save_spells")
     for who in [c.get("caster")] + [cs.get("by") for cs in c.get("casts", [])]:
         if who and who not in aliases:
             errs.append(f"caster `{who}` isn't host or a spawn alias")
@@ -438,8 +446,10 @@ def stage(store, active, layer, case_id):
     mode = c.get("mode", "auto")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
-    lua("BG3T.cleanup(); return true")
-    st = host_state()
+    pre = lua("return BG3T.precheck()", timeout=30) or {}  # cleanup + snapshot + statuses in one round trip
+    st = pre.get("snapshot") or {}
+    if not (st.get("classes") and all(x.get("class") for x in st["classes"]) and st.get("spells")):
+        st = host_state()  # class names occasionally resolve a tick late: the retrying path
     notes, blockers = [], []
     cl = next((x for x in st["classes"] if not c.get("class") or x["class"] == c["class"]), None)
     if c.get("class") and not cl:
@@ -472,7 +482,7 @@ def stage(store, active, layer, case_id):
     if blockers:
         return {"ok": False, "blockers": blockers, "notes": notes}
 
-    pre_statuses = lua("return BG3T.statuses(BG3T.host())") or []  # anything not here at the end was added by the run
+    pre_statuses = pre.get("statuses") or []  # anything not here at the end was added by the run
     spawns = c.get("spawn", [])
     hostile = any(s.get("faction", "hostile") == "hostile" for s in spawns)
     combat = c.get("combat", hostile)
@@ -507,7 +517,7 @@ def stage(store, active, layer, case_id):
     if missing:
         lua("BG3T.cleanup(); return true")
         raise RuntimeError(f"spawn failed for {missing}")
-    time.sleep(1.2)  # boosts (initiative, max HP) apply on the next tick
+    time.sleep(0.4)  # boosts (initiative, max HP) apply on the next tick (a frame; was 1.2 s)
     post = []
     for s in spawns:
         if s.get("hp") is not None:
@@ -536,7 +546,7 @@ def stage(store, active, layer, case_id):
         post.append("BG3T.enterCombat()")
     post.append("return true")
     lua("; ".join(post), timeout=30)
-    time.sleep(1.0)
+    time.sleep(0.4)
     before = lua("return BG3T.world()", timeout=30)
     first_turn = None
     if combat:
@@ -554,29 +564,32 @@ def stage(store, active, layer, case_id):
     if c.get("grant_passive"):  # the case's action is gaining a feature (e.g. a boon's max HP increase)
         lua(f"BG3T.addPassive(BG3T.host(), {se._lua_string(c['grant_passive'])}); return true")
     for i, cs in enumerate(c.get("casts", [])):  # a scripted sequence before the case's own spell (any mode)
-        if i:
-            time.sleep(float(cs.get("wait", 2)))
+        if i:  # event-driven: the previous cast resolved (old fixed `wait` is now only the cap)
+            prev = c["casts"][i - 1]["spell"]
+            _wait_casts(since, prev, sum(1 for x in c["casts"][:i] if x["spell"] == prev), float(c["casts"][i - 1].get("wait", 2)) + 4)
+            _settle(since, quiet=0.5, cap=3)
         tgt = cs.get("target", "host")
         tgt = "BG3T.host()" if tgt == "host" else f"BG3T.spawns[{se._lua_string(tgt)}]"
         by = "BG3T.host()" if cs.get("by", "host") == "host" else f"BG3T.spawns[{se._lua_string(cs['by'])}]"
         lua(f"BG3T.cast({by}, {se._lua_string(cs['spell'])}, {tgt}, {'true' if cs.get('real_rolls') else 'false'}); return true")
     if c.get("casts"):
-        time.sleep(float(c.get("casts_wait", 2)))
+        last = c["casts"][-1]["spell"]
+        _wait_casts(since, last, sum(1 for x in c["casts"] if x["spell"] == last), float(c.get("casts_wait", 2)) + 4)
+        _settle(since, quiet=0.5, cap=3)
     for r in c.get("rolls", []):  # passive rolls after setup (any mode), tallied by the harness
         lua(f"BG3T.roll({se._lua_string(r['as'])}, {se._lua_string(r['type'])}, {se._lua_string(r['id'])}, "
             f"{int(r['dc'])}, {int(r.get('n', 20))}); return true")
     if mode == "ai":
         cst = f"BG3T.spawns[{se._lua_string(c['caster'])}]"
         keep = [c["spell"]] + list(c.get("ai_keep", []))
-        lua(f"BG3T.aiOnly({cst}, {{{', '.join(se._lua_string(s) for s in keep)}}}); return true")
+        locked = lua(f"return BG3T.aiOnly({cst}, {{{', '.join(se._lua_string(s) for s in keep)}}})")
+        notes.append(f"{c['caster']}: {locked} other spells on cooldown (re-applied each of its turns); AI keeps {', '.join(keep)}")
         if c.get("clear_between"):
             tgt = "BG3T.host()" if c.get("target", "host") == "host" else f"BG3T.spawns[{se._lua_string(c['target'])}]"
             lua(f"table.insert(BG3T.aiClear, {{ caster = {cst}, target = {tgt}, statuses = {{{', '.join(se._lua_string(s) for s in c['clear_between'])}}} }}); return true")
         if c.get("sanctuary", True):  # keep the enemy AI off the host so it uses the spell on the target
             lua("Osi.ApplyStatus(BG3T.host(), 'SANCTUARY', 600, 1, BG3T.host()); return true")
         time.sleep(1.5)
-        book = lua(f"return BG3T.spellbook({cst})") or []
-        notes.append(f"{c['caster']} spellbook: {', '.join(book)}")
         c = dict(c, end_turns=int(c.get("ai_rounds", 8)))
     if mode in ("auto", "script") and c.get("spell"):
         if c.get("target") == "ground":
@@ -588,23 +601,153 @@ def stage(store, active, layer, case_id):
             rolled = "true" if c.get("real_rolls") else "false"
             # repeat = N casts the spell N times, `repeat_wait` seconds apart (e.g. an Extra Attack chain)
             for i in range(max(1, int(c.get("repeat", 1)))):
-                if i:
-                    time.sleep(float(c.get("repeat_wait", 3)))
+                if i:  # event-driven: wait for the previous cast (repeat_wait is the cap), then let effects land
+                    _wait_casts(since, c["spell"], i, float(c.get("repeat_wait", 3)) + 4)
+                    _settle(since, quiet=0.5, cap=3)
                 for st_ in c.get("clear_between", []):  # e.g. PRONE, so every cast can land it again
                     lua(f"local g = {tgt} if Osi.HasActiveStatus(g, {se._lua_string(st_)}) == 1 then Osi.RemoveStatus(g, {se._lua_string(st_)}) end return true")
                 lua(f"BG3T.cast({who}, {se._lua_string(c['spell'])}, {tgt}, {rolled}); return true")
     if c.get("end_turns"):  # end the host's turn N times through the HUD (turn-order features, enemy turns)
         from . import gameui
-        for _ in range(int(c["end_turns"])):
-            if not gameui.wait_host_turn():
+        need = int(c.get("ai_samples", 0)) if mode == "ai" else 0
+        for k in range(int(c["end_turns"])):
+            if not gameui.end_host_turn():
                 notes.append("end_turns: the host's turn never came back")
                 break
-            time.sleep(1.5)
-            gameui.end_turn()
-            time.sleep(3)
-        gameui.wait_host_turn()
+            if need:  # ai early stop: enough matching saves recorded
+                got = _ai_samples(c, since)
+                if got is not None and got >= need:
+                    notes.append(f"ai: stopped after {k + 1} rounds ({got} samples >= ai_samples {need})")
+                    break
     return {"ok": True, "case": c, "notes": notes, "combat": combat, "first_turn": first_turn,
             "spell_name": _name(store, active, c["spell"]) if c.get("spell") else None, "before": before}
+
+
+def _events(since):
+    return lua(f"return BG3T.drain({since})", timeout=20) or []
+
+
+def _count_casts(evs, spell):
+    return sum(1 for x in evs if x.get("kind") == "CastedSpell" and x.get("spell") == spell)
+
+
+def _progress(since, spell=""):
+    return lua(f"return BG3T.progress({since}, {se._lua_string(spell or '')})", timeout=20) or {}
+
+
+def _wait_casts(since, spell, n, timeout):
+    """Event-driven wait for the n-th CastedSpell of `spell` since `since` (one small call per poll)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if (_progress(since, spell).get("casts") or 0) >= n:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _settle(since, quiet=0.8, cap=6.0):
+    """Wait until no new events arrive for `quiet` seconds (effects after a cast: projectiles, statuses), capped."""
+    end, last, t_last = time.time() + cap, -1, time.time()
+    while time.time() < end:
+        n = _progress(since).get("n") or 0
+        if n != last:
+            last, t_last = n, time.time()
+        elif time.time() - t_last >= quiet:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _ai_samples(c, since):
+    """Matching saves recorded so far for the case's first `saves` expectation (ai early stop)."""
+    sv = next((e["saves"] for e in c.get("expect", []) if e.get("saves")), None)
+    if not sv:
+        return None
+    tgt = c.get("target", "host") if not sv.get("target") else sv["target"]
+    evs = _events(since)
+    who = lua("return BG3T.host()") if tgt == "host" else lua(f"return BG3T.spawns[{se._lua_string(tgt)}]")
+    return sum(1 for x in evs if x.get("kind") == "Save" and x.get("who") == who
+               and (not sv.get("ability") or x.get("ability") == sv["ability"]) and (not sv.get("spell_only") or x.get("spellcast")))
+
+
+# ------------------------------------------------------------------ spell pre-checks (lessons of 2026-10-02)
+_SAVE_RE = re.compile(r"SavingThrow\(\s*Ability\.(\w+)")
+
+
+# what the AI actually did with a spell in mode ai (in game) - shown by spell_check / save_spells
+AI_OBSERVED = {
+    "Target_StrengthDrain_Shadow": "2026-10-02: an Entangle/Bite-locked wolf cast it every turn it could; own-roll saves recorded",
+    "Target_DEN_Entangle_Staff": "2026-10-02: cast ~1 turn in 3; the target's saves came from the vine surface, not the cast",
+    "Target_LOW_Poltergeist_Shove": "2026-10-02: never cast in 10 AI rounds",
+    "Target_Bite_Wolf": "2026-10-02: cast every turn; its Strength saves come from the wolf's trip-on-hit passive",
+}
+
+
+def spell_facts(store, active, spell):
+    """What a test needs to know about a spell before using it, from stats alone."""
+    r = store.resolve(spell, active)
+    if not r:
+        return None
+    f = {k: str(v[0]) for k, v in (r.get("fields") or {}).items()}
+    roll = f.get("SpellRoll", "")
+    return {
+        "name": spell, "type": f.get("SpellType", ""), "roll": roll,
+        "save_abilities": sorted(set(_SAVE_RE.findall(roll))),          # saves that are the spell's OWN roll
+        "attack": "Attack(" in roll,
+        "ai_can_use": "CanNotUse" not in f.get("AIFlags", ""),
+        "requirements": f.get("RequirementConditions", ""),
+        "target_conditions": f.get("TargetConditions", ""),
+        "area": f.get("AreaRadius", "") or f.get("ExplodeRadius", ""),
+        "costs": f.get("UseCosts", ""), "cooldown": f.get("Cooldown", ""),
+        "other_saves": sorted(set(_SAVE_RE.findall(" ".join(f.get(k, "") for k in ("SpellSuccess", "SpellProperties", "SpellFail"))))),
+    }
+
+
+def spell_check(store, active, spell):
+    """Readable pre-check: AI usability, where saves come from, and what will trip a test."""
+    s = spell_facts(store, active, spell)
+    if not s:
+        return f"{spell}: not in the index"
+    out = [f"{spell} ({s['type']})", f"  SpellRoll: {s['roll'] or '(none)'}"]
+    if s["save_abilities"]:
+        out.append(f"  own-roll save: {', '.join(s['save_abilities'])} - a real cast raises OnPostRoll interrupts for it")
+    elif s["attack"]:
+        out.append("  attack roll, no own save (any save on hit comes from a passive/status - interrupts never see it)")
+    else:
+        out.append("  no roll of its own")
+    if s["other_saves"]:
+        out.append(f"  saves inside its effects (status/surface ticks, not the spell's roll): {', '.join(s['other_saves'])}")
+    out.append(f"  AI can cast it: {'yes' if s['ai_can_use'] else 'NO (AIFlags CanNotUse) - mode ai never sees it; use script + real_rolls'}")
+    for k, label in (("requirements", "RequirementConditions"), ("target_conditions", "TargetConditions"), ("area", "area"),
+                     ("costs", "UseCosts"), ("cooldown", "Cooldown")):
+        if s[k]:
+            out.append(f"  {label}: {s[k]}")
+    if s["area"]:
+        out.append("  area/surface spell: in game its saves can come from the surface or status it leaves, not the cast")
+    if spell in AI_OBSERVED:
+        out.append(f"  seen in mode ai: {AI_OBSERVED[spell]}")
+    if "SpellSlot" in s["costs"]:
+        out.append("  needs a spell slot: an NPC caster may have none (grant ActionResource(SpellSlot,...) in setup)")
+    return "\n".join(out)
+
+
+def save_spells(store, active, ability, limit=40):
+    """AI-castable spells whose OWN roll is a saving throw of `ability` (the ones that exercise save interrupts),
+    single-target first, no RequirementConditions, no spell slot."""
+    rows = store.search_stats(f"SavingThrow(Ability.{ability}", active, type_="SpellData", field="SpellRoll", limit=1000)
+    good = []
+    for r in rows:
+        n = r if isinstance(r, str) else (r.get("name") if isinstance(r, dict) else r[0])
+        s = spell_facts(store, active, n)
+        if not s or not s["ai_can_use"] or s["requirements"] or "SpellSlot" in s["costs"]:
+            continue
+        good.append(((s["type"] != "Target", bool(s["area"])), n, s))
+    good.sort(key=lambda x: (x[0], x[1]))
+    lines = [f"AI-castable spells with an own-roll {ability} save (no requirements, no slot): {len(good)}"]
+    for _, n, s in good[:limit]:
+        seen = f"  [seen: {AI_OBSERVED[n][12:60]}]" if n in AI_OBSERVED else ""
+        lines.append(f"  {n:50s} {s['type']:10s} target: {s['target_conditions'][:50]}{'  AREA ' + s['area'] if s['area'] else ''}{seen}")
+    return "\n".join(lines)
 
 
 def _who(st_):
@@ -617,7 +760,15 @@ def verify(store, active, cleanup=True, wait=2.0):
     if not state:
         raise ValueError("nothing staged (run bg3_test_stage first)")
     c = find_case(state["layer"], state["case"])
-    time.sleep(max(0.0, min(wait, 30)))
+    # event-driven: the case's casts resolved, then events went quiet for 0.8 s (`wait` stays the cap, so slow
+    # projectiles/summons still get their time; fast cases finish in about a second instead of a fixed 4 s)
+    if state["mode"] in ("auto", "script") and c.get("spell"):
+        _wait_casts(state["since"], c["spell"], max(1, int(c.get("repeat", 1))), max(wait, 1) + 4)
+        _settle(state["since"], quiet=0.8, cap=max(wait, 1.5))
+    elif state["mode"] == "ai":
+        _settle(state["since"], quiet=0.8, cap=3)
+    else:
+        time.sleep(max(0.0, min(wait, 30)))
     after = lua("return BG3T.world()", timeout=30)
     events = lua(f"return BG3T.drain({state['since']})", timeout=30) or []
     before = state["before"]
@@ -665,14 +816,26 @@ def verify(store, active, cleanup=True, wait=2.0):
             n = sum(1 for x in events if x.get("kind") == "CastedSpell" and x.get("spell") == sp and x.get("who") == bg)
             lo, hi = cc.get("count", [1, 10 ** 6])
             row(lo <= n <= hi, f"{cc.get('by', 'host')} cast {sp} {n} times, expected [{lo}, {hi}]")
+        if e.get("cast_only"):  # alias: every spell that spawn cast during the run was the case's spell (or ai_keep)
+            bg = ent(before, e["cast_only"]).get("guid")
+            allowed = {c.get("spell")} | set(c.get("ai_keep", []))
+            # reactions the engine triggers (opportunity attacks) aren't the AI's choice
+            other = sorted({x.get("spell") for x in events if x.get("kind") == "CastedSpell" and x.get("who") == bg
+                            and "OpportunityAttack" not in str(x.get("spell"))} - allowed)
+            row(not other, f"{e['cast_only']} cast only {', '.join(sorted(allowed))}" + (f" (also cast: {', '.join(other)})" if other else ""))
         if e.get("saves"):  # {ability, by = alias (source), n = [lo, hi], failed = [lo, hi]} for `target`
             sv = e["saves"]
             src = ent(before, sv["by"]).get("guid") if sv.get("by") and sv["by"] != "host" else (host if sv.get("by") == "host" else None)
             rows_ = [x for x in events if x.get("kind") == "Save" and x.get("who") == guid
-                     and (not sv.get("ability") or x.get("ability") == sv["ability"]) and (src is None or x.get("by") == src)]
+                     and (not sv.get("ability") or x.get("ability") == sv["ability"]) and (src is None or x.get("by") == src)
+                     and (not sv.get("spell_only") or x.get("spellcast"))]
             nf = sum(1 for x in rows_ if not x.get("saved"))
+            if "min_total" in sv:  # exact per-roll floor check: every save's total is at least min_total
+                low = [x for x in rows_ if x.get("total", 0) < sv["min_total"]]
+                row(not low and rows_ != [], f"{label}: every {sv.get('ability', '')} save total >= {sv['min_total']}"
+                    + (f" - below: {', '.join(str(x.get('natural')) + '->' + str(x.get('total')) for x in low)}" if low else f" ({len(rows_)} saves)"))
             lo, hi = sv.get("n", [1, 10 ** 6]); flo, fhi = sv.get("failed", [0, 10 ** 6])
-            detail = ", ".join(f"{x.get('natural')}->{x.get('total')} vs {x.get('dc')}" for x in rows_[:10])
+            detail = ", ".join(f"{x.get('natural')}->{x.get('total')} vs {x.get('dc')}{'' if x.get('spellcast') else ' (not a spell roll)'}" for x in rows_[:10])
             row(lo <= len(rows_) <= hi and flo <= nf <= fhi,
                 f"{label}: {len(rows_)} {sv.get('ability', '')} saves{' vs ' + sv['by'] if sv.get('by') else ''}, {nf} failed "
                 f"(expected n [{lo}, {hi}], failed [{flo}, {fhi}]) [{detail}]")
@@ -739,8 +902,14 @@ def verify(store, active, cleanup=True, wait=2.0):
                     + ("" if done == n else f" (only {done} results came back)"))
     safety = [x for x in events if x.get("kind") == "SAFETY"]
     where = " in real combat (initiative)" if state["combat"] else " out of combat"
-    fid = ("player cast" + where) if player else ("scripted cast" + where + "; costs checked against the loaded UseCosts, not charged"
-                                                   if mode == "auto" else "SCRIPTED cast - effects only")
+    if player:
+        fid = "player cast" + where
+    elif mode == "ai":
+        fid = f"AI cast by {c.get('caster')} on its own turns - real rolls and interrupts"
+    elif mode == "auto":
+        fid = "scripted cast" + where + "; costs checked against the loaded UseCosts, not charged"
+    else:
+        fid = "SCRIPTED cast - " + ("saves rolled for real" if c.get("real_rolls") else "effects only, saves not rolled")
     npass = sum(1 for r in results if r[0] == "PASS")
     nfail = sum(1 for r in results if r[0] == "FAIL")
     verdict = "FAIL" if nfail else ("PASS" if npass else "NO CHECKS")

@@ -162,7 +162,55 @@ def _lua_string(s):
     return "".join(out)
 
 
+LINE_GAP_MS = 20  # pause after each console line (was 800 ms in the one-shot injector; 20 ms verified 2026-10-02)
+_SERVER = {"proc": None}
+
+
+def _server():
+    """The persistent injector process (started on first use, restarted if it died)."""
+    import subprocess
+    p = _SERVER["proc"]
+    if p and p.poll() is None:
+        return p
+    script = os.path.join(os.path.dirname(__file__), "ps", "se_inject_server.ps1")
+    exe = "powershell.exe" if platform.IS_WSL else "powershell"
+    p = subprocess.Popen([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", platform.to_win(script)],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    ready = _readline(p, 30)
+    if ready != "ready":
+        p.kill()
+        raise RuntimeError(f"persistent injector didn't start: {ready!r}")
+    _SERVER["proc"] = p
+    return p
+
+
+def _readline(p, timeout):
+    import select
+    if hasattr(select, "poll"):
+        r, _, _ = select.select([p.stdout], [], [], timeout)
+        if not r:
+            return None
+    return (p.stdout.readline() or "").strip()
+
+
 def _inject(lines, pid):
+    try:
+        p = _server()
+        p.stdin.write(json.dumps({"pid": int(pid), "lines": lines, "gap": LINE_GAP_MS}) + "\n")
+        p.stdin.flush()
+        out = _readline(p, 30)
+        if out and out.startswith("ok"):
+            return
+        if out and "AttachConsole failed" in out:
+            _PROC_CACHE["value"] = None
+            raise RuntimeError(f"console injection failed: {out}")
+        _SERVER["proc"] = None  # unknown state: fall back to the one-shot injector below
+    except (OSError, ValueError, BrokenPipeError):
+        _SERVER["proc"] = None
+    _inject_once(lines, pid)
+
+
+def _inject_once(lines, pid):
     se = _cfg()
     tmp = os.path.join(platform.windows_temp(), f"bg3data_se_{uuid.uuid4().hex[:8]}.txt")
     with open(tmp, "w", encoding="utf-8", newline="\r\n") as f:
@@ -227,7 +275,7 @@ def eval_lua(code, context="server", timeout=15.0):
                 except ValueError:
                     result = payload
                 return {"ok": status_ == "OK", "result": result, "output": output}
-            time.sleep(0.25)
+            time.sleep(0.05)
         raise TimeoutError(f"no result within {timeout:.0f}s (game paused/minimised in a menu, or console not accepting input?)")
 
 

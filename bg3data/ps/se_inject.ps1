@@ -19,7 +19,7 @@ public static class ConInject {
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
     static extern bool WriteConsoleInput(IntPtr h, INPUT_RECORD[] buf, uint len, out uint written);
 
-    public static string Send(uint pid, string[] lines) {
+    public static string Send(uint pid, string[] lines, int gapMs) {
         FreeConsole();
         if (!AttachConsole(pid)) return "AttachConsole failed: " + Marshal.GetLastWin32Error();
         IntPtr h = CreateFile("CONIN$", 0xC0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
@@ -35,7 +35,7 @@ public static class ConInject {
                 recs[2*i+1] = recs[2*i]; recs[2*i+1].Key.bKeyDown = 0;
             }
             uint w; WriteConsoleInput(h, recs, (uint)recs.Length, out w); total += (int)w;
-            System.Threading.Thread.Sleep(800);
+            System.Threading.Thread.Sleep(gapMs);
         }
         CloseHandle(h); FreeConsole();
         return "ok, records written: " + total;
@@ -43,4 +43,4 @@ public static class ConInject {
 }
 "@
 $lines = Get-Content -LiteralPath $LinesFile | Where-Object { $_.Trim() -ne '' }
-[ConInject]::Send([uint32]$ProcId, [string[]]$lines)
+[ConInject]::Send([uint32]$ProcId, [string[]]$lines, 800)

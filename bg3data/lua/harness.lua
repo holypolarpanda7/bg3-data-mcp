@@ -198,7 +198,9 @@ T.pendingRolled = T.pendingRolled or {}
 function T.cast(caster, spell, target, realRolls)
     if realRolls then
         table.insert(T.pendingRolled, { spell = spell, ticks = 0 })
-        if not T.castSub then
+        if T.castSubVersion ~= VERSION then  -- re-subscribe after a harness reinstall (see T.saveSub)
+            if T.castSub then pcall(function() Ext.Events.Tick:Unsubscribe(T.castSub) end) end
+            T.castSubVersion = VERSION
             T.castSub = Ext.Events.Tick:Subscribe(function()
                 if #T.pendingRolled == 0 then return end
                 for _, r in ipairs(Ext.System.ServerCastRequest.OsirisCastRequests) do
@@ -263,7 +265,7 @@ function T.drain(since)
 end
 
 function T.cleanup()
-    T.aiClear, T.seenRolls = {}, {}
+    T.aiClear, T.seenRolls, T.aiLocks = {}, {}, {}
     local report = { spawns = 0, grants = 0, statuses = 0, passives = 0, cooldowns = T.clearCooldowns(T.host()) }
     for _, ps in ipairs(T.added_passives) do
         pcall(Osi.RemovePassive, ps[1], ps[2])
@@ -312,6 +314,13 @@ end
 -- T.on[name]: installing a newer harness replaces the handlers instead of stacking listeners.
 T.on = {
     StatusApplied = function(obj, status, causee)
+        for _, cl in ipairs(T.aiClear) do  -- ai mode: lift it right away, so its own follow-up saves don't muddy the run
+            if uuid(obj) == cl.target then
+                for _, st in ipairs(cl.statuses) do
+                    if st == status then Ext.Timer.WaitFor(400, function() pcall(Osi.RemoveStatus, cl.target, st) end) end
+                end
+            end
+        end
         if T.recording and isTracked(obj) then push({ kind = "StatusApplied", who = uuid(obj), status = status, by = uuid(causee) }) end
         if status == "DOWNED" then safetyCheck(obj, 0) end
     end,
@@ -336,6 +345,7 @@ T.on = {
         if T.recording and isTracked(ch) then push({ kind = "Died", who = uuid(ch) }) end
     end,
     TurnStarted = function(ch)
+        if T.aiLocks[uuid(ch)] then pcall(T.applyAiLock, uuid(ch)) end
         for _, cl in ipairs(T.aiClear) do
             if uuid(ch) == cl.caster then
                 for _, st in ipairs(cl.statuses) do if Osi.HasActiveStatus(cl.target, st) == 1 then Osi.RemoveStatus(cl.target, st) end end
@@ -364,15 +374,50 @@ T.on = {
 -- The caster spawn keeps only the spells under test, so its own AI casts them on its turns: real rolls,
 -- interrupts and reactions, unlike Osi.UseSpell (verified 2026-10-02: Osiris casts never raise OnPostRoll
 -- interrupts). Spells flagged AIFlags CanNotUse are never chosen (e.g. Target_Bash).
+-- Osi.RemoveSpell doesn't remove a template's innate attacks (seen 2026-10-02), so every other spell in the
+-- caster's spellbook is put on cooldown instead, re-applied at the start of each of its turns.
+T.aiLocks = T.aiLocks or {}
+function T.applyAiLock(caster)
+    local keep = T.aiLocks[caster]
+    if not keep then return 0 end
+    local e = Ext.Entity.Get(caster)
+    local cds, n = {}, 0
+    for _, sp in ipairs(e.SpellBook.Spells) do
+        if not keep[sp.Id.OriginatorPrototype] then
+            cds[#cds + 1] = { SpellId = sp.Id, Cooldown = 99, CooldownType = "OncePerCombat", CooldownType2 = "OncePerCombat" }
+            n = n + 1
+        end
+    end
+    e.SpellBookCooldowns.Cooldowns = cds
+    e:Replicate("SpellBookCooldowns")
+    return n
+end
+
 function T.aiOnly(caster, keep)
     caster = uuid(caster)
     local want = {}
     for _, s in ipairs(keep) do want[s] = true end
-    for _, sp in ipairs(Ext.Entity.Get(caster).SpellBook.Spells) do
-        local id = sp.Id.OriginatorPrototype
-        if not want[id] then pcall(Osi.RemoveSpell, caster, id, 0) end
-    end
     for s in pairs(want) do if Osi.HasSpell(caster, s) ~= 1 then Osi.AddSpell(caster, s, 0, 1) end end
+    T.aiLocks[caster] = want
+    return T.applyAiLock(caster)
+end
+
+-- one cheap poll for the runner: how many events since `since`, and how many casts of `spell`
+function T.progress(since, spell)
+    local n, casts = 0, 0
+    for _, ev in ipairs(T.events) do
+        if ev.seq > since then
+            n = n + 1
+            if ev.kind == "CastedSpell" and ev.spell == spell then casts = casts + 1 end
+        end
+    end
+    return { n = n, casts = casts }
+end
+
+-- stage pre-check in one round trip: cleanup + host snapshot + current statuses
+function T.precheck()
+    T.cleanup()
+    return { snapshot = T.snapshot(T.host(), true), statuses = T.statuses(T.host()) }
 end
 
 function T.spellbook(g)
@@ -387,7 +432,10 @@ T.aiClear = T.aiClear or {}
 -- every saving throw while recording (deduped per roll): saver, source, ability, natural, total, DC.
 -- SavingThrowRolledEvent fires twice per roll with opposite Success, so success is total >= DC here.
 T.seenRolls = T.seenRolls or {}
-if not T.saveSub then
+-- replaced on every harness (re)install: a guard like `if not T.saveSub` keeps the OLD closure running after the
+-- harness file changes (cost a debugging round on 2026-10-02)
+if T.saveSub then pcall(Ext.Entity.Unsubscribe, T.saveSub) end
+do
     T.saveSub = Ext.Entity.OnCreate("SavingThrowRolledEvent", function(_, _, c)
         if not T.recording then return end
         local ok, err = pcall(function()
@@ -398,10 +446,18 @@ if not T.saveSub then
             local r = cr.Roll.Result
             local function g(h) local ok2, v = pcall(function() return h.Uuid.EntityUuid end) return ok2 and v or nil end
             local saver, source = g(c.Target), g(c.Source)
+            local sc = tostring(c.SpellCastUuid)
+            local spellcast = sc ~= "00000000-0000-0000-0000-000000000000" and sc ~= "nil"
+            -- a spell's own save names the caster as Target and the saver as Source (bonus checked 2026-10-02:
+            -- the host's +3 Strength on a "Target = wolf" event); status/passive saves are the other way round
+            if spellcast then saver, source = source, saver end
             if cr.SwappedSourceAndTarget then saver, source = source, saver end
             if not (isTracked(saver) or isTracked(source)) then return end
+            -- spellcast: the save is a spell's own roll (SpellCastUuid set) - the only kind OnPostRoll interrupts see;
+            -- surface/status/passive saves (vines, trip-on-hit...) have none
             push({ kind = "Save", who = saver, by = source, ability = tostring(c.Ability), natural = r.NaturalRoll,
-                   total = r.Total, dc = cr.Difficulty, saved = r.Total >= cr.Difficulty, swapped = cr.SwappedSourceAndTarget })
+                   total = r.Total, dc = cr.Difficulty, saved = r.Total >= cr.Difficulty, swapped = cr.SwappedSourceAndTarget,
+                   spellcast = spellcast })
         end)
         if not ok then Ext.Utils.PrintWarning("[BG3T] Save: " .. tostring(err)) end
     end)

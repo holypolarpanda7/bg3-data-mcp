@@ -71,18 +71,37 @@ return true""")
     return bool(res)
 
 
-def wait_host_turn(timeout=60):
+HOST_ACTIVE = ("local tb = Ext.Entity.Get(Osi.GetHostCharacter()).TurnBased "
+               "return tb ~= nil and tb.IsActiveCombatTurn == true")
+
+
+def host_turn_active():
+    try:
+        r = se.eval_lua(HOST_ACTIVE, "server", timeout=8)
+        return bool(r.get("ok") and r.get("result"))
+    except (RuntimeError, TimeoutError):
+        return None
+
+
+def end_host_turn(timeout=90):
+    """End the host's turn and wait (event-driven, 0.3 s polls) until it is the host's turn again.
+    Replaces the fixed 1.5 s + 3 s sleeps around end_turn() (2026-10-02 speedup)."""
+    if not wait_host_turn(timeout):
+        return False
+    end_turn()
+    t0 = time.time()
+    while time.time() - t0 < 6 and host_turn_active():
+        time.sleep(0.3)
+    return wait_host_turn(timeout)
+
+
+def wait_host_turn(timeout=60, poll=0.3):
     """Wait until it's the host's turn in combat. True when it is."""
     end = time.time() + timeout
     while time.time() < end:
-        try:
-            r = se.eval_lua("local tb = Ext.Entity.Get(Osi.GetHostCharacter()).TurnBased "
-                            "return tb ~= nil and tb.IsActiveCombatTurn == true", "server", timeout=8)
-            if r.get("ok") and r.get("result"):
-                return True
-        except (RuntimeError, TimeoutError):
-            pass
-        time.sleep(1)
+        if host_turn_active():
+            return True
+        time.sleep(poll)
     return False
 
 

@@ -547,6 +547,25 @@ def bg3_test_list(layer: str, class_name: str | None = None, level: int | None =
 
 
 @mcp.tool()
+def bg3_test_spell_check(spell: str, layers: list[str] | None = None) -> str:
+    """Pre-check a spell before writing a test: can the AI cast it (AIFlags), is its save the spell's OWN roll
+    (the only kind OnPostRoll interrupts see) or a status/surface/passive save, requirements, target filter,
+    costs. Catches the dead ends of AI-driven tests before a single run."""
+    from . import testing
+    s, active = _testing_store(layers)
+    return testing.spell_check(s, active, spell)
+
+
+@mcp.tool()
+def bg3_save_spells(ability: str, layers: list[str] | None = None, limit: int = 40) -> str:
+    """AI-castable spells whose own roll is a saving throw of `ability` (e.g. 'Strength'): the spells an
+    enemy can be locked to (mode ai) to test save modifiers, floors and save interrupts for real."""
+    from . import testing
+    s, active = _testing_store(layers)
+    return testing.save_spells(s, active, ability, limit)
+
+
+@mcp.tool()
 @se_guarded
 def bg3_test_script(layer: str, class_name: str | None = None, level: int | None = None, layers: list[str] | None = None) -> str:
     """Write the human test script (step-by-step reading script per level and case) to
