@@ -152,6 +152,8 @@ def fix_mods(cfg, query="latest", remove=(), sync=True, apply=False):
         os.makedirs(BACKUPS, exist_ok=True)
         backup = os.path.join(BACKUPS, time.strftime("%Y%m%d_%H%M%S_") + os.path.basename(lsv))
         shutil.copy2(lsv, backup)
+        before = os.stat(lsv)
         shutil.copy2(packed, lsv)
+        os.utime(lsv, (before.st_atime, before.st_mtime))  # keep its place in "newest save" (Continue loads that one)
         out.append(f"rewrote the save ({len(check)} mods now). Original backed up to {backup}")
     return "\n".join(out)
