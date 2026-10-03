@@ -350,7 +350,7 @@ EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_ab
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
                "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used",
-               "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits", "log",
+               "amount_change", "max_change", "amount", "resource", "level", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits", "log",
                "summon", "moved"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
@@ -1009,6 +1009,11 @@ def verify(store, active, cleanup=True, wait=2.0):
             n = sum(1 for x in events if x.get("kind") == "CastedSpell" and x.get("spell") == sp and x.get("who") == bg)
             lo, hi = cc.get("count", [1, 10 ** 6])
             row(lo <= n <= hi, f"{cc.get('by', 'host')} cast {sp} {n} times, expected [{lo}, {hi}]")
+        if "amount" in e and e.get("resource"):
+            # the pool's amount at the end (when the change happens before the "before" snapshot, e.g. at combat start)
+            lvl = str(e.get("level", 0))
+            av = ((a.get("resources") or {}).get(e["resource"]) or {}).get(lvl) or [0, 0]
+            row(av[0] == e["amount"], f"{label} {e['resource']}[{lvl}] amount {av[0]:g} == {e['amount']}")
         if "amount_change" in e or "max_change" in e:  # the character's pool before/after (not a spell's cost)
             lvl = str(e.get("level", 0))
             bv = ((b.get("resources") or {}).get(e["resource"]) or {}).get(lvl) or [0, 0]
@@ -1142,7 +1147,7 @@ def verify(store, active, cleanup=True, wait=2.0):
         for s in e.get("status_removed", []):
             was = s in (b.get("statuses") or [])
             row(was and s not in (a.get("statuses") or []), f"{s} removed from {label}" + ("" if was else " (it wasn't present before!)"))
-        if "resource" in e and "amount_change" not in e and "max_change" not in e:  # spell-cost check
+        if "resource" in e and "amount_change" not in e and "max_change" not in e and "amount" not in e:  # spell-cost check
             lvl = str(e.get("level", 0))
             bv = ((b.get("resources") or {}).get(e["resource"]) or {}).get(lvl)
             av = ((a.get("resources") or {}).get(e["resource"]) or {}).get(lvl)
