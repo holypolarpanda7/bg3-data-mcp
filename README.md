@@ -91,7 +91,7 @@ Paths may be written Windows-style (`D:\\Mods\\MyMod`) or WSL-style (`/mnt/d/Mod
 ```json
 {
   "mods": [
-    {"name": "dnd55e", "path": "C:\\BG3Mods\\dnd55e"},
+    {"name": "dnd55e", "path": "%LOCALAPPDATA%\\Larian Studios\\Baldur's Gate 3\\Mods\\DnD2024_897914ef-5c96-053c-44af-0be823f895fe.pak"},
     {"name": "mymod", "path": "C:\\BG3Mods\\MyMod", "tests": "tests/bg3", "deploy": "optional custom command"}
   ],
   "base":  {"game_data": "E:\\Games\\Baldurs Gate 3\\Data"},
@@ -99,6 +99,11 @@ Paths may be written Windows-style (`D:\\Mods\\MyMod`) or WSL-style (`/mnt/d/Mod
   "game":  {"launcher": "auto", "profile": "Public", "larian_dir": "...", "steam_exe": "...", "game_exe": "..."}
 }
 ```
+A **dependency** (a mod you build on) should be the `.pak` the game loads - the user Mods folder copy (a mod
+manager's symlink is followed), the same pak you would load into the Toolkit - so the index matches the release your
+players run. Your own mod is the unpacked folder you edit. `bg3_layers` lists the pak the game loads per folder
+layer and flags one older than the indexed sources.
+
 | Setting | Discovered from (when omitted) |
 | --- | --- |
 | `base.game_data` | Steam (registry + every library in `libraryfolders.vdf` + the app manifest), GOG (registry), common folders |

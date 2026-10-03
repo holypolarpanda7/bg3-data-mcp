@@ -41,6 +41,10 @@ def to_native(path):
     if not path:
         return path
     path = os.path.expandvars(os.path.expanduser(path))
+    if not IS_WINDOWS and "%" in path:  # %LOCALAPPDATA%\... in layers.json: expandvars only knows $VAR here
+        path = re.sub(r"%(\w+)%", lambda m: win_env(m.group(1)) or m.group(0), path)
+        if path.startswith("/"):
+            path = path.replace("\\", "/")
     if IS_WINDOWS:
         m = re.match(r"^/mnt/([a-zA-Z])/(.*)$", path)
         return os.path.normpath(f"{m.group(1).upper()}:/{m.group(2)}") if m else os.path.normpath(path)
