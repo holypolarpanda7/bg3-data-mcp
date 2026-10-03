@@ -815,6 +815,15 @@ def bg3_press_key(scan: int = 0x2E, hold_ms: int = 120, focus: bool = True) -> s
 
 @mcp.tool()
 @guarded
+def bg3_click(x: int, y: int, right: bool = False, count: int = 1) -> str:
+    """An OS-level mouse click at (x, y) in the game's client-area pixels (full size 1920x1080; a bg3_screenshot is half
+    size, so double its coordinates). Brings the game to the front, so use it while nobody is typing."""
+    from . import gameui
+    return "clicked" if gameui.click(x, y, right, count) else "failed (is the game running?)"
+
+
+@mcp.tool()
+@guarded
 def bg3_deps_status(layer: str) -> str:
     """Dependency drift for a mod layer: each meta.lsx dependency that is also a layer (normally the deployed
     .pak), with its declared (meta.lsx), locked (bg3deps.lock.json) and current (indexed) release."""

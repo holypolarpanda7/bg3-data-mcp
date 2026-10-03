@@ -72,6 +72,16 @@ def send_key(scan=0x2E, hold_ms=120, focus=True):
     return r.returncode == 0 and "sent scan" in (r.stdout or "")
 
 
+def click(x, y, right=False, count=1):
+    """An OS-level mouse click at (x, y) in the game's client-area pixels (1920x1080 at full size; a half-size
+    screenshot's coordinates x2). Brings the game to the front, so don't run it while someone is typing."""
+    ps = os.path.join(os.path.dirname(__file__), "ps", "click.ps1")
+    args = ["powershell.exe" if platform.IS_WSL else "powershell", "-ExecutionPolicy", "Bypass", "-File", platform.to_win(ps),
+            "-X", str(int(x)), "-Y", str(int(y)), "-Count", str(count)] + (["-Right"] if right else [])
+    r = platform.run_win(args, timeout=30)
+    return r.returncode == 0 and "clicked" in (r.stdout or "")
+
+
 def screenshot(out=None):
     """Capture the game window to a PNG (half size, ~1.5 MB) and return its path (Read it to see the screen)."""
     import tempfile

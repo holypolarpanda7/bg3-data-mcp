@@ -42,3 +42,19 @@ afterwards (none appeared in this probe) and restart from the test save.
   tooltip at the time (screenshot). Next: look at the input scheme / a screenshot-driven check of other keys (I), or click the
   level-up indicator on the portrait with a SendInput mouse click.
 - `bg3_screenshot` (bg3data/ps/screenshot.ps1) captures the game window so the screen can be inspected with Read.
+
+
+## RESULT: the level-up screen opens (probe 3, same day)
+Working path, all through the MCP's own pieces:
+1. `bg3_level_up` grants the XP; wait a few seconds (the UI needs a moment: a **LEVEL UP** bar appears on the character sheet and a
+   "Level Up" label under the portrait).
+2. Open the character sheet with `bg3_press_key(0x17)` - **I** (not C) opens it in this profile.
+3. Click the bar: `bg3_click(660, 170)` (game pixels; the half-size screenshot shows it at ~(330, 85)). The widget
+   `CharacterLevelUp` appears: "Level Up! <Class> Lv N", Health Increased, Class Features.
+   (`StartLevelUp:Execute(...)` and the button's own `Command:Execute()` ran without opening it; a real click did.)
+4. `CharacterLevelUp.DataContext` has 249 properties/commands: `FinishLevelUp`, `SelectSpell`, `DeselectSpell`, `SelectAbility`,
+   `SelectAbilityBonus`, `SelectableFeats`, `CanSelectFeat`, `SelectableSubClasses`, `SelectedSubClass`, `SelectableMultiClasses`,
+   `SelectFirstUnusedClass`, `ProgressionSpells`, `ClassPassives`... Next step: drive these (choose subclass / spells / feat, then
+   FinishLevelUp) from the plan `bg3_test_plan` already writes, then verify with `bg3_level_check`.
+- Use `bg3_screenshot` + Read after each step to see the page; coordinates are client pixels.
+- The level-up is in-session only; restart reloads the save. Check `bg3_saves` for stray autosaves.
