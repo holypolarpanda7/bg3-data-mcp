@@ -107,6 +107,7 @@ function T.snapshot(g, full)
         in_combat = Osi.IsInCombat(g) == 1, statuses = T.statuses(g), resources = T.resources(g),
     }
     pcall(function() s.temp_hp = Ext.Entity.Get(g).Health.TemporaryHp end)
+    pcall(function() local x, y, z = Osi.GetPosition(g) s.pos = { x, y, z } end)
     pcall(function()  -- ability scores and skill bonuses, by name (exact checks for boosts like Boon of Skill)
         local st = Ext.Entity.Get(g).Stats
         s.abilities, s.skills = {}, {}
@@ -549,7 +550,14 @@ T.hitSub = Ext.Events.DealDamage:Subscribe(function(e)
         if not (isTracked(who) or isTracked(by)) then return end
         local flags = {}
         for f in tostring(e.Hit.EffectFlags):gmatch("[%w_]+") do if f ~= "DamageFlags" then flags[#flags + 1] = f end end
-        push({ kind = "Hit", who = who, by = by, flags = flags, attack = tostring(e.Hit.SpellAttackType), spell = tostring(e.SpellId and e.SpellId.Prototype or "") })
+        local amount
+        for _, f in ipairs({ function() return e.Hit.TotalDamageDone end, function() return e.Result.TotalDamageDone end,
+                             function() return e.Hit.DamageList and #e.Hit.DamageList > 0 and e.Hit.DamageList[1].Amount end }) do
+            local okA, v = pcall(f)
+            if okA and type(v) == "number" then amount = v break end
+        end
+        push({ kind = "Hit", who = who, by = by, flags = flags, attack = tostring(e.Hit.SpellAttackType), amount = amount,
+               spell = tostring(e.SpellId and e.SpellId.Prototype or "") })
     end)
     if not ok then Ext.Utils.PrintWarning("[BG3T] Hit: " .. tostring(err)) end
 end)

@@ -214,6 +214,17 @@ def lint_stats(store, active, layer, limit=200):
         fl = r["fields"] if r else {}
         if not fl or fl.get("ContainerSpells", ("",))[0] or not fl.get("DisplayName", ("",))[0]:
             continue
+        flags_, props_ = fl.get("SpellFlags", ("",))[0] or "", fl.get("SpellProperties", ("",))[0] or ""
+        if "CannotTargetCharacter" in flags_ and "CannotTargetItems" in flags_ and "GROUND:" in props_:
+            # a point-targeted spell: functors without GROUND: have no target and never run (Faithful Hound's caster
+            # status, verified 2026-10-03; base writes GROUND:ApplyStatus(SELF,...), e.g. Projectile_Jump_Laezel)
+            for part in [x.strip() for x in re.split(r";(?![^\[]*\])", props_) if x.strip()]:
+                if not re.match(r"(GROUND|AI_ONLY|AI_IGNORE)(:|$)", part) and not part.startswith("Cast"):
+                    add("SPELL", name, file, f"point-targeted spell: '{part[:60]}' has no GROUND: prefix, so it never runs")
+        if "ImmediateCast" in (fl.get("SpellFlags", ("",))[0] or "") and "Summon(" in (fl.get("SpellProperties", ("",))[0] or ""):
+            add("SPELL", name, file, "ImmediateCast spell with a Summon: the creature never appears (verified 2026-10-03) - drop "
+                                     "ImmediateCast and give it a SpellAnimation")
+            continue
         if "ImmediateCast" in (fl.get("SpellFlags", ("",))[0] or ""):
             # verified in game 2026-09-30: an ImmediateCast shout with an AreaRadius only resolves on the caster,
             # never on the creatures in its area (base game: only two helper spells combine them)

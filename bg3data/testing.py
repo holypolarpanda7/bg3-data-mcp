@@ -351,7 +351,7 @@ EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_ab
                "roll", "pass", "consecutive_turns", "count", "took_turn",
                "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used",
                "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits", "log",
-               "summon"}
+               "summon", "moved"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -428,9 +428,26 @@ def _hp_range(c, who):
     return None
 
 
+def _case_keys():
+    """Every top-level case key the harness reads: c.get("k") / c["k"] / "k" in c in this module and drafting."""
+    src = open(__file__, encoding="utf-8").read()
+    try:
+        src += open(os.path.join(os.path.dirname(__file__), "drafting.py"), encoding="utf-8").read()
+    except OSError:
+        pass
+    keys = set(re.findall(r"""\bc\.get\(["'](\w+)["']""", src)) | set(re.findall(r"""\bc\[["'](\w+)["']\]""", src))
+    keys |= set(re.findall(r"""["'](\w+)["'] in c\b""", src))
+    return keys | {"id", "title", "notes", "level", "class"}
+
+
 def design_warnings(store, active, c, cases=None):
     """Test-design mistakes that still run but measure the wrong thing (each one cost a rerun on 2026-10-02)."""
     w = []
+    known = _case_keys()
+    for k in sorted(set(c) - known):  # e.g. a case-level `wait` (only console cases read it) did nothing (2026-10-03)
+        w.append(f"case key `{k}` is never read by the harness - it does nothing (typo, or a key that belongs elsewhere)")
+    if "wait" in c and not c.get("console"):
+        w.append("case-level `wait` only applies to console cases - pass wait to bg3_test_run instead")
     set_up = {st.get("status") for st in c.get("setup", []) if st.get("status")}
     for e in c.get("expect", []):
         for s in e.get("status_removed", []):
@@ -896,6 +913,17 @@ def verify(store, active, cleanup=True, wait=2.0):
         _settle(state["since"], quiet=0.8, cap=3)
     else:
         time.sleep(max(0.0, min(wait, 30)))
+    want = [e["summon"] for e in c.get("expect", []) if e.get("summon")]
+    if want:  # a summon can arrive seconds after the case's own cast (a script casting the summon): wait for it
+        need = max(sx.get("count", [1, 1])[0] for sx in want)
+        pre = {x.get("guid") for x in (state["before"].get("_summons") or [])}
+        t0 = time.time()
+        while time.time() - t0 < 8 and need > 0:
+            cur = lua("local o = {} for _, x in ipairs(BG3T.summons(BG3T.host())) do o[#o + 1] = x.guid end return o") or []
+            if sum(1 for g in cur if g not in pre) >= need:
+                time.sleep(0.5)  # its statuses land a moment later
+                break
+            time.sleep(0.4)
     after = lua("return BG3T.world()", timeout=30)
     events = lua(f"return BG3T.drain({state['since']})", timeout=30) or []
     before = state["before"]
@@ -980,10 +1008,24 @@ def verify(store, active, cleanup=True, wait=2.0):
         if e.get("damage_count"):  # {count = [lo, hi], by = alias}: separate hits that damaged `target`
             dc = e["damage_count"]
             src = ent(before, dc["by"]).get("guid") if dc.get("by") and dc["by"] != "host" else (host if dc.get("by") == "host" else None)
-            n = sum(1 for x in events if x.get("kind") == "Damage" and x.get("who") == guid and (src is None or x.get("by") == src)
-                    and (x.get("amount") or 0) > 0)
+            dmg = [x for x in events if x.get("kind") == "Damage" and x.get("who") == guid and (src is None or x.get("by") == src)
+                   and (x.get("amount") or 0) > 0]
+            # damage from a status (OnApply/OnTick functors) raises no AttackedBy, so no Damage event - only a Hit
+            # (Faithful Hound's bite, 2026-10-03): count Hits with an amount that no Damage event matches in time
+            hits_ = [x for x in events if x.get("kind") == "Hit" and x.get("who") == guid and (src is None or x.get("by") == src)
+                     and (x.get("amount") or 0) > 0
+                     and not any(abs((d.get("ms") or 0) - (x.get("ms") or 0)) < 150 for d in dmg)]
+            n = len(dmg) + len(hits_)
             lo, hi = dc.get("count", [1, 10 ** 6])
             row(lo <= n <= hi, f"{label} damaged {n} times{' by ' + dc['by'] if dc.get('by') else ''}, expected [{lo}, {hi}]")
+        if "moved" in e:  # [lo, hi] metres between the target's position before and after (pushes, pulls, teleports)
+            lo, hi = e["moved"]
+            p0, p1 = b.get("pos"), a.get("pos")
+            if p0 and p1:
+                dm = math.dist(p0, p1)
+                row(lo <= dm <= hi, f"{label} moved {dm:.1f} m, expected [{lo}, {hi}]")
+            else:
+                row(False, f"{label} position unknown (before {p0}, after {p1})")
         if e.get("summon"):  # {stats = "X" (or template = substring), count = [lo, hi], ac, max_hp, level,
             #                  status_present = [...], passives = [...], spells = [...]}: creatures the host summoned
             sx = e["summon"]

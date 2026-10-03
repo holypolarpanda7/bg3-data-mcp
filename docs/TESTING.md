@@ -133,6 +133,7 @@ setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", 
 #   status_present = [...], passives = [...], spells = [...] } }: creatures the host summoned during the case
 #   (IsSummon.Summoner), matched by Stats entry (or `template` substring) and checked against the stat block.
 #   Summons the case created are removed at cleanup; ones that existed before are left alone.
+# expect also takes { target = "A", moved = [lo, hi] }: metres between its position before and after (pushes, teleports)
 # casts entries take summon_as = "S" (+ summon_stats = "X"): the creature that cast summons becomes alias S, usable
 #   as caster/target/by; near = "A" (near_distance = 1.2) puts it next to spawn A - ground casts go where the caster
 #   faces, spawns are offset on world X, so without it a summon can land out of reach.

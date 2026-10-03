@@ -91,16 +91,42 @@ def host_turn_active():
         return None
 
 
+HOST_TURNS = ("if not BG3T then return -1 end local n = 0 for _, e in ipairs(BG3T.events) do "
+              "if e.kind == 'TurnStarted' and e.tracked == 'host' then n = n + 1 end end return n")
+
+
+def _host_turns():
+    try:
+        r = se.eval_lua(HOST_TURNS, "server", timeout=8)
+        return r.get("result") if r.get("ok") else -1
+    except (RuntimeError, TimeoutError):
+        return -1
+
+
 def end_host_turn(timeout=90):
-    """End the host's turn and wait (event-driven, 0.3 s polls) until it is the host's turn again.
-    Replaces the fixed 1.5 s + 3 s sleeps around end_turn() (2026-10-02 speedup)."""
+    """End the host's turn and wait until a NEW host turn starts (harness TurnStarted events). Summons share the
+    summoner's turn, so "host turn inactive, then active" can happen before the click even lands; that read as a
+    finished round and the case was verified with no round played (Faithful Hound, 2026-10-03)."""
     if not wait_host_turn(timeout):
         return False
-    end_turn()
-    t0 = time.time()
-    while time.time() - t0 < 6 and host_turn_active():
-        time.sleep(0.3)
-    return wait_host_turn(timeout)
+    before = _host_turns()
+    if before is None or before < 0:  # no harness events: the old inactive -> active check
+        end_turn()
+        t0 = time.time()
+        while time.time() - t0 < 6 and host_turn_active():
+            time.sleep(0.3)
+        return wait_host_turn(timeout)
+    end = time.time() + timeout
+    clicks = 0
+    while time.time() < end:
+        if clicks == 0 or (host_turn_active() and time.time() - last > 6):
+            end_turn()  # again if the host still has the turn 6 s after a click (it ended a summon's turn)
+            clicks, last = clicks + 1, time.time()
+        time.sleep(0.4)
+        n = _host_turns()
+        if n is not None and n > before and host_turn_active():
+            return True
+    return False
 
 
 def wait_host_turn(timeout=60, poll=0.3):
