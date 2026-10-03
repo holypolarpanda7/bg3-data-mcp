@@ -15,6 +15,8 @@ def layers(store):
     errs = getattr(index.refresh, "last_errors", {})
     for name, err in errs.items():
         lines.append(f"  !! {name}: last rebuild failed: {err}")
+    from . import deploy
+    lines += deploy.deployed_lines(store)
     return "\n".join(lines)
 
 

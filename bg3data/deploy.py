@@ -49,6 +49,35 @@ def _paths(cfg):
     return ld, os.path.join(ld, "Mods"), os.path.join(ld, "PlayerProfiles", profile, "modsettings.lsx")
 
 
+def deployed_lines(store):
+    """For each folder mod layer: the pak the game actually loads (user Mods folder; a mod manager's symlink is
+    followed) and whether it is older than the indexed sources. The index can be ahead of the game: e.g. a git
+    clone of a mod while the game runs its last release - in-game results then differ from what the index says."""
+    cfg = sources.load_config()
+    try:
+        _, mods_dir, _ = _paths(cfg)
+    except RuntimeError:
+        return []
+    newest = {r[0]: r[4] for r in store.layer_rows()}
+    out = []
+    for m in cfg["mods"]:
+        try:
+            _, _, info, _ = mod_info(m["name"])
+        except ValueError:
+            continue
+        pak = os.path.join(mods_dir, info["Folder"] + ".pak")
+        if not os.path.exists(pak):
+            out.append(f"  {m['name']}: no {info['Folder']}.pak in the user Mods folder (not deployed there)")
+            continue
+        real, mt = os.path.realpath(pak), os.path.getmtime(pak)
+        line = f"  {m['name']}: game loads {real if real != pak else os.path.basename(pak)} ({sources.iso(mt)})"
+        if newest.get(m["name"]) and mt + 3600 < newest[m["name"]]:
+            line += (f"\n     !! OLDER than the indexed sources ({sources.iso(newest[m['name']])}): the game runs an older "
+                     f"{m['name']} than the index describes - entries added since are missing in game")
+        out.append(line)
+    return (["Deployed (what the running game loads):"] + out) if out else []
+
+
 def game_running():
     tl = platform.tasklist()
     return any(p in tl for p in ("bg3.exe", "bg3_dx11.exe"))

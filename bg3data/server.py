@@ -398,7 +398,8 @@ def se_guarded(fn):
 @se_guarded
 def bg3_se_status() -> str:
     """Is the game running, which Script Extender log belongs to this run, and the latest game state."""
-    return se.status()
+    from . import deploy
+    return "\n".join([se.status()] + deploy.deployed_lines(store()))
 
 
 @mcp.tool()
