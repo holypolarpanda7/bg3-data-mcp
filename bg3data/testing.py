@@ -533,11 +533,18 @@ def stage(store, active, layer, case_id):
     mode = c.get("mode", "auto")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
+    closed, dlg = gameui.dismiss_dialog()  # a modal message box would swallow the scripted cast and the Enter keys
     pre = lua("return BG3T.precheck()", timeout=30) or {}  # cleanup + snapshot + statuses in one round trip
     st = pre.get("snapshot") or {}
     if not (st.get("classes") and all(x.get("class") for x in st["classes"]) and st.get("spells")):
         st = host_state()  # class names occasionally resolve a tick late: the retrying path
     notes, blockers = [], []
+    if dlg:
+        txt = " | ".join(dlg.get("texts") or [])[:300] or "(no text read)"
+        if closed:
+            notes.append(f"dismissed a blocking message box before the test ({dlg['uuid']}: {txt})")
+        else:
+            blockers.append(f"a message box with {dlg['actions']} actions is open ({dlg['uuid']}: {txt}) - answer it in game")
     notes += [f"test design: {x}" for x in design_warnings(store, active, c, {x["id"]: x for x in load_cases(layer)})]
     if needs_ranged_weapon(store, active, c):  # a ranged weapon attack needs one in hand (equipped by hand 3x on 2026-10-02)
         r_ = lua("local h=BG3T.host() if Osi.GetEquippedItem(h,'Ranged Main Weapon') then return 'has' end "
@@ -1785,7 +1792,10 @@ def _unstick_menu(log, relaunched):
         log.append("main menu: pressed Continue")
         return "continue"
     if "Dialog_box" in ui:
-        log.append(f"a message box is open ({', '.join(ui)}) - not answering it automatically")
+        closed, info = gameui.dismiss_dialog()
+        what = (info or {}).get("texts") or []
+        msg = f"message box {(info or {}).get('uuid')}: {' | '.join(what)[:300] or '(no text read)'}"
+        log.append(("dismissed " if closed else "left open (needs your answer: %s actions) " % (info or {}).get("actions")) + msg)
     return None
 
 

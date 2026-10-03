@@ -152,6 +152,46 @@ return true""")
     return bool(res)
 
 
+def dialog_info():
+    """The open message box (Dialog_box), or None: {uuid, texts (every Text in its visual tree), actions (count)}."""
+    res, _ = _client(FIND + """
+local b = find(Ext.UI.GetRoot(), "Dialog_box", 0)
+if not b then return nil end
+local texts = {}
+local function walk(n, d)
+  if not n or d > 14 then return end
+  local ok, t = pcall(function() return n.Text end)
+  if ok and type(t) == "string" and t ~= "" then table.insert(texts, t) end
+  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+  if okc and cnt then for i = 1, cnt do walk(n:VisualChild(i), d + 1) end end
+end
+walk(b, 0)
+local dc = b.DataContext
+local acts = 0
+pcall(function() acts = #dc.Actions end)
+return {uuid = tostring(dc.UUIDProperty), texts = texts, actions = acts}""")
+    return res if isinstance(res, dict) else None
+
+
+def dismiss_dialog(wait=3.0):
+    """Clear a blocking acknowledge-only message box (one action, e.g. a mod/save warning). Executing the action alone
+    leaves it open (seen 2026-10-03, GameMsgID), so a real Enter is posted to the game window as well. A box with
+    several actions is a question for the user: reported, never answered. Returns (closed, info or None)."""
+    info = dialog_info()
+    if not info:
+        return True, None
+    if info["actions"] != 1:
+        return False, info
+    accept_dialog(info["uuid"])
+    end = time.time() + wait
+    while time.time() < end:
+        time.sleep(0.5)
+        if not dialog_info():
+            return True, info
+        press_key()
+    return not dialog_info(), info
+
+
 def quit_game(processes, tasklist, wait=45):
     """Clean exit through Quit -> confirm. True when the game process is gone."""
     if not main_menu_command("QuitGame"):

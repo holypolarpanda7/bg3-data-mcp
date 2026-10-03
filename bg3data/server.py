@@ -777,6 +777,24 @@ def bg3_save_fix_mods(save: str = "latest", remove: list[str] | None = None, syn
 
 
 @mcp.tool()
+@se_guarded
+def bg3_game_dialog(dismiss: bool = True) -> str:
+    """The open in-game message box, if any: its id, text and number of actions. dismiss=True clears an
+    acknowledge-only box (one action, e.g. a mod/save warning) with the action plus a real Enter press; a box that
+    asks a question (several actions) is reported and left for the user. bg3_game_restart and test runs do this
+    automatically."""
+    from . import gameui
+    info = gameui.dialog_info()
+    if not info:
+        return "no message box open"
+    desc = f"{info['uuid']}: {' | '.join(info['texts']) or '(no text read)'} [{info['actions']} action(s)]"
+    if not dismiss:
+        return "open: " + desc
+    closed, _ = gameui.dismiss_dialog()
+    return ("dismissed: " if closed else "NOT dismissed (needs your answer or didn't close): ") + desc
+
+
+@mcp.tool()
 @guarded
 def bg3_deps_status(layer: str) -> str:
     """Dependency drift for a mod layer: each meta.lsx dependency that is also a layer (normally the deployed
