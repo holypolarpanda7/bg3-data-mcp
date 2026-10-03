@@ -796,6 +796,25 @@ def bg3_game_dialog(dismiss: bool = True) -> str:
 
 @mcp.tool()
 @guarded
+def bg3_screenshot() -> str:
+    """Capture the running game's window to a PNG (half size) and return its file path - open it with an image-capable
+    Read to see what is on screen (dialogs, the HUD, a level-up screen). Needs the game running; no focus required."""
+    from . import gameui
+    return gameui.screenshot()
+
+
+@mcp.tool()
+@guarded
+def bg3_press_key(scan: int = 0x2E, hold_ms: int = 120, focus: bool = True) -> str:
+    """An OS-level key press (SendInput, hardware scan code; default 0x2E = C) with the game brought to the foreground:
+    what gameplay hotkeys read. Types into whatever has focus, so use it while nobody is typing. Scan codes: Esc 0x01,
+    C 0x2E, I 0x17, Enter 0x1C, Space 0x39, Tab 0x0F. (Ext.Input and PostMessage only reach the UI layer.)"""
+    from . import gameui
+    return "sent" if gameui.send_key(scan, hold_ms, focus) else "failed (is the game running?)"
+
+
+@mcp.tool()
+@guarded
 def bg3_deps_status(layer: str) -> str:
     """Dependency drift for a mod layer: each meta.lsx dependency that is also a layer (normally the deployed
     .pak), with its declared (meta.lsx), locked (bg3deps.lock.json) and current (indexed) release."""

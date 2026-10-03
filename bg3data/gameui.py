@@ -61,6 +61,31 @@ def press_key(vk=0x0D):
     return r.returncode == 0
 
 
+def send_key(scan=0x2E, hold_ms=120, focus=True):
+    """An OS-level key press (SendInput, hardware scan code; default 0x2E = C) with the game focused: what gameplay hotkeys
+    read, unlike press_key (PostMessage) and Ext.Input (UI layer only). Types into whatever has focus - run it while
+    nobody is typing."""
+    ps = os.path.join(os.path.dirname(__file__), "ps", "sendkey.ps1")
+    args = ["powershell.exe" if platform.IS_WSL else "powershell", "-ExecutionPolicy", "Bypass", "-File", platform.to_win(ps),
+            "-Scan", str(scan), "-HoldMs", str(hold_ms)] + ([] if focus else ["-NoFocus"])
+    r = platform.run_win(args, timeout=30)
+    return r.returncode == 0 and "sent scan" in (r.stdout or "")
+
+
+def screenshot(out=None):
+    """Capture the game window to a PNG (half size, ~1.5 MB) and return its path (Read it to see the screen)."""
+    import tempfile
+    out = out or os.path.join(tempfile.gettempdir(), "bg3_screenshot.png")
+    if platform.IS_WSL:  # a Windows path the PowerShell script can write to, readable from WSL
+        out = os.path.join(platform.windows_temp(), "bg3_screenshot.png")
+    ps = os.path.join(os.path.dirname(__file__), "ps", "screenshot.ps1")
+    r = platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-ExecutionPolicy", "Bypass", "-File",
+                          platform.to_win(ps), "-Out", platform.to_win(out)], timeout=60)
+    if r.returncode != 0 or not os.path.exists(out):
+        raise RuntimeError("screenshot failed: " + ((r.stdout or "") + (r.stderr or "")).strip()[-300:])
+    return out
+
+
 def main_menu_command(name):
     """Execute a command of the main menu's view model (ContinueGameCommand, QuitGame, OpenLoadGameDialog...)."""
     res, r = _client(FIND + f"""

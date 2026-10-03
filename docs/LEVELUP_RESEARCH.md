@@ -31,3 +31,14 @@ Leads, in the order I'd try them
 
 Safety when experimenting: a level-up is in-session only, but an autosave would make Continue load it - check `bg3_saves`
 afterwards (none appeared in this probe) and restart from the test save.
+
+
+## Input pass-through (probe 2, same day)
+- `Ext.Input.InjectKeyDown/Up/Press(<SDLScanCode label>)` exists in the client context and works at the UI layer: ESCAPE opened the
+  `GameMenu`. It does NOT reach gameplay hotkeys (raw device state). Hold the key across two calls (down, ~0.3 s, up).
+- OS-level `SendInput` with hardware scan codes (`bg3data/ps/sendkey.ps1`, `bg3_press_key`) works with the game focused: Esc
+  opens/closes the GameMenu. No install needed.
+- `C` (scan 0x2E) did not open any character-sheet widget in this profile, by either route; the game was hovering a hotbar
+  tooltip at the time (screenshot). Next: look at the input scheme / a screenshot-driven check of other keys (I), or click the
+  level-up indicator on the portrait with a SendInput mouse click.
+- `bg3_screenshot` (bg3data/ps/screenshot.ps1) captures the game window so the screen can be inspected with Read.
