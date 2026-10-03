@@ -118,3 +118,86 @@ def status(cfg=None, log_n=12):
             msg = re.sub(r"^\S+ \[\w+\] \[RENDERER\] ", "", ln)
             out.append(f"  {ts}Z {msg[:200]}")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------- optional bridge (a Vortex extension we ship)
+BRIDGE_SRC = os.path.join(os.path.dirname(__file__), "integrations", "vortex_bridge")
+BRIDGE_DIR_NAME = "bg3-data-mcp-bridge"
+
+
+def bridge_dir(cfg=None):
+    return os.path.join(app_dir(cfg or sources.load_config()), "plugins", BRIDGE_DIR_NAME)
+
+
+def install_bridge(cfg=None):
+    """Copy the bridge extension into Vortex's plugins folder (Vortex loads it on its next start)."""
+    import shutil
+    dest = bridge_dir(cfg)
+    os.makedirs(dest, exist_ok=True)
+    for f in ("index.js", "info.json"):
+        shutil.copy2(os.path.join(BRIDGE_SRC, f), os.path.join(dest, f))
+    running = "vortex.exe" in platform.tasklist()
+    return (f"installed the bridge extension in {dest}. "
+            + ("Restart Vortex to load it." if running else "It loads the next time Vortex starts.")
+            + " It listens on 127.0.0.1 only and checks a token kept in bridge.json there.")
+
+
+def bridge_call(method, endpoint, body=None, cfg=None, timeout=120):
+    """Call the bridge; returns the decoded JSON (or {'error': ...})."""
+    p = os.path.join(bridge_dir(cfg), "bridge.json")
+    if not os.path.exists(p):
+        return {"error": "bridge not running: install it with bg3_vortex_bridge_install and (re)start Vortex"}
+    b = json.load(open(p))
+    url = f"http://127.0.0.1:{b.get('port', 17846)}{endpoint}"
+    data = json.dumps(body or {})
+    if platform.IS_WSL:  # WSL2's 127.0.0.1 is not Windows' localhost: ask Windows to make the request
+        ps = ("$ErrorActionPreference='Stop'; try { $r = Invoke-RestMethod -Uri '%s' -Method %s -TimeoutSec %d "
+              "-Headers @{'x-bridge-token'='%s'} -ContentType 'application/json' -Body '%s'; "
+              "$r | ConvertTo-Json -Depth 6 -Compress } catch { @{error=$_.Exception.Message} | ConvertTo-Json -Compress }"
+              % (url, method, timeout, b["token"], data.replace("'", "''") if method != "GET" else ""))
+        if method == "GET":
+            ps = ps.replace(" -ContentType 'application/json' -Body ''", "")
+        r = platform.run_win(["powershell.exe", "-NoProfile", "-Command", ps], timeout=timeout + 15)
+        try:
+            return json.loads(r.stdout.strip() or "{}")
+        except ValueError:
+            return {"error": (r.stdout + r.stderr).strip()[:500]}
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, method=method, data=data.encode() if method != "GET" else None,
+                                 headers={"x-bridge-token": b["token"], "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read().decode() or "{}") or {"error": str(e)}
+    except OSError as e:
+        return {"error": f"bridge unreachable ({e}) - is Vortex running with the bridge installed?"}
+
+
+def action(name, mod=None, enabled=True):
+    """deploy | purge | enable | disable | remove | status through the bridge."""
+    routes = {"status": ("GET", "/status", None), "deploy": ("POST", "/deploy", None), "purge": ("POST", "/purge", None),
+              "enable": ("POST", "/enable", {"mod": mod, "enabled": True}),
+              "disable": ("POST", "/enable", {"mod": mod, "enabled": False}),
+              "remove": ("POST", "/remove", {"mod": mod})}
+    if name not in routes:  # (the token travels on a local PowerShell command line under WSL - local user only)
+        return {"error": f"unknown action {name!r}; one of {sorted(routes)}"}
+    if name in ("enable", "disable", "remove") and not mod:
+        return {"error": f"{name} needs `mod` (a mod id or a unique part of it)"}
+    method, ep, body = routes[name]
+    return bridge_call(method, ep, body, timeout=300 if name in ("deploy", "purge") else 60)
+
+
+def format_result(r):
+    if not isinstance(r, dict) or r.get("error"):
+        return f"bridge error: {(r or {}).get('error') if isinstance(r, dict) else r}"
+    out = [f"{k}: {r[k]}" for k in ("removed", "mod", "enabled") if k in r]
+    if "gameId" in r:
+        mods = r.get("mods") or []
+        on = [m for m in mods if m.get("enabled")]
+        out.append(f"Vortex {r['gameId']} profile '{r.get('profile')}': {len(on)}/{len(mods)} mods enabled"
+                   + ("; DEPLOY NEEDED" if r.get("needToDeploy") else "; deployed"))
+        for m in sorted(mods, key=lambda m: m.get("id") or ""):
+            out.append(f"  [{'x' if m.get('enabled') else ' '}] {m.get('id')}" + (f"  v{m['version']}" if m.get("version") else ""))
+    return "\n".join(out)

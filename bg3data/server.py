@@ -734,6 +734,26 @@ def bg3_vortex_status(log_lines: int = 12) -> str:
 
 @mcp.tool()
 @guarded
+def bg3_vortex_bridge_install() -> str:
+    """OPTIONAL, for Vortex users: install the bg3-data-mcp bridge extension into Vortex's plugins folder so
+    bg3_vortex can deploy / purge / enable / disable / remove mods through Vortex itself. Loads on Vortex's next
+    start; listens on 127.0.0.1 only and requires a token stored beside it."""
+    from . import vortex
+    return vortex.install_bridge()
+
+
+@mcp.tool()
+@guarded
+def bg3_vortex(action: str = "status", mod: str | None = None) -> str:
+    """Drive Vortex through the bridge extension (bg3_vortex_bridge_install): action = status | deploy | purge |
+    enable | disable | remove; mod = a Vortex mod id or a unique part of it (e.g. '4.11.23.0'). Acts on Vortex's
+    active game/profile. remove deletes the staged mod (Vortex may ask to confirm in its window)."""
+    from . import vortex
+    return vortex.format_result(vortex.action(action, mod))
+
+
+@mcp.tool()
+@guarded
 def bg3_deps_status(layer: str) -> str:
     """Dependency drift for a mod layer: each meta.lsx dependency that is also a layer (normally the deployed
     .pak), with its declared (meta.lsx), locked (bg3deps.lock.json) and current (indexed) release."""
