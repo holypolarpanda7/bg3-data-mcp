@@ -448,6 +448,18 @@ def design_warnings(store, active, c, cases=None):
         w.append(f"case key `{k}` is never read by the harness - it does nothing (typo, or a key that belongs elsewhere)")
     if "wait" in c and not c.get("console"):
         w.append("case-level `wait` only applies to console cases - pass wait to bg3_test_run instead")
+    # a melee cast with hostile spawns whose reactions are free: their Opportunity Attack on the approach can swallow
+    # the cast (Bigby's Hand, Masterful Hex - three reruns on 2026-10-03)
+    if c.get("spell") and c.get("target", "host") != "host":
+        r = store.resolve(c["spell"], active)
+        f = (r or {}).get("fields", {})
+        melee = "IsMelee" in (f.get("SpellFlags", ("",))[0] or "") or "Melee" in (f.get("SpellRoll", ("",))[0] or "")
+        blocked = {st.get("target") for st in c.get("setup", []) if "ReactionActionPoint" in (st.get("boost") or "")}
+        hostile = {sp.get("as") for sp in c.get("spawn", []) if sp.get("faction") == "hostile"}
+        free = [a for a in sorted(hostile) if a not in blocked and a != c.get("caster")]
+        if melee and free and c.get("caster", "host") not in hostile:
+            w.append(f"melee cast with hostile spawn(s) {', '.join(free)} able to react: an Opportunity Attack can interrupt "
+                     "the approach - add { boost = \"ActionResourceBlock(ReactionActionPoint)\" } to them unless that's the point")
     set_up = {st.get("status") for st in c.get("setup", []) if st.get("status")}
     for e in c.get("expect", []):
         for s in e.get("status_removed", []):
@@ -563,7 +575,23 @@ def stage(store, active, layer, case_id):
         elif src:
             notes.append(f"{c['spell']} known, source {src}")
     if st["in_combat"]:
-        blockers.append("host is already in combat - finish or reload first")
+        # a combat a previous case left behind (its spawns are gone, e.g. after the host went down) - leave it when no
+        # live hostile creature is within 30 m; a real fight stays a blocker (2026-10-03)
+        left = lua("""local h = BG3T.host() local hx, hy, hz = Osi.GetPosition(h)
+for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("ServerCharacter")) do
+  local ok, g = pcall(function() return e.Uuid.EntityUuid end)
+  if ok and g and Osi.IsDead(g) == 0 and Osi.IsEnemy(h, g) == 1 and Osi.IsInCombat(g) == 1 then
+    local x, y, z = Osi.GetPosition(g)
+    if x and math.sqrt((x-hx)^2 + (z-hz)^2) < 30 then return false end
+  end
+end
+Osi.LeaveCombat(h) return true""")
+        if left:
+            time.sleep(2)
+        if not left or (lua("return Osi.IsInCombat(BG3T.host())") == 1):
+            blockers.append("host is already in combat - finish or reload first")
+        else:
+            notes.append("left a leftover combat (no live enemy within 30 m)")
     if blockers:
         return {"ok": False, "blockers": blockers, "notes": notes}
 
@@ -1200,7 +1228,7 @@ def verify(store, active, cleanup=True, wait=2.0):
             lines.append(f"  removed from you: {', '.join(gained)}")
         rep = lua("return BG3T.cleanup()")
         # back on your feet: a run that downed the host (e.g. a Last Stand test) ends with them up at full HP
-        lua("Osi.SetHitpointsPercentage(BG3T.host(), 100) return true")
+        lua("return BG3T.revive(BG3T.host())")
         lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses, {rep.get('passives', 0)} passives, {rep.get('cooldowns', 0)} cooldowns"
                      + (f", {rep['summons']} summons" if rep.get('summons') else "") + " removed")
         try:

@@ -257,6 +257,21 @@ function T.removeStatuses(g, pattern)
     end
 end
 
+-- Back on your feet with full HP. Removing DOWNED (or an Osiris HP change at 0 HP) can leave a character alive at
+-- 0 HP that SetHitpoints doesn't move; writing Health and replicating does (2026-10-03).
+function T.revive(g)
+    g = uuid(g)
+    for _, s in ipairs({ "DOWNED", "UNCONSCIOUS", "KNOCKED_OUT" }) do
+        if Osi.HasActiveStatus(g, s) == 1 then pcall(Osi.RemoveStatus, g, s) end
+    end
+    pcall(Osi.SetHitpointsPercentage, g, 100)
+    pcall(function()
+        local e = Ext.Entity.Get(g)
+        if Osi.GetHitpoints(g) < e.Health.MaxHp then e.Health.Hp = e.Health.MaxHp; e:Replicate("Health") end
+    end)
+    return Osi.GetHitpoints(g)
+end
+
 function T.setHp(g, hp)
     g = uuid(g)
     if hp == "full" then Osi.SetHitpointsPercentage(g, 100) else Osi.SetHitpoints(g, hp) end
