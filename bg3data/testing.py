@@ -1373,6 +1373,17 @@ def lint_progressions(store, active, layer):
         nodes = list(latest.values())
         if len(nodes) > 1 and any(x[0] == layer for x in nodes) and sum(grants_choice(x) for x in nodes) > 1:
             dup.append((k, nodes))
+    # ActionResource boosts on resources nobody defines do nothing (Apotheosis had RageCharge / Indomitable_Charge /
+    # ActionSurge for months: found by a resource audit 2026-10-03)
+    known = {n for (n,) in store.db.execute(f"SELECT name FROM staticdata WHERE kind LIKE 'ActionResource%' AND {w}", p)}
+    dead = []
+    for r in mine:
+        for res in re.findall(r"ActionResource\((\w+)\s*,", json.loads(r[5]).get("Boosts") or ""):
+            if res not in known:
+                dead.append(f"  {r[1]} L{r[2]} ({r[4]}): ActionResource({res},...) - no layer defines {res}")
+    if dead:
+        out.append(f"UNKNOWN RESOURCES ({len(dead)}) - these boosts do nothing:")
+        out += dead
     # a node whose Name belongs to another table: the feature lands on the wrong class/subclass (Apotheosis had the
     # barbarian's Controlled Surge on the Sorcerer Wild Magic table until 2026-10-03)
     names_of, tables_of = {}, {}
@@ -1393,7 +1404,7 @@ def lint_progressions(store, active, layer):
         for (t, l), v in sorted(dup, key=lambda d: (d[1][0][1], d[0][1])):
             out.append(f"  {v[0][1]} L{l}: " + "; ".join(f"{x[0]} {x[4]}" + (" [AllowImprovement]" if json.loads(x[5]).get("AllowImprovement") == "true" else "")
                                                       + (" [Selectors]" if json.loads(x[5]).get("Selectors") else "") for x in v))
-    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables")] + out)
+    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources")] + out)
 
 
 # ------------------------------------------------------------------ build plans
