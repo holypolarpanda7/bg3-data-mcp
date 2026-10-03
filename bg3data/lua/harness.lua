@@ -411,6 +411,13 @@ function T.cleanup()
     end
     T.preSummons = nil
     if T.restoreReactions then T.restoreReactions() end
+    -- A case that downs the host on purpose (Desperado, Cheat Death...) must not leave it dying: death saves would end
+    -- in a Game Over box minutes later (seen 2026-10-03).
+    local host = T.host()
+    if host and Osi.IsDead(host) == 0 and (Osi.HasActiveStatus(host, "DOWNED") == 1 or Osi.GetHitpoints(host) <= 0) then
+        T.revive(host)
+        report.revived = true
+    end
     T.recording = false
     T.safety.tripped = false
     return report
