@@ -547,6 +547,21 @@ def bg3_test_list(layer: str, class_name: str | None = None, level: int | None =
 
 
 @mcp.tool()
+@guarded
+def bg3_test_draft(passives: list[str] | None = None, key: str | None = None, level: int | None = None,
+                   layers: list[str] | None = None) -> str:
+    """Draft test cases (TOML) for features from their stats: passives by name, or every passive a class/subclass
+    progression (key = Name or TableUUID) adds at `level`. Unlocked spells are cast at a fitting target with
+    saves forced to fail / attacks forced to hit, interrupts get the attack or roll that triggers them, rest and
+    initiative functors get matching staging, resistances get a damage check plus a non-overlapping -control.
+    Resources the feature spends but doesn't grant are set up; reactions are opted in. Each draft carries a
+    confidence and TODOs; review, then save under <mod>/tests/bg3/ and run with bg3_test_run."""
+    from . import drafting
+    s, active = _testing_store(layers)
+    return drafting.drafts(s, active, passives, key, level)
+
+
+@mcp.tool()
 def bg3_test_spell_check(spell: str, layers: list[str] | None = None) -> str:
     """Pre-check a spell before writing a test: can the AI cast it (AIFlags), is its save the spell's OWN roll
     (the only kind OnPostRoll interrupts see) or a status/surface/passive save, requirements, target filter,

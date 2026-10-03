@@ -167,6 +167,20 @@ queued request (Ext.System.ServerCastRequest.OsirisCastRequests), so the save is
 2026-10-01: wolf Bash vs the host, prone 5/8 with real Strength saves). Passive rolls (`rolls`) and status-tick
 saves never go through OnPostRoll interrupts.
 
+## Drafting cases (`bg3_test_draft`)
+
+`bg3_test_draft(passives=[...])` or `bg3_test_draft(key="Illrigger", level=17)` writes TOML drafts from the
+features' stats: a spell the feature unlocks is cast at a fitting target (self for shouts, a wolf otherwise, a
+friendly one for ally spells), saves are forced to fail and attacks to hit, interrupts get the attack or enemy
+roll that triggers them (and are listed in `reactions`), `OnCombatStarted`/rest functors get `combat =
+"after_setup"` / `grant_passive`, ability boosts get an ability check, and a resistance gets a damage check plus a
+`-control` whose range can't overlap (the flat bonus is computed from the spell's dice). Resource pools the feature
+spends but doesn't grant (Seal, Risk...) are set up, and "needs X empty" requirements set X to 0.
+
+Each draft has a confidence and `# TODO` lines for what stats can't settle: statuses behind an `IF(...)`, values
+that scale with class level, Lua-driven effects, teleports. Loop: draft -> review -> save in `tests/bg3/` -> run ->
+when a draft was wrong in a way the stats could have told, teach `bg3data/drafting.py` that case.
+
 ## Test-design checks
 
 `bg3_test_list` and every staged run report `WARN` / `test design:` notes for cases that run but measure the
