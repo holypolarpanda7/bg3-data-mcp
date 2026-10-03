@@ -547,7 +547,8 @@ def stage(store, active, layer, case_id):
         if "resource" in st_ and "amount" in st_:  # e.g. { target = "host", resource = "SpellSlot", level = 1, amount = 0 }
             late.append((st_, f"return BG3T.setResource({_who(st_)}, {se._lua_string(st_['resource'])}, {int(st_.get('level', 0))}, {float(st_['amount'])})"))
         if st_.get("status"):
-            post.append(f"BG3T.apply({_who(st_)}, {se._lua_string(st_['status'])}, {int(st_.get('turns', 10))})")
+            by_ = f", {_who({'target': st_['by']})}" if st_.get("by") else ""
+            post.append(f"BG3T.apply({_who(st_)}, {se._lua_string(st_['status'])}, {int(st_.get('turns', 10))}{by_})")
         if st_.get("boost"):
             post.append(f"BG3T.grant({_who(st_)}, {se._lua_string(st_['boost'])})")
         if st_.get("dead"):  # e.g. a corpse for revive spells

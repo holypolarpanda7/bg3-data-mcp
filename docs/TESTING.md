@@ -124,7 +124,9 @@ setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", 
          { target = "A", boost = "Resistance(Fire,Resistant)" }, { target = "host", max_hp = 20 },
          { target = "host", passive = "SomeFeature" },   # passive: added for the case, removed at cleanup
          { target = "A", dead = true },                  # a corpse, e.g. for revive spells
-         { target = "host", resource = "SpellSlot", level = 1, amount = 0 }]  # set a pool's current amount
+         { target = "host", resource = "SpellSlot", level = 1, amount = 0 },  # set a pool's current amount
+                                                         # (a tick after the rest: boost-granted pools exist then)
+         { target = "A", status = "INTERDICTED", turns = -1, by = "host" }]  # by: the status's cause
 expect = [
   { acted_first = true },                                   # first recorded turn was the host's
   { cast = true },                                          # the host cast `spell` (or cast = "OtherSpell")

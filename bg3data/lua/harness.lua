@@ -175,9 +175,10 @@ function T.addPassive(g, passive)
     T.added_passives[#T.added_passives + 1] = { g, passive }
 end
 
-function T.apply(g, status, turns)
+function T.apply(g, status, turns, by)
     g = uuid(g)
-    Osi.ApplyStatus(g, status, (turns or 10) * 6.0, 1, g)
+    -- by: who applies it (the status's cause - e.g. a seal the host placed); default the target itself
+    Osi.ApplyStatus(g, status, (turns or 10) * 6.0, 1, by and uuid(by) or g)
     T.applied[#T.applied + 1] = { g, status }
 end
 
