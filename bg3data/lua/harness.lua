@@ -479,6 +479,22 @@ end
 -- statuses cleared from a target at the start of the caster's turns, so the AI keeps choosing the spell
 T.aiClear = T.aiClear or {}
 
+-- every damaging hit while recording, with the hit's flags (Hit, Critical, Miss, AttackAdvantage,
+-- AttackDisadvantage...): what an attack roll had, which no other event shows (Precise Hunter, 2026-10-02)
+if T.hitSub then pcall(function() Ext.Events.DealDamage:Unsubscribe(T.hitSub) end) end
+T.hitSub = Ext.Events.DealDamage:Subscribe(function(e)
+    if not T.recording then return end
+    local ok, err = pcall(function()
+        local function g(h) local ok2, v = pcall(function() return h.Uuid.EntityUuid end) return ok2 and v or nil end
+        local who, by = g(e.Target), g(e.Caster) or g(e.Hit.Inflicter)
+        if not (isTracked(who) or isTracked(by)) then return end
+        local flags = {}
+        for f in tostring(e.Hit.EffectFlags):gmatch("[%w_]+") do if f ~= "DamageFlags" then flags[#flags + 1] = f end end
+        push({ kind = "Hit", who = who, by = by, flags = flags, attack = tostring(e.Hit.SpellAttackType), spell = tostring(e.SpellId and e.SpellId.Prototype or "") })
+    end)
+    if not ok then Ext.Utils.PrintWarning("[BG3T] Hit: " .. tostring(err)) end
+end)
+
 -- every saving throw while recording (deduped per roll): saver, source, ability, natural, total, DC.
 -- SavingThrowRolledEvent fires twice per roll with opposite Success, so success is total >= DC here.
 T.seenRolls = T.seenRolls or {}
@@ -556,8 +572,8 @@ function T.setReactions(g, keep)
         if name then
             if saved[name] == nil then
                 local cur = e.InterruptPreferences.Preferences[name]
-                local copy = {}
-                if cur then for _, f in pairs(cur) do copy[#copy + 1] = f end end
+                local copy = false  -- false: there was no preference; cleanup removes the key instead of writing {}
+                if cur then copy = {} for _, f in pairs(cur) do copy[#copy + 1] = f end end
                 saved[name] = copy
             end
             local wanted = false
@@ -575,7 +591,9 @@ function T.restoreReactions()
     for id, saved in pairs(T.savedPrefs) do
         pcall(function()
             local e = Ext.Entity.Get(id)
-            for name, flags in pairs(saved) do e.InterruptPreferences.Preferences[name] = flags end
+            -- an empty flag set means DISABLED: restoring {} for a preference that didn't exist turned a newly
+            -- unlocked interrupt off for every later run (Unbreakable Majesty, 2026-10-02)
+            for name, flags in pairs(saved) do e.InterruptPreferences.Preferences[name] = flags or nil end
             e:Replicate("InterruptPreferences")
         end)
     end

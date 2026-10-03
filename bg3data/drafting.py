@@ -216,6 +216,8 @@ def interrupt_case(store, active, passive, name, grants, scales, prefix):
             d.setup.append({"target": "A", "status": st, "turns": -1, "by": "host"})
         d.notes.append("AI-driven: a miss or a roll outside the interrupt's window won't trigger it - "
                        "check the trigger (a status it applies, its cost) rather than downstream effects.")
+    for st in re.findall(r"HasStatus\('(\w+)',\s*context\.Observer\)", cond):  # it only works while you have X
+        d.setup.append({"target": "host", "status": st, "turns": -1})
     props = " ".join(f.get(k, "") for k in ("Properties", "Success"))
     for who, st in _status_expects(props, "A", d):
         tgt = "host" if who == "host" else ("A" if own else "host")
@@ -225,7 +227,14 @@ def interrupt_case(store, active, passive, name, grants, scales, prefix):
     costs = _costs(f.get("Cost", ""))
     _resource_setup(d, grants, costs)
     for res, n, lvl in costs:
+        rep = (store.static("ActionResourceDefinition", res, active) or (None, None, {}))[2].get("ReplenishType", "")
+        if d.c.get("mode") == "ai" and rep == "Turn":  # refills on your turn before the run ends: unreadable
+            d.notes.append(f"{res} refills every turn, so its cost can't be read after an AI run - the other checks prove it fired.")
+            continue
         d.expect.append({"resource": res, "level": lvl, "amount_change": -n})
+    if d.c.get("mode") == "ai" and re.search(r"SetRoll\(\s*1\s*\)|AdjustRoll\([^)]*-", props):
+        d.expect.append({"target": "host", "damage_count": {"by": "A", "count": [0, 0]}})
+        d.notes.append("It turns the hit into a miss, so the attacker never damages you.")
     if "DealDamage" in props and own:
         d.expect.append({"target": "A", "damage_count": {"by": "host", "count": [2, 9]}})
     if scales:
@@ -295,6 +304,24 @@ def passive_cases(store, active, passive, prefix=None):
         if not d.expect:
             d.lower("say what the hit does")
         out.append(d)
+    # advantage on your attacks under a condition (Precise Hunter: vs your Hunter's Mark target)
+    for cond_, kind in re.findall(r"IF\(([^:]*)\):\s*(Advantage|Disadvantage)\(\s*AttackRoll", boosts):
+        flag = "Attack" + kind
+        for suffix, with_passive in (("", True), ("-control", False)):
+            d = Draft(f"{prefix}-attack-{kind.lower()}{suffix}", f"{passive}: {kind} on attacks{'' if with_passive else ' (control, no feature)'}")
+            d.c.update({"spell": "Target_MainHandAttack", "target": "A", "real_rolls": True, "spawn": [_wolf(1.2)]})
+            d.setup = [{"target": "host", "boost": "RollBonus(Attack,30)"}, {"target": "A", "boost": "ActionResourceBlock(ReactionActionPoint)"}]
+            if with_passive:
+                d.setup.insert(0, {"target": "host", "passive": passive})
+            sts = re.findall(r"HasStatus\('(\w+)',\s*context\.Target", cond_)
+            for st in sts:
+                d.setup.append({"target": "A", "status": st, "turns": -1, "by": "host"})
+            if not sts:
+                d.lower(f"set up the condition `{cond_[:80]}`")
+            d.expect.append({"target": "A", "hits": {"by": "host", "flag": flag, "count": [1, 9]} if with_passive
+                             else {"by": "host", "flag": flag, "count": [1, 9], "absent": True}})
+            d.notes.append("Hit flags show whether the attack roll had " + kind.lower() + ".")
+            out.append(d)
     # plain boosts
     ab = ABILITY.findall(boosts)
     if ab:

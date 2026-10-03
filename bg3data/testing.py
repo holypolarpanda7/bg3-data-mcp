@@ -350,7 +350,7 @@ EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_ab
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
                "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used",
-               "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change"}
+               "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -954,6 +954,17 @@ def verify(store, active, cleanup=True, wait=2.0):
                     and (x.get("amount") or 0) > 0)
             lo, hi = dc.get("count", [1, 10 ** 6])
             row(lo <= n <= hi, f"{label} damaged {n} times{' by ' + dc['by'] if dc.get('by') else ''}, expected [{lo}, {hi}]")
+        if e.get("hits"):  # {by = alias, flag = "AttackAdvantage", count = [lo, hi], absent = false}: hits on `target`
+            hx = e["hits"]
+            src = host if hx.get("by") == "host" else (ent(before, hx["by"]).get("guid") if hx.get("by") else None)
+            hl = [x for x in events if x.get("kind") == "Hit" and x.get("who") == guid and (src is None or x.get("by") == src)]
+            fl = hx.get("flag")
+            with_flag = [x for x in hl if not fl or fl in (x.get("flags") or [])]
+            lo, hi = hx.get("count", [1, 10 ** 6])
+            n = len(hl) - len(with_flag) if hx.get("absent") else len(with_flag)
+            what = (f"without {fl}" if hx.get("absent") else f"with {fl}") if fl else ""
+            row(lo <= n <= hi, f"{label}: {n} hit(s){' by ' + hx['by'] if hx.get('by') else ''} {what}, expected [{lo}, {hi}] "
+                               f"(flags seen: {sorted({f for x in hl for f in (x.get('flags') or [])})})")
         if e.get("cast_only"):  # alias: every spell that spawn cast during the run was the case's spell (or ai_keep)
             bg = ent(before, e["cast_only"]).get("guid")
             allowed = {c.get("spell")} | set(c.get("ai_keep", []))
