@@ -533,6 +533,7 @@ def stage(store, active, layer, case_id):
     mode = c.get("mode", "auto")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
+    from . import gameui
     closed, dlg = gameui.dismiss_dialog()  # a modal message box would swallow the scripted cast and the Enter keys
     pre = lua("return BG3T.precheck()", timeout=30) or {}  # cleanup + snapshot + statuses in one round trip
     st = pre.get("snapshot") or {}
@@ -790,7 +791,7 @@ Osi.LeaveCombat(h) return true""")
                     lua(f"local g = {tgt} if Osi.HasActiveStatus(g, {se._lua_string(st_)}) == 1 then Osi.RemoveStatus(g, {se._lua_string(st_)}) end return true")
                 lua(f"BG3T.cast({who}, {se._lua_string(c['spell'])}, {tgt}, {rolled}); return true")
     if c.get("end_turns"):  # end the host's turn N times through the HUD (turn-order features, enemy turns)
-        from . import gameui
+        pass  # gameui is imported at the top of stage()
         need = int(c.get("ai_samples", 0)) if mode == "ai" else 0
         for k in range(int(c["end_turns"])):
             if not gameui.end_host_turn():
