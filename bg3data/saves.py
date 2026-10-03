@@ -118,7 +118,7 @@ def compare(save_mods, cur):
         if not c:
             rows.append((m, "not in the current load order", None))
             continue
-        diffs = [k for k in ("Folder", "Name", "Version64", "MD5") if c.get(k, "") and c.get(k, "") != m.get(k, "")]
+        diffs = [k for k in ("Folder", "Name", "Version64", "MD5", "PublishHandle") if c.get(k, "") and c.get(k, "") != m.get(k, "")]
         rows.append((m, ("differs: " + ", ".join(diffs)) if diffs else None, c))
     return rows
 
@@ -158,7 +158,7 @@ def fix_mods(cfg, query="latest", remove=(), sync=True, apply=False):
                 return ""
             c = cur.get(m.get("UUID"))
             if sync and c and not BUILTIN.match(m.get("Folder", "")):
-                for k in ("Folder", "Name", "Version64", "MD5"):
+                for k in ("Folder", "Name", "Version64", "MD5", "PublishHandle"):
                     if k in c and c[k] != m.get(k):
                         plan.append(f"{label}: {k} {m.get(k)!r} -> {c[k]!r}")
                         node = re.sub(rf'(<attribute id="{k}" type="\w+" value=")[^"]*"', lambda x: x.group(1) + c[k] + '"', node)
