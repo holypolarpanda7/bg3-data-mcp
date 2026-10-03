@@ -71,6 +71,8 @@ other choices, then the tests that run there. `bg3_test_run_level(layer, level, 
 Case kinds beyond spells: `console = "!mycommand X"` + `expect_log = "PASS marker"` (+ `fail_log`) runs a
 mod's own test command; `retries = N` re-runs a failed case (save-based effects);
 `status_applied_any = [...]` passes if any listed status lands.
+`settle = N` (case key, seconds, default 0.8): how long events must stay quiet before the case is read. Raise it when the
+effect under test lands seconds after the cast (e.g. a free attack the Lua queues behind an enemy's turn: `settle = 8`).
 
 `bg3_lint_progressions(layer)` checks progression data statically: invalid node UUIDs (the game drops the
 node), selectors pointing at lists no layer defines, and stacked choices (several nodes for one

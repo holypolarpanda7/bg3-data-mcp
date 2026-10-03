@@ -949,7 +949,8 @@ def verify(store, active, cleanup=True, wait=2.0):
     # projectiles/summons still get their time; fast cases finish in about a second instead of a fixed 4 s)
     if state["mode"] in ("auto", "script") and c.get("spell"):
         _wait_casts(state["since"], c["spell"], max(1, int(c.get("repeat", 1))), max(wait, 1) + 4)
-        _settle(state["since"], quiet=0.8, cap=max(wait, 1.5))
+        q = float(c.get("settle", 0.8))  # a case whose effect lands late (a queued free attack) sets `settle`
+        _settle(state["since"], quiet=q, cap=max(wait, 1.5, q + 4))
     elif state["mode"] == "ai":
         _settle(state["since"], quiet=0.8, cap=3)
     else:
