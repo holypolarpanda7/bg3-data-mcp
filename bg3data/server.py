@@ -724,6 +724,43 @@ def bg3_lint_stats(layer: str, layers: list[str] | None = None, limit: int = 200
 
 @mcp.tool()
 @guarded
+def bg3_deps_status(layer: str) -> str:
+    """Dependency drift for a mod layer: each meta.lsx dependency that is also a layer (normally the deployed
+    .pak), with its declared (meta.lsx), locked (bg3deps.lock.json) and current (indexed) release."""
+    from . import deps
+    return deps.status(store(), layer)
+
+
+@mcp.tool()
+@guarded
+def bg3_deps_diff(layer: str, dep: str | None = None, limit: int = 60) -> str:
+    """What changed in the mod's dependencies since its lock (stats entries, templates, progressions, lists,
+    static data), with the changes the mod OVERRIDES (same entry/UUID) or REFERENCES (using, functors, lists...)
+    listed first."""
+    from . import deps
+    return deps.diff(store(), layer, dep, _limit(limit, 60, 1000))
+
+
+@mcp.tool()
+@guarded
+def bg3_deps_lock(layer: str) -> str:
+    """Record the current release + a fingerprint snapshot of every tracked dependency as the mod's baseline
+    (writes <mod>/bg3deps.lock.json). bg3_deps_update does this itself after a successful update."""
+    from . import deps
+    return deps.lock_deps(store(), layer)
+
+
+@mcp.tool()
+@guarded
+def bg3_deps_update(layer: str, apply: bool = False) -> str:
+    """Follow dependency drift: diff, run the mod's `regen` commands (layers.json), re-index, lint, bump the
+    dependency Version64/MD5 in meta.lsx and rewrite the lock. apply=False (default) only shows the plan."""
+    from . import deps
+    return deps.update(store(), layer, apply=apply, log=_log)
+
+
+@mcp.tool()
+@guarded
 def bg3_lint_progressions(layer: str, layers: list[str] | None = None) -> str:
     """Static progression checks for a mod layer: invalid node UUIDs (the game silently drops those
     nodes), selectors referencing lists no layer defines, and same table+level nodes from different

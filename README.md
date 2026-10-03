@@ -58,6 +58,7 @@ redistributed - data is read from your own install.
 | `bg3_icon_check(layer)` | ask the running game which of a layer's icons exist (5,395 known), cache them, and suggest the closest real icon for each missing one; `bg3_lint_stats` then flags missing icons offline |
 | `bg3_test_spell_check(spell)` / `bg3_save_spells(ability)` | pre-checks before writing a test: can the AI cast it, is its save the spell's own roll (interrupt-visible) or a status/surface/passive save; AI-castable spells by save ability |
 | `bg3_lint_stats(layer)` / `bg3_lint_progressions(layer)` | static checks before deploying: values the engine silently drops (vocabulary learned from the other layers), tooltip-only names used as functors, missing references, unknown resources; progression UUIDs, dangling lists, stacked choices |
+| `bg3_deps_status` / `bg3_deps_diff` / `bg3_deps_lock` / `bg3_deps_update` | dependency drift: each meta.lsx dependency that is a layer (its deployed pak), declared vs locked (`<mod>/bg3deps.lock.json`) vs current; what changed since the lock that the mod overrides or references; and an update that runs the mod's `regen` commands (layers.json), re-indexes, lints, bumps the dependency Version64/MD5 in meta.lsx and rewrites the lock (dry run unless `apply`) |
 | `bg3_toolkit_status` / `bg3_toolkit_export` / `bg3_toolkit_check` | Larian Toolkit (mod.io publishing): where the Toolkit expects the mod, generate its editor copy (.stats/.tbl) from the game-ready files, and diff the two copies - formats learned from vanilla + dnd55e editor data |
 | `bg3_ingame_check(layer)` | every stats entry a layer defines vs what the running game loaded (invalid values the engine dropped) |
 
@@ -92,7 +93,8 @@ Paths may be written Windows-style (`D:\\Mods\\MyMod`) or WSL-style (`/mnt/d/Mod
 {
   "mods": [
     {"name": "dnd55e", "path": "%LOCALAPPDATA%\\Larian Studios\\Baldur's Gate 3\\Mods\\DnD2024_897914ef-5c96-053c-44af-0be823f895fe.pak"},
-    {"name": "mymod", "path": "C:\\BG3Mods\\MyMod", "tests": "tests/bg3", "deploy": "optional custom command"}
+    {"name": "mymod", "path": "C:\\BG3Mods\\MyMod", "tests": "tests/bg3", "deploy": "optional custom command",
+     "regen": ["bash Scripts/regen_all.sh"]}
   ],
   "base":  {"game_data": "E:\\Games\\Baldurs Gate 3\\Data"},
   "divine": "C:\\Tools\\LSLib\\Packed\\Tools\\Divine.exe",

@@ -42,6 +42,13 @@ def main(argv=None):
     active = s.active(a.layers.split(",") if a.layers else None)
     if a.cmd == "layers":
         print(fmt.layers(s))
+    elif a.cmd.startswith("deps-"):  # deps-status|deps-diff|deps-lock|deps-update LAYER [DEP|apply]
+        from . import deps
+        sub, layer = a.cmd[5:], a.args[0]
+        print({"status": lambda: deps.status(s, layer),
+               "diff": lambda: deps.diff(s, layer, a.args[1] if len(a.args) > 1 else None),
+               "lock": lambda: deps.lock_deps(s, layer),
+               "update": lambda: deps.update(s, layer, apply="apply" in a.args[1:], log=log)}[sub]())
     elif a.cmd == "entry":
         print(fmt.entry(s, a.args[0], active))
     elif a.cmd == "diff":

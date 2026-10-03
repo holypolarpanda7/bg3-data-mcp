@@ -27,18 +27,24 @@ def mod_info(layer):
     metas = glob.glob(os.path.join(m["path"], "Mods", "*", "meta.lsx"))
     if len(metas) != 1:
         raise ValueError(f"expected one Mods/<folder>/meta.lsx in {m['path']}, found {len(metas)}")
-    text = open(metas[0], encoding="utf-8").read()
+    info, deps = parse_meta(metas[0])
+    return cfg, m, info, deps
+
+
+def parse_meta(meta_path):
+    """(ModuleInfo dict, [dependency ModuleShortDesc dicts]) from a Mods/<folder>/meta.lsx."""
+    text = open(meta_path, encoding="utf-8").read()
     info_block = re.search(r'<node id="ModuleInfo">(.*?)(?:<children>|</node>)', text, re.S)
     attrs = dict(re.findall(r'<attribute id="(\w+)" type="\w+" value="([^"]*)"', info_block.group(1) if info_block else ""))
-    deps_block = re.search(r'<node id="Dependencies">(.*?)</node>\s*</children>', text, re.S)
+    deps_block = re.search(r'<node id="Dependencies">\s*<children>(.*?)</children>\s*</node>', text, re.S)
     deps = []
     for blk in re.findall(r'<node id="ModuleShortDesc">(.*?)</node>', deps_block.group(1) if deps_block else "", re.S):
         d = dict(re.findall(r'<attribute id="(\w+)" type="\w+" value="([^"]*)"', blk))
         if d.get("UUID"):
             deps.append(d)
-    folder = attrs.get("Folder") or os.path.basename(os.path.dirname(metas[0]))
-    return cfg, m, {"Folder": folder, "Name": attrs.get("Name", folder), "UUID": attrs.get("UUID"),
-                    "Version64": attrs.get("Version64", "36028797018963968"), "PublishHandle": attrs.get("PublishHandle", "0")}, deps
+    folder = attrs.get("Folder") or os.path.basename(os.path.dirname(meta_path))
+    return {"Folder": folder, "Name": attrs.get("Name", folder), "UUID": attrs.get("UUID"),
+            "Version64": attrs.get("Version64", "36028797018963968"), "PublishHandle": attrs.get("PublishHandle", "0")}, deps
 
 
 def _paths(cfg):
