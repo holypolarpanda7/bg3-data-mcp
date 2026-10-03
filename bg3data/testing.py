@@ -1774,7 +1774,9 @@ def _unstick_menu(log, relaunched):
         missing = [n for n, u in want.items() if u and u not in loaded]
         if missing and loaded:
             if relaunched:
-                log.append(f"main menu without mods {', '.join(missing)} again - check the in-game mod manager")
+                msg = f"main menu without mods {', '.join(missing)} again - check the in-game mod manager"
+                if not log or log[-1] != msg:  # polled every few seconds: say it once
+                    log.append(msg)
                 return None
             log.append(f"main menu in no-mods safe mode (not loaded: {', '.join(missing)}): quitting cleanly to relaunch")
             _, g = game_cfg()
@@ -1797,6 +1799,34 @@ def newest_save():
 
 
 _RESTART_LOCK = globals().get("_RESTART_LOCK") or __import__("threading").Lock()  # kept across hot reloads
+
+
+def missing_dependencies():
+    """[(mod layer, dependency name)] for published dependencies of the configured folder layers that have no pak in
+    the user Mods folder (matched by Folder name, a mod manager's symlink, or the in-game manager's short name)."""
+    from . import deploy, deps, sources
+    cfg = sources.load_config()
+    try:
+        _, mods_dir, _ = deploy._paths(cfg)
+        paks = [f.lower() for f in os.listdir(mods_dir) if f.lower().endswith(".pak")]
+    except (RuntimeError, OSError):
+        return []
+    out = []
+    for m in cfg["mods"]:
+        if m["path"].lower().endswith(".pak"):
+            continue
+        try:
+            _, _, _, declared = deploy.mod_info(m["name"])
+        except (ValueError, OSError):
+            continue
+        for d in declared:
+            folder, uuid = (d.get("Folder") or "").lower(), (d.get("UUID") or "").lower()
+            if deps.BUILTIN.match(d.get("Folder", "")) or not folder:
+                continue
+            short = folder.split("_")[0] + "_" + uuid[:8]  # in-game manager: dnd2024_897914ef-...-8irn.pak
+            if not any(p == folder + ".pak" or p.startswith(short) for p in paks):
+                out.append((m["name"], d.get("Name") or d.get("Folder")))
+    return out
 
 
 def restart(deploy_layer=None, launch=True, timeout=300):
@@ -1831,6 +1861,11 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
                 return "\n".join(log + ["deploy failed - not launching"])
     if not launch:
         return "\n".join(log)
+    absent = missing_dependencies()
+    if absent:  # the game would drop the mod at the main menu (seen 2026-10-03: dnd55e mid-update in Vortex)
+        return "\n".join(log + [f"NOT LAUNCHED: {mod} needs {dep}, which isn't installed in the user Mods folder - the "
+                                 f"game would drop {mod} from the load order. Install/deploy it first (mod manager)."
+                                 for mod, dep in absent])
     ns = newest_save()
     log.append(f"newest save (what -continueGame loads): {ns[0]} ({ns[1]})" if ns else "no saves found")
     from . import platform
