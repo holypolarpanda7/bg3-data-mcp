@@ -1328,8 +1328,9 @@ GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 def lint_progressions(store, active, layer):
     """Static checks on the progression nodes a layer defines: invalid node UUIDs (the game drops the
-    node), selectors pointing at lists no layer defines, and several nodes for the same table+level from
-    different layers (both load: choices and feats are granted twice)."""
+    node), selectors pointing at lists no layer defines, several nodes for the same table+level from
+    different layers (both load: choices and feats are granted twice), and nodes whose Name belongs to another
+    table (the feature lands on the wrong class/subclass)."""
     w, p = store._where(active)
     rows = store.db.execute(f"SELECT layer, name, level, table_uuid, uuid, attrs FROM prog WHERE {w} ORDER BY rank", p).fetchall()
     mine = [r for r in rows if r[0] == layer]
@@ -1367,12 +1368,27 @@ def lint_progressions(store, active, layer):
         nodes = list(latest.values())
         if len(nodes) > 1 and any(x[0] == layer for x in nodes) and sum(grants_choice(x) for x in nodes) > 1:
             dup.append((k, nodes))
+    # a node whose Name belongs to another table: the feature lands on the wrong class/subclass (Apotheosis had the
+    # barbarian's Controlled Surge on the Sorcerer Wild Magic table until 2026-10-03)
+    names_of, tables_of = {}, {}
+    for r in rows:
+        if r[0] != layer:
+            names_of.setdefault(r[3], set()).add(r[1])
+            tables_of.setdefault(r[1], set()).add(r[3])
+    wrong = []
+    for r in mine:
+        others = names_of.get(r[3])
+        if others and r[1] not in others and tables_of.get(r[1]):
+            wrong.append(f"  {r[1]} L{r[2]} ({r[4]}): table {r[3]} is {'/'.join(sorted(others))}'s; {r[1]} uses {', '.join(sorted(tables_of[r[1]]))}")
+    if wrong:
+        out.append(f"WRONG TABLE ({len(wrong)}) - the node's Name belongs to a different table:")
+        out += wrong
     if dup:
         out.append(f"STACKED choices ({len(dup)}): several nodes for one table+level each grant choices/feats - all load, so they're offered twice:")
         for (t, l), v in sorted(dup, key=lambda d: (d[1][0][1], d[0][1])):
             out.append(f"  {v[0][1]} L{l}: " + "; ".join(f"{x[0]} {x[4]}" + (" [AllowImprovement]" if json.loads(x[5]).get("AllowImprovement") == "true" else "")
                                                       + (" [Selectors]" if json.loads(x[5]).get("Selectors") else "") for x in v))
-    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels")] + out)
+    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables")] + out)
 
 
 # ------------------------------------------------------------------ build plans
