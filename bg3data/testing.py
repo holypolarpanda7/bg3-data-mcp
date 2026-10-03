@@ -1812,7 +1812,7 @@ def newest_save():
 _RESTART_LOCK = globals().get("_RESTART_LOCK") or __import__("threading").Lock()  # kept across hot reloads
 
 
-def _clear_dialogs(log, seconds=0.0):
+def _clear_dialogs(log, seconds=0.0, timeout=12, t0=None):
     """Dismiss acknowledge-only message boxes for `seconds` (they can show up a few seconds after the host exists),
     logging each one's text; a box with a choice is reported and left."""
     from . import gameui
@@ -1820,17 +1820,18 @@ def _clear_dialogs(log, seconds=0.0):
     seen = set()
     while True:
         try:
-            closed, info = gameui.dismiss_dialog()
+            closed, info = gameui.dismiss_dialog(timeout=timeout)
         except (RuntimeError, TimeoutError):
             closed, info = True, None
         if info:
             msg = f"{info.get('uuid')}: {' | '.join(info.get('texts') or [])[:300] or '(no text read)'}"
             if msg not in seen:
                 seen.add(msg)
-                log.append(("dismissed message box " if closed else f"message box left open (needs your answer, {info.get('actions')} actions) ") + msg)
-        if time.time() >= end:
+                when = f" at {time.time() - t0:.0f}s" if t0 else ""
+                log.append(("dismissed message box" + when + " " if closed else f"message box left open{when} (needs your answer, {info.get('actions')} actions) ") + msg)
+        if time.time() >= end or (info and closed):  # nothing left to clear: don't wait out the grace period
             return
-        time.sleep(2)
+        time.sleep(1)
 
 
 def missing_dependencies():
@@ -1915,16 +1916,23 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
     t0 = time.time()
     last_ui, relaunched, hung_since = 0, False, None
     _unstick_menu.splash = 0
+    cleared_at = set()
     while time.time() - t0 < timeout:
-        time.sleep(5)
+        time.sleep(2)
+        if time.time() - t0 > 20:  # a load-time warning blocks the player at once: clear it as soon as it shows (short SE timeout)
+            before = len(log)
+            _clear_dialogs(log, 0, timeout=3, t0=t0)
+            cleared_at.update(log[before:])
         try:
             r = se.eval_lua("return Osi.GetHostCharacter() and Osi.GetRegion(Osi.GetHostCharacter()) or ''", "server", timeout=8)
             if r["ok"] and r["result"]:
                 log.append(f"session loaded after {time.time() - t0:.0f}s: host in {r['result']}")
-                _clear_dialogs(log, 12)  # a load-time warning (seen 2026-10-03: GameMsgID [ForceUpdate]) can still be pending
+                _clear_dialogs(log, 6, timeout=3, t0=t0)  # the load-time warning (GameMsgID [ForceUpdate]) shows up with the HUD
                 return "\n".join(log)
         except (RuntimeError, TimeoutError):
             pass
+        if time.time() - t0 < 20:
+            continue
         # no session yet: see what the game shows. Check early and often: the first launch after quitting a loaded
         # game always comes up in no-mods safe mode (5/5 restarts on 2026-10-01, with or without a deploy; a quit
         # from the main menu doesn't do this), so the relaunch below is the normal path, not a rare fallback.

@@ -152,7 +152,7 @@ return true""")
     return bool(res)
 
 
-def dialog_info():
+def dialog_info(timeout=12):
     """The open message box (Dialog_box), or None: {uuid, texts (every Text in its visual tree), actions (count)}."""
     res, _ = _client(FIND + """
 local b = find(Ext.UI.GetRoot(), "Dialog_box", 0)
@@ -169,15 +169,15 @@ walk(b, 0)
 local dc = b.DataContext
 local acts = 0
 pcall(function() acts = #dc.Actions end)
-return {uuid = tostring(dc.UUIDProperty), texts = texts, actions = acts}""")
+return {uuid = tostring(dc.UUIDProperty), texts = texts, actions = acts}""", timeout=timeout)
     return res if isinstance(res, dict) else None
 
 
-def dismiss_dialog(wait=3.0):
+def dismiss_dialog(wait=3.0, timeout=12):
     """Clear a blocking acknowledge-only message box (one action, e.g. a mod/save warning). Executing the action alone
     leaves it open (seen 2026-10-03, GameMsgID), so a real Enter is posted to the game window as well. A box with
     several actions is a question for the user: reported, never answered. Returns (closed, info or None)."""
-    info = dialog_info()
+    info = dialog_info(timeout)
     if not info:
         return True, None
     if info["actions"] != 1:
@@ -186,10 +186,10 @@ def dismiss_dialog(wait=3.0):
     end = time.time() + wait
     while time.time() < end:
         time.sleep(0.5)
-        if not dialog_info():
+        if not dialog_info(timeout):
             return True, info
         press_key()
-    return not dialog_info(), info
+    return not dialog_info(timeout), info
 
 
 def quit_game(processes, tasklist, wait=45):
