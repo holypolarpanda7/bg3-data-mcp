@@ -547,6 +547,16 @@ def bg3_test_list(layer: str, class_name: str | None = None, level: int | None =
 
 
 @mcp.tool()
+@se_guarded
+def bg3_icon_check(layer: str, layers: list[str] | None = None) -> str:
+    """Ask the RUNNING game which of a layer's stats icons exist (client Ext.StaticData.GetIconUVs) - a missing
+    icon shows blank in game. Caches the answers so bg3_lint_stats reports missing icons offline afterwards."""
+    from . import icons
+    s = store()
+    return icons.check(s, layer, s.active(layers))
+
+
+@mcp.tool()
 @guarded
 def bg3_test_draft(passives: list[str] | None = None, key: str | None = None, level: int | None = None,
                    layers: list[str] | None = None) -> str:

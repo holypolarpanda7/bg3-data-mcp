@@ -118,15 +118,24 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
     if not f:
         return []
     if f.get("ContainerSpells"):
+        kids = [x for x in f["ContainerSpells"].split(";") if x]
         out = []
-        for child in [x for x in f["ContainerSpells"].split(";") if x]:
+        for child in (kids if len(kids) <= 4 else kids[:1]):  # many near-identical options: one stands for all
             out += spell_cases(store, active, passive, child, grants, scales, prefix)
+        if len(kids) > 4 and out:
+            out[0].notes.append(f"One of {len(kids)} options ({', '.join(k.split('_')[-1] for k in kids[:6])}...) stands for the rest.")
         return out
     tc, typ = f.get("TargetConditions", ""), f.get("SpellType", "")
     self_cast = typ == "Shout" or tc.strip().startswith("Self()")
-    d = Draft(f"{prefix}-{spell.lower().replace('_', '-')}", f"{passive}: {spell}")
+    d = Draft(f"{prefix}-{spell.lower().replace('_', '-')}", f"{passive}: {spell}" if passive else spell)
     d.c["spell"] = spell
-    d.setup.append({"target": "host", "passive": passive})
+    if passive:
+        d.setup.append({"target": "host", "passive": passive})
+    if f.get("RequirementConditions", "").find("not Combat(") >= 0:
+        d.c["combat"] = False
+        d.notes.append("Out of combat only (a long casting time).")
+    if "Dead()" in f.get("OriginTargetConditions", "") + tc and "not Dead()" not in f.get("OriginTargetConditions", "") + tc:
+        d.lower("targets a dead creature: add a spawn with `dead = true` setup (and a friendly faction for allies)")
     target = "host"
     if not self_cast:
         ally = "Ally()" in tc and "not Ally()" not in tc
@@ -153,6 +162,12 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
     _resource_setup(d, grants, costs, empty)
     for who, st in _status_expects(body, target, d):
         d.expect.append({"target": who, "status_applied": [st]})
+        sf_, _ = _fields(store, active, st)
+        aura = re.findall(r"ApplyStatus\(\s*(?:\w+\s*,\s*)?([A-Z][A-Z0-9_]+)", (sf_ or {}).get("AuraStatuses", ""))
+        if aura:  # an aura: an ally standing in it gets the buff
+            d.c.setdefault("spawn", []).append(_wolf(3, "friendly", "B"))
+            d.expect.append({"target": "B", "status_present": aura[:1]})
+            d.notes.append(f"{st} is an aura: a friendly wolf 3 m away should get {aura[0]}.")
     for res, n in RESTORE.findall(body):
         d.expect.append({"resource": res, "level": 0, "amount_change": int(n)})
     if "DealDamage" in body and target != "host":
@@ -393,7 +408,11 @@ def drafts(store, active, passives=None, key=None, level=None):
     from . import testing
     out, skipped = [], []
     for p in names:
-        cases, sk = passive_cases(store, active, p)
+        f_, r_ = _fields(store, active, p)
+        if r_ and (r_.get("type") == "SpellData" or (f_ or {}).get("SpellType")):  # a spell: draft its cast directly
+            cases, sk = spell_cases(store, active, None, p, set(), _scales(f_), "draft"), []
+        else:
+            cases, sk = passive_cases(store, active, p)
         skipped += sk
         for d in cases:
             errs = testing.validate(store, active, {**d.c, "setup": d.setup, "expect": d.expect})

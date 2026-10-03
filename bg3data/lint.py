@@ -85,6 +85,22 @@ def _resource_names(cfg, mods):
     return names
 
 
+def _atlas_icons(store, layer):
+    """Icon names this layer's own texture atlases define (Public/<mod>/GUI/*.lsx UV lists)."""
+    names = set()
+    for m in store.cfg["mods"]:
+        if m["name"] != layer or m["path"].lower().endswith(".pak"):
+            continue
+        for f in glob.glob(os.path.join(m["path"], "Public", "*", "**", "*.lsx"), recursive=True):
+            try:
+                t = open(f, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            if "IconUV" in t or "TextureAtlas" in t:
+                names |= set(re.findall(r'id="MapKey" type="FixedString" value="([^"]+)"', t))
+    return names
+
+
 def vocabulary(store, active, layer):
     """Everything the layers other than `layer` use: enum values per field, callable names, resources, entry names."""
     others = [l for l in active if l != layer]
@@ -95,6 +111,8 @@ def vocabulary(store, active, layer):
             fields.setdefault(typ, set()).add(k)
             if not isinstance(v, str):
                 continue
+            if k == "Icon":
+                enums.setdefault("Icon", set()).add(v)
             if k in ENUM_FIELDS or (k == "Properties" and typ in PASSIVE_PROPERTIES):
                 enums.setdefault(k, set()).update(_enum_values(k, v, typ))
             if k in TOOLTIP_FIELDS:  # tooltip macros (GainTemporaryHitPoints...) the engine never runs as functors
@@ -122,6 +140,9 @@ def lint_stats(store, active, layer, limit=200):
     enums, calls, resources, names, known_fields, desc_only = vocabulary(store, active, layer)
     rows = store.db.execute("SELECT name, type, file, using_, data FROM stats WHERE layer=? ORDER BY file, name", (layer,)).fetchall()
     issues = []
+    own_icons = _atlas_icons(store, layer)
+    from . import icons as _icons
+    game_icons = _icons.load()  # every icon the game has, from the last bg3_icon_check (empty: never ran)
 
     def add(kind, name, file, msg):
         issues.append((kind, name, os.path.basename(file or ""), msg))
@@ -140,6 +161,12 @@ def lint_stats(store, active, layer, limit=200):
             if typ in known_fields and k not in known_fields[typ]:
                 add("FIELD", name, file, f"'{k}' isn't a field any other layer uses on {typ} (the engine ignores unknown fields)")
             if not isinstance(v, str) or not v:
+                continue
+            if k == "Icon":
+                if game_icons and v not in game_icons and v not in own_icons:
+                    add("ICON", name, file, f"Icon '{v}' doesn't exist in game (bg3_icon_check) - it shows blank")
+                elif not game_icons and v not in enums.get("Icon", set()) and v not in own_icons:
+                    add("ICON", name, file, f"Icon '{v}' is unverified: nothing else uses it - run bg3_icon_check with the game up")
                 continue
             if k in enums and (k != "Properties" or typ in PASSIVE_PROPERTIES):
                 for val in _enum_values(k, v, typ):
@@ -202,7 +229,7 @@ def lint_stats(store, active, layer, limit=200):
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")
