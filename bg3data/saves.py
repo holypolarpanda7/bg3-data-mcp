@@ -68,10 +68,44 @@ def mods_in(lsx):
     return [{k: v for k, _, v in ATTR.findall(n)} for n in MOD_NODE.findall(lsx)]
 
 
+def _pak_md5(mods_dir, folder):
+    """MD5 of the pak the game loads for `folder` (a mod manager's symlink is followed), or None."""
+    import hashlib
+    p = os.path.join(mods_dir, folder + ".pak")
+    if not os.path.exists(p):
+        return None
+    h = hashlib.md5()
+    with open(os.path.realpath(p), "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def current_mods(cfg):
-    _, _, ms = deploy._paths(cfg)
+    """The load order from modsettings.lsx, with each installed dependency's MD5 taken from the pak on disk:
+    modsettings keeps whatever a previous manager wrote (seen 2026-10-03: the in-game manager's MD5 for dnd55e after
+    Vortex took over), and a save recording that stale MD5 makes the game warn on load. Mods under development
+    (a folder layer: rebuilt every deploy) keep an empty MD5."""
+    _, mods_dir, ms = deploy._paths(cfg)
     text = open(ms, encoding="utf-8").read()
-    return {d.get("UUID"): d for d in ({k: v for k, _, v in ATTR.findall(n)} for n in MOD_NODE.findall(text))}
+    own = set()
+    for m in cfg["mods"]:
+        if not m["path"].lower().endswith(".pak"):
+            try:
+                own.add(deploy.mod_info(m["name"])[2]["UUID"])
+            except (ValueError, OSError):
+                pass
+    out = {}
+    for n in MOD_NODE.findall(text):
+        d = {k: v for k, _, v in ATTR.findall(n)}
+        if d.get("UUID") in own:
+            d["MD5"] = ""
+        elif d.get("Folder") and not BUILTIN.match(d["Folder"]):
+            real = _pak_md5(mods_dir, d["Folder"])
+            if real:
+                d["MD5"] = real
+        out[d.get("UUID")] = d
+    return out
 
 
 def compare(save_mods, cur):

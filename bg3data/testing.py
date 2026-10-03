@@ -1812,6 +1812,27 @@ def newest_save():
 _RESTART_LOCK = globals().get("_RESTART_LOCK") or __import__("threading").Lock()  # kept across hot reloads
 
 
+def _clear_dialogs(log, seconds=0.0):
+    """Dismiss acknowledge-only message boxes for `seconds` (they can show up a few seconds after the host exists),
+    logging each one's text; a box with a choice is reported and left."""
+    from . import gameui
+    end = time.time() + seconds
+    seen = set()
+    while True:
+        try:
+            closed, info = gameui.dismiss_dialog()
+        except (RuntimeError, TimeoutError):
+            closed, info = True, None
+        if info:
+            msg = f"{info.get('uuid')}: {' | '.join(info.get('texts') or [])[:300] or '(no text read)'}"
+            if msg not in seen:
+                seen.add(msg)
+                log.append(("dismissed message box " if closed else f"message box left open (needs your answer, {info.get('actions')} actions) ") + msg)
+        if time.time() >= end:
+            return
+        time.sleep(2)
+
+
 def missing_dependencies():
     """[(mod layer, dependency name)] for published dependencies of the configured folder layers that have no pak in
     the user Mods folder (matched by Folder name, a mod manager's symlink, or the in-game manager's short name)."""
@@ -1900,6 +1921,7 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
             r = se.eval_lua("return Osi.GetHostCharacter() and Osi.GetRegion(Osi.GetHostCharacter()) or ''", "server", timeout=8)
             if r["ok"] and r["result"]:
                 log.append(f"session loaded after {time.time() - t0:.0f}s: host in {r['result']}")
+                _clear_dialogs(log, 12)  # a load-time warning (seen 2026-10-03: GameMsgID [ForceUpdate]) can still be pending
                 return "\n".join(log)
         except (RuntimeError, TimeoutError):
             pass
