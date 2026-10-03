@@ -148,6 +148,12 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
     roll = f.get("SpellRoll", "")
     saves = SAVE.findall(roll)
     body = " ".join(f.get(k, "") for k in ("SpellProperties", "SpellSuccess"))
+    for st, mine in re.findall(r"HasStatus\('(\w+)',\s*context\.Target(\s*,\s*context\.Source)?\)", tc):  # it only targets X-carriers
+        if target != "host":
+            d.setup.append({"target": target, "status": st, "turns": -1, **({"by": "host"} if mine else {})})
+    for st in re.findall(r"RemoveStatus\(\s*(?:\w+\s*,\s*)?([A-Z][A-Z0-9_]+)\)", body):
+        if any(x.get("status") == st for x in d.setup):
+            d.expect.append({"target": target, "status_removed": [st]})
     if saves:
         d.c["real_rolls"] = True
         d.setup.append({"target": target, "boost": f"AbilityFailedSavingThrow({saves[0]})"})
@@ -171,7 +177,9 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
     for res, n in RESTORE.findall(body):
         d.expect.append({"resource": res, "level": 0, "amount_change": int(n)})
     if "DealDamage" in body and target != "host":
-        d.expect.append({"target": target, "hp_change": [-300, -1]})
+        m_ = DICE.search(body)
+        lo_, hi_ = (int(m_.group(2)), int(m_.group(2)) * int(m_.group(3))) if m_ else (1, 300)
+        d.expect.append({"target": target, "hp_change": [-min(300, hi_ * 2), -lo_]})
         if scales:
             d.lower("damage scales with a class level: on a host of another class it can be 0 - test on a real character")
     if "RegainHitPoints" in body and target == "host":
@@ -201,13 +209,16 @@ def interrupt_case(store, active, passive, name, grants, scales, prefix):
         if "IsSpell" in cond or "SpellAttack" in cond:
             d.c["spell"] = "Projectile_FireBolt"
             d.setup.append({"target": "host", "boost": "RollBonus(RangedSpellAttack,30)"})
+        elif "IsUnarmedAttack" in cond:
+            d.c["spell"] = "Target_UnarmedAttack"
+            d.setup.append({"target": "host", "boost": "RollBonus(Attack,30)"})
         elif "IsRanged" in cond:
             d.c["spell"] = "Projectile_MainHandAttack"
             d.setup.append({"target": "host", "boost": "RollBonus(Attack,30)"})
         else:
             d.c["spell"] = "Target_MainHandAttack"
             d.setup.append({"target": "host", "boost": "RollBonus(Attack,30)"})
-        melee = d.c["spell"] == "Target_MainHandAttack"
+        melee = d.c["spell"] in ("Target_MainHandAttack", "Target_UnarmedAttack")
         d.c.update({"target": "A", "real_rolls": True, "spawn": [_wolf(1.2 if melee else 6)]})
         if melee:
             d.setup.append({"target": "A", "boost": "ActionResourceBlock(ReactionActionPoint)"})
