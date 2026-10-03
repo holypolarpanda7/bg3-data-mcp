@@ -724,6 +724,16 @@ def bg3_lint_stats(layer: str, layers: list[str] | None = None, limit: int = 200
 
 @mcp.tool()
 @guarded
+def bg3_vortex_status(log_lines: int = 12) -> str:
+    """Vortex, read-only: what it deployed into the game's Mods folder (its deployment manifest), other paks there,
+    staged mods (flags several versions of one mod) and its recent install/remove/deploy/purge activity for BG3.
+    Answers "why isn't mod X in game" when Vortex manages it."""
+    from . import vortex
+    return vortex.status(log_n=max(1, min(int(log_lines), 60)))
+
+
+@mcp.tool()
+@guarded
 def bg3_deps_status(layer: str) -> str:
     """Dependency drift for a mod layer: each meta.lsx dependency that is also a layer (normally the deployed
     .pak), with its declared (meta.lsx), locked (bg3deps.lock.json) and current (indexed) release."""
