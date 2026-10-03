@@ -754,6 +754,30 @@ def bg3_vortex(action: str = "status", mod: str | None = None) -> str:
 
 @mcp.tool()
 @guarded
+def bg3_saves(limit: int = 5) -> str:
+    """Newest savegames and the mods each was made with (meta.lsf), compared with the current load order:
+    mods no longer loaded, and renamed/updated ones (same UUID, different Folder/Name/Version64/MD5) - the usual
+    reason a save shows a mods dialog or won't load after a mod update or rename."""
+    from . import saves
+    return saves.describe(sources.load_config(), max(1, min(int(limit), 30)))
+
+
+@mcp.tool()
+@guarded
+def bg3_save_fix_mods(save: str = "latest", remove: list[str] | None = None, sync: bool = True,
+                      apply: bool = False) -> str:
+    """Rewrite a save's mod list: sync=True updates entries whose UUID is in the current load order (Folder, Name,
+    Version64, MD5 - e.g. after a rename or update); remove drops mods by name/folder/UUID (safe for UI-only mods;
+    dropping content mods can break a save). save = 'latest' or part of the save folder name. Dry run unless apply;
+    the original .lsv is backed up to the MCP cache first. Close the game before applying."""
+    from . import deploy, saves
+    if apply and deploy.game_running():
+        return "close the game first (bg3_game_restart launch=False): it may rewrite or hold the save"
+    return saves.fix_mods(sources.load_config(), save, remove or [], sync, apply)
+
+
+@mcp.tool()
+@guarded
 def bg3_deps_status(layer: str) -> str:
     """Dependency drift for a mod layer: each meta.lsx dependency that is also a layer (normally the deployed
     .pak), with its declared (meta.lsx), locked (bg3deps.lock.json) and current (indexed) release."""
