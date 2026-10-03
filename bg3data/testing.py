@@ -419,16 +419,60 @@ def validate(store, active, c):
     return errs
 
 
+def _hp_range(c, who):
+    for e in c.get("expect", []):
+        if e.get("target", "host") == who and isinstance(e.get("hp_change"), list):
+            return e["hp_change"]
+    return None
+
+
+def design_warnings(store, active, c, cases=None):
+    """Test-design mistakes that still run but measure the wrong thing (each one cost a rerun on 2026-10-02)."""
+    w = []
+    set_up = {st.get("status") for st in c.get("setup", []) if st.get("status")}
+    for e in c.get("expect", []):
+        for s in e.get("status_removed", []):
+            if s not in set_up:
+                w.append(f"status_removed {s}: it must be present BEFORE the cast (set it up), otherwise this fails "
+                         "even when the effect works - use status_absent for 'gone at the end'")
+    for cs in c.get("casts", []):
+        if cs.get("spell") == c.get("spell") and cs.get("target", "host") == c.get("target", "host"):
+            w.append(f"casts repeats the main spell {cs['spell']}: `casts` run BEFORE `spell`, so the main cast "
+                     "runs again last - make the step you check the main `spell`")
+    if cases and c["id"].endswith("-control"):
+        main = cases.get(c["id"][:-len("-control")])
+        if main:
+            for who in {e.get("target", "host") for e in c.get("expect", [])}:
+                a, b = _hp_range(main, who), _hp_range(c, who)
+                if a and b and max(a[0], b[0]) <= min(a[1], b[1]):
+                    w.append(f"hp_change ranges of {main['id']} {a} and this control {b} overlap: one roll can't "
+                             "tell the effect from no effect - add a flat bonus/penalty so they separate")
+    return w
+
+
+def needs_ranged_weapon(store, active, c):
+    for sp in [c.get("spell")] + [cs.get("spell") for cs in c.get("casts", []) if cs.get("by", "host") == "host"]:
+        if c.get("caster", "host") != "host" and sp == c.get("spell"):
+            continue
+        f = spell_facts(store, active, sp) if sp else None
+        if f and "RangedWeaponAttack" in (f["roll"] or ""):
+            return True
+    return False
+
+
 def list_cases(store, active, layer, cls=None, level=None):
     out = []
+    every = {c["id"]: c for c in load_cases(layer)}
     for c in load_cases(layer):
         if cls and (c.get("class") or "").lower() != cls.lower():
             continue
         if level is not None and c.get("level") != level:
             continue
         errs = validate(store, active, c)
+        warns = design_warnings(store, active, c, every)
         out.append(f"{c['id']}  L{c.get('level', '?')} {c.get('class', '')}  [{c.get('mode', 'auto')}] {c.get('title', '')}"
-                   + ("" if not errs else "\n    INVALID: " + "; ".join(errs)))
+                   + ("" if not errs else "\n    INVALID: " + "; ".join(errs))
+                   + "".join(f"\n    WARN: {x}" for x in warns))
     return "\n".join(out) or f"no cases (suite folders: {suite_dirs(layer)})"
 
 
@@ -463,6 +507,16 @@ def stage(store, active, layer, case_id):
     if not (st.get("classes") and all(x.get("class") for x in st["classes"]) and st.get("spells")):
         st = host_state()  # class names occasionally resolve a tick late: the retrying path
     notes, blockers = [], []
+    notes += [f"test design: {x}" for x in design_warnings(store, active, c, {x["id"]: x for x in load_cases(layer)})]
+    if needs_ranged_weapon(store, active, c):  # a ranged weapon attack needs one in hand (equipped by hand 3x on 2026-10-02)
+        r_ = lua("local h=BG3T.host() if Osi.GetEquippedItem(h,'Ranged Main Weapon') then return 'has' end "
+                 "Osi.TemplateAddTo('a5d843ab-c3af-4e60-a925-bb2e15828938', h, 1, 0) return 'added'", timeout=10)
+        if r_ == "added":
+            time.sleep(1.0)
+            lua("local h=BG3T.host() local i=Osi.GetItemByTemplateInInventory('a5d843ab-c3af-4e60-a925-bb2e15828938', h) "
+                "if i then Osi.Equip(h,i) end return true", timeout=10)
+            time.sleep(1.0)
+            notes.append("equipped a hand crossbow on the host (the case makes a ranged weapon attack)")
     cl = next((x for x in st["classes"] if not c.get("class") or x["class"] == c["class"]), None)
     if c.get("class") and not cl:
         blockers.append(f"host has no {c['class']} levels")

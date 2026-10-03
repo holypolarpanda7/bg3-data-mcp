@@ -167,6 +167,23 @@ queued request (Ext.System.ServerCastRequest.OsirisCastRequests), so the save is
 2026-10-01: wolf Bash vs the host, prone 5/8 with real Strength saves). Passive rolls (`rolls`) and status-tick
 saves never go through OnPostRoll interrupts.
 
+## Test-design checks
+
+`bg3_test_list` and every staged run report `WARN` / `test design:` notes for cases that run but measure the
+wrong thing (each one cost a rerun while building the Gunslinger and Illrigger suites, 2026-10-02):
+- `status_removed` for a status nothing set up: it must be present before the cast; use `status_absent`.
+- a `casts` step repeating the main `spell`: `casts` run first, so the main spell runs again last.
+- a `<id>` / `<id>-control` pair whose `hp_change` ranges overlap: one roll can't tell effect from no effect -
+  add a flat `DamageBonus`/penalty so the two ranges separate.
+Staging also equips a hand crossbow on the host when the case makes a ranged weapon attack.
+
+Still on you when writing a case:
+- values that scale with a class's level (`LevelMapValue` with a class, `ClassLevel(X)`) are 0/minimum on a host
+  of another class - test those on a real character of that class or expect the minimum;
+- a reaction you test must be listed in `reactions` (the host's are off otherwise);
+- AI attacks miss or roll outside an interrupt's window: give the case enough `ai_rounds`, or check the trigger
+  (an applied status / `interrupt_used`) rather than its downstream effect.
+
 ## How it works
 The harness (`bg3data/lua/harness.lua`) is written as a loose file under `<game>/Data/Public/BG3DataTest/`
 and loaded through the SE console into the global `BG3T`. It re-installs itself after a Lua reset or a
