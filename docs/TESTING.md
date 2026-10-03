@@ -127,6 +127,8 @@ setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", 
          { target = "host", resource = "SpellSlot", level = 1, amount = 0 },  # set a pool's current amount
                                                          # (a tick after the rest: boost-granted pools exist then)
          { target = "A", status = "INTERDICTED", turns = -1, by = "host" }]  # by: the status's cause
+# expect also takes { log = "text" } (or "/regex/"): a line the SE log gained during the case - the check for
+# Lua-driven effects that leave no status (a status alone passed while the Lua half had failed, 2026-10-02)
 expect = [
   { acted_first = true },                                   # first recorded turn was the host's
   { cast = true },                                          # the host cast `spell` (or cast = "OtherSpell")

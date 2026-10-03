@@ -350,7 +350,7 @@ EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_ab
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
                "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used",
-               "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits"}
+               "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits", "log"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -648,7 +648,12 @@ def stage(store, active, layer, case_id):
                 first_turn = turns[0]
                 break
             time.sleep(0.5)
+    try:  # where the SE log stood when the case began: `log` expectations read only what came after
+        log_at = [se.current_log(), os.path.getsize(se.current_log())]
+    except (OSError, TypeError, RuntimeError):
+        log_at = None
     state = {"layer": layer, "case": c["id"], "mode": mode, "combat": combat, "since": since, "before": before, "pre_statuses": pre_statuses,
+             "log_at": log_at,
              "first_turn": first_turn, "staged_at": time.time()}
     _save_state(state)
     if c.get("grant_passive"):  # the case's action is gaining a feature (e.g. a boon's max HP increase)
@@ -954,6 +959,16 @@ def verify(store, active, cleanup=True, wait=2.0):
                     and (x.get("amount") or 0) > 0)
             lo, hi = dc.get("count", [1, 10 ** 6])
             row(lo <= n <= hi, f"{label} damaged {n} times{' by ' + dc['by'] if dc.get('by') else ''}, expected [{lo}, {hi}]")
+        if e.get("log"):  # a log line written during the case (Lua-driven features): substring or /regex/
+            pat = e["log"]
+            text = ""
+            if state.get("log_at"):
+                try:
+                    text = se._read_from(state["log_at"][0], state["log_at"][1])
+                except OSError:
+                    text = ""
+            hit = re.search(pat[1:-1], text) if pat.startswith("/") and pat.endswith("/") else (pat in text)
+            row(bool(hit), f"log line {pat!r} written during the case")
         if e.get("hits"):  # {by = alias, flag = "AttackAdvantage", count = [lo, hi], absent = false}: hits on `target`
             hx = e["hits"]
             src = host if hx.get("by") == "host" else (ent(before, hx["by"]).get("guid") if hx.get("by") else None)
