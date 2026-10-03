@@ -29,14 +29,14 @@ def _client(code, timeout=12):
     return (r["result"] if r.get("ok") else None), r
 
 
-def screen():
+def screen(timeout=12):
     """Names of the top-level UI widgets (SplashScreen, MainMenu, Dialog_box...), or None when SE can't answer."""
     res, _ = _client(FIND + """
 local out = {}
 local c = find(Ext.UI.GetRoot(), "ContentRoot", 0)
 if not c then return out end
 for i = 1, c.VisualChildrenCount do local ok, n = pcall(function() return c:VisualChild(i).Name end) if ok and n and n ~= "" then table.insert(out, n) end end
-return out""")
+return out""", timeout=timeout)
     return res
 
 

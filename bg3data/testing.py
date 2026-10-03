@@ -1753,7 +1753,7 @@ def _unstick_menu(log, relaunched):
     """The game is up but no save is loaded: dismiss the splash, continue from the main menu, and get out of the
     no-mods safe mode (clean quit + relaunch, once) that follows a killed or hung load."""
     from . import deploy, gameui, sources as src
-    ui = gameui.screen()
+    ui = gameui.screen(timeout=4)
     if not ui:
         return None
     if "SplashScreen" in ui:
@@ -1913,21 +1913,26 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
         log.append(f"launched {g['game_exe']} {args}")
     else:
         return "\n".join(log + ["no launcher: set game.launcher / game.game_exe in layers.json"])
+    from . import gameui
     t0 = time.time()
     last_ui, relaunched, hung_since = 0, False, None
     _unstick_menu.splash = 0
-    cleared_at = set()
+    enters = 0
     while time.time() - t0 < timeout:
-        time.sleep(2)
-        if time.time() - t0 > 20:  # a load-time warning blocks the player at once: clear it as soon as it shows (short SE timeout)
-            before = len(log)
-            _clear_dialogs(log, 0, timeout=3, t0=t0)
-            cleared_at.update(log[before:])
+        time.sleep(1)
+        # The load-time warning (GameMsgID [ForceUpdate]) is modal from the moment the save starts loading, but the Script
+        # Extender can't see the UI for most of the load (it shows up in SE only with the HUD, ~60 s in). A posted Enter
+        # needs no visibility and closes it in about a second, so press it until the host exists - unless the main menu
+        # is involved (a safe-mode relaunch, where Enter would press the focused button).
+        if time.time() - t0 > 25 and not any("main menu" in l for l in log):
+            if gameui.press_key():
+                enters += 1
         try:
-            r = se.eval_lua("return Osi.GetHostCharacter() and Osi.GetRegion(Osi.GetHostCharacter()) or ''", "server", timeout=8)
+            r = se.eval_lua("return Osi.GetHostCharacter() and Osi.GetRegion(Osi.GetHostCharacter()) or ''", "server", timeout=2 if enters else 8)
             if r["ok"] and r["result"]:
-                log.append(f"session loaded after {time.time() - t0:.0f}s: host in {r['result']}")
-                _clear_dialogs(log, 6, timeout=3, t0=t0)  # the load-time warning (GameMsgID [ForceUpdate]) shows up with the HUD
+                log.append(f"session loaded after {time.time() - t0:.0f}s: host in {r['result']}"
+                           + (f" ({enters} Enter presses while loading)" if enters else ""))
+                _clear_dialogs(log, 3, timeout=3, t0=t0)  # anything still open, e.g. a box that needs a real answer
                 return "\n".join(log)
         except (RuntimeError, TimeoutError):
             pass
