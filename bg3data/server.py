@@ -32,7 +32,7 @@ MAX_OUTPUT = 24_000  # characters; keeps a single answer from flooding the calle
 # Hot reload: tool modules are re-imported when their source changes, so MCP code edits apply on the next call
 # without a client reconnect. Not reloaded: the stores and connections that hold live state (query, index,
 # sources, se) and this module itself - those still need a reconnect.
-HOT = ("format", "lint", "icons", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse")
+HOT = ("format", "lint", "icons", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex")
 _mtimes = {}
 
 
