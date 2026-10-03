@@ -109,7 +109,8 @@ reactions = ["Fate"]         # your interrupts left ON (name substrings, "*" = a
                              # all on in ai mode. Restored at cleanup.
 clear_between = ["PRONE"]    # optional, with repeat: statuses removed from the target before each cast
 end_turns = 7                # optional (combat): after the cast, end the host's turn N times via the HUD's
-                             # End Turn (Osi.EndTurn doesn't end it), waiting for the host's turn each time
+                             # End Turn (Osi.EndTurn doesn't end it), waiting for a NEW host turn each time
+                             # (summons share your turn; Osi.EndTurn does end a summon's own turn)
 instructions = "..."         # optional: extra step after the cast step
 notes = "..."                # optional: shown at the end of the case
 combat = true                # default: true when any spawn is hostile; "after_setup" starts the fight
@@ -127,6 +128,7 @@ setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", 
          { target = "host", resource = "SpellSlot", level = 1, amount = 0 },  # set a pool's current amount
                                                          # (a tick after the rest: boost-granted pools exist then)
          { target = "A", status = "INTERDICTED", turns = -1, by = "host" }]  # by: the status's cause
+# damage_count counts AttackedBy damage plus damage from status functors (OnApply/OnTick), which raises only a Hit
 # expect also takes { log = "text" } (or "/regex/"): a line the SE log gained during the case - the check for
 # Lua-driven effects that leave no status (a status alone passed while the Lua half had failed, 2026-10-02)
 # expect also takes { summon = { stats = "X", count = [1, 1], ac = 15, max_hp = 50, level = 9,
