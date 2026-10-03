@@ -558,7 +558,12 @@ def stage(store, active, layer, case_id):
     if c.get("subclass") and not any(x.get("subclass") == c["subclass"] for x in st["classes"]):
         blockers.append(f"host lacks subclass {c['subclass']}")
     if c.get("spell") and c.get("caster", "host") == "host":
-        src = {s["id"]: s["source"] for s in st["spells"]}.get(c["spell"])
+        known = {s["id"]: s["source"] for s in st["spells"]}
+        src = known.get(c["spell"])
+        root = str(((store.resolve(c["spell"], active) or {}).get("fields") or {}).get("RootSpellID", ("",))[0])
+        if src is None and root and root in known:  # an upcast variant (X_7) is cast through its known root X
+            src = known[root]
+            notes.append(f"{c['spell']} is an upcast of known {root}")
         granter = None  # a setup status/passive whose UnlockSpell grants the spell (e.g. a feature's unlock status)
         for s in c.get("setup", []):
             name = s.get("status") or s.get("passive")
