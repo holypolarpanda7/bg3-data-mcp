@@ -350,7 +350,8 @@ EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_ab
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
                "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used",
-               "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits", "log"}
+               "amount_change", "max_change", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits", "log",
+               "summon"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
 
@@ -360,7 +361,8 @@ def validate(store, active, c):
     for k in ("id", "title"):
         if not c.get(k):
             errs.append(f"missing `{k}`")
-    aliases = {"host"} | {s.get("as") for s in c.get("spawn", [])}
+    aliases = ({"host"} | {s.get("as") for s in c.get("spawn", [])}
+               | {cs["summon_as"] for cs in c.get("casts", []) if cs.get("summon_as")})
     if c.get("mode") == "ai":
         if not c.get("caster") or c.get("caster") == "host":
             errs.append("mode ai needs `caster` = a spawn alias (the host is player-controlled)")
@@ -667,6 +669,19 @@ def stage(store, active, layer, case_id):
         by = "BG3T.host()" if cs.get("by", "host") == "host" else f"BG3T.spawns[{se._lua_string(cs['by'])}]"
         if tgt == "ground":  # e.g. a Darkness cloud on the host's spot: distance = 0
             lua(f"BG3T.castAt({by}, {se._lua_string(cs['spell'])}, {float(cs.get('distance', 0))}); return true")
+            if cs.get("summon_as"):  # the creature this cast summons becomes a spawn alias (caster/target/by)
+                _wait_casts(since, cs["spell"], 1, float(cs.get("wait", 2)) + 4)
+                g = None
+                for _ in range(10):  # the summon appears a moment after the cast resolves
+                    g = lua(f"return BG3T.adoptSummon({se._lua_string(cs['summon_as'])}, {se._lua_string(cs.get('summon_stats', ''))})")
+                    if g:
+                        break
+                    time.sleep(0.5)
+                notes.append(f"summon_as {cs['summon_as']}: " + (f"adopted {g}" if g else "NO summon appeared"))
+                if g and cs.get("near"):  # next to that spawn (within melee reach)
+                    lua(f"BG3T.placeNear(BG3T.spawns[{se._lua_string(cs['summon_as'])}], BG3T.spawns[{se._lua_string(cs['near'])}], "
+                        f"{float(cs.get('near_distance', 1.2))}); return true")
+                    time.sleep(0.5)
             continue
         tgt = "BG3T.host()" if tgt == "host" else f"BG3T.spawns[{se._lua_string(tgt)}]"
         lua(f"BG3T.cast({by}, {se._lua_string(cs['spell'])}, {tgt}, {'true' if cs.get('real_rolls') else 'false'}); return true")
@@ -884,6 +899,9 @@ def verify(store, active, cleanup=True, wait=2.0):
     after = lua("return BG3T.world()", timeout=30)
     events = lua(f"return BG3T.drain({state['since']})", timeout=30) or []
     before = state["before"]
+    for k, v in after.items():  # aliases that appeared during the case (summon_as): their guid, no baseline
+        if k not in before and isinstance(v, dict) and v.get("guid"):
+            before[k] = {"guid": v["guid"]}
     mode = state["mode"]
     player = mode == "player"
     costs = None if player or not c.get("spell") else _use_costs(c["spell"])
@@ -907,7 +925,14 @@ def verify(store, active, cleanup=True, wait=2.0):
         if "hp_change" in e:
             lo, hi = e["hp_change"]
             d = (a.get("hp") or 0) - (b.get("hp") or 0)
-            row(lo <= d <= hi, f"{label} HP change {d:+d} within [{lo}, {hi}] ({b.get('hp')} -> {a.get('hp')})")
+            crit = not (lo <= d <= hi) and any(x.get("kind") == "Hit" and x.get("who") == guid and "Critical" in (x.get("flags") or [])
+                                               for x in events)
+            row(lo <= d <= hi, f"{label} HP change {d:+d} within [{lo}, {hi}] ({b.get('hp')} -> {a.get('hp')})"
+                + (" - a CRITICAL hit landed (dice doubled): give the target the boost CriticalHit(AttackTarget,Success,Never)"
+                   " in setup, or widen the range" if crit else "")
+                + (" - the attack MISSED (no Hit recorded: a natural 1 misses whatever the bonus) - re-run"
+                   if not (lo <= d <= hi) and d == 0 and any(x.get("kind") == "SpellOnTarget" and x.get("target") == guid for x in events)
+                   and not any(x.get("kind") == "Hit" and x.get("who") == guid for x in events) else ""))
         if "max_hp_change" in e:
             d = (a.get("max_hp") or 0) - (b.get("max_hp") or 0)
             row(d == e["max_hp_change"], f"{label} max HP {b.get('max_hp')} -> {a.get('max_hp')} (change {d:+d}, expected {e['max_hp_change']:+d})")
@@ -959,6 +984,26 @@ def verify(store, active, cleanup=True, wait=2.0):
                     and (x.get("amount") or 0) > 0)
             lo, hi = dc.get("count", [1, 10 ** 6])
             row(lo <= n <= hi, f"{label} damaged {n} times{' by ' + dc['by'] if dc.get('by') else ''}, expected [{lo}, {hi}]")
+        if e.get("summon"):  # {stats = "X" (or template = substring), count = [lo, hi], ac, max_hp, level,
+            #                  status_present = [...], passives = [...], spells = [...]}: creatures the host summoned
+            sx = e["summon"]
+            pre = {x.get("guid") for x in (before.get("_summons") or [])}
+            new = [x for x in (after.get("_summons") or []) if x.get("guid") not in pre
+                   and (not sx.get("stats") or x.get("stats") == sx["stats"])
+                   and (not sx.get("template") or sx["template"] in (x.get("template") or ""))]
+            what = sx.get("stats") or sx.get("template") or "a creature"
+            lo, hi = sx.get("count", [1, 1])
+            row(lo <= len(new) <= hi, f"summoned {len(new)} x {what}, expected [{lo}, {hi}]"
+                + ("" if new or not after.get("_summons") else " (summons now: " + ", ".join(
+                    str(x.get("stats")) for x in after["_summons"]) + ")"))
+            for x in new[:1]:
+                for k in ("ac", "max_hp", "level"):
+                    if k in sx:
+                        row(x.get(k) == sx[k], f"{what} {k} {x.get(k)} == {sx[k]}")
+                for k in ("status_present", "passives", "spells"):
+                    have = x.get("statuses" if k == "status_present" else k) or []
+                    for v in sx.get(k, []):
+                        row(v in have, f"{what} has {v}")
         if e.get("log"):  # a log line written during the case (Lua-driven features): substring or /regex/
             pat = e["log"]
             text = ""
@@ -1114,7 +1159,8 @@ def verify(store, active, cleanup=True, wait=2.0):
         rep = lua("return BG3T.cleanup()")
         # back on your feet: a run that downed the host (e.g. a Last Stand test) ends with them up at full HP
         lua("Osi.SetHitpointsPercentage(BG3T.host(), 100) return true")
-        lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses, {rep.get('passives', 0)} passives, {rep.get('cooldowns', 0)} cooldowns removed")
+        lines.append(f"  cleanup: {rep.get('spawns', 0)} spawns, {rep.get('grants', 0)} boosts, {rep.get('statuses', 0)} statuses, {rep.get('passives', 0)} passives, {rep.get('cooldowns', 0)} cooldowns"
+                     + (f", {rep['summons']} summons" if rep.get('summons') else "") + " removed")
         try:
             os.remove(STATE_FILE)
         except OSError:
@@ -1643,7 +1689,7 @@ def newest_save():
     return os.path.basename(s), sources.iso(os.path.getmtime(s))
 
 
-_RESTART_LOCK = __import__("threading").Lock()
+_RESTART_LOCK = globals().get("_RESTART_LOCK") or __import__("threading").Lock()  # kept across hot reloads
 
 
 def restart(deploy_layer=None, launch=True, timeout=300):

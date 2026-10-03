@@ -162,6 +162,8 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
         d.c["real_rolls"] = True
         kind = "RangedSpellAttack" if "SpellAttack" in roll and "Ranged" in roll else "MeleeSpellAttack" if "SpellAttack" in roll else "Attack"
         d.setup.append({"target": "host", "boost": f"RollBonus({kind},30)"})
+        if target != "host":  # a critical hit doubles the dice and breaks exact damage ranges (seen 2026-10-03)
+            d.setup.append({"target": target, "boost": "CriticalHit(AttackTarget,Success,Never)"})
     # requirements like "not HasActionResource('X'...)" need X empty first
     empty = re.findall(r"not\s+HasActionResource\('(\w+)'", f.get("RequirementConditions", ""))
     costs = _costs(f.get("UseCosts", ""))

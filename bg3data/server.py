@@ -1,6 +1,8 @@
 """MCP server: layered BG3 game-data lookup (base game + additive mod layers)."""
 import functools
+import importlib
 import json
+import os
 import sys
 import threading
 import time
@@ -27,12 +29,53 @@ _last_check = 0.0
 MAX_OUTPUT = 24_000  # characters; keeps a single answer from flooding the caller's context
 
 
+# Hot reload: tool modules are re-imported when their source changes, so MCP code edits apply on the next call
+# without a client reconnect. Not reloaded: the stores and connections that hold live state (query, index,
+# sources, se) and this module itself - those still need a reconnect.
+HOT = ("format", "lint", "icons", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse")
+_mtimes = {}
+
+
+def _loaded_mtime(mod):
+    """Source mtime recorded in the module's .pyc header (what the loaded code was compiled from), or None."""
+    try:
+        with open(mod.__cached__, "rb") as f:
+            head = f.read(16)
+        return None if int.from_bytes(head[4:8], "little") & 1 else int.from_bytes(head[8:12], "little")
+    except (OSError, AttributeError, TypeError):
+        return None
+
+
+def _hot_reload():
+    pkg = __package__ or "bg3data"
+    for name in HOT:
+        mod = sys.modules.get(f"{pkg}.{name}")
+        path = getattr(mod, "__file__", None)
+        if not path:
+            continue
+        try:
+            m = os.path.getmtime(path)
+        except OSError:
+            continue
+        if name not in _mtimes:  # first sight: compare with the source mtime the loaded .pyc was compiled from
+            loaded = _loaded_mtime(mod)
+            _mtimes[name] = m if loaded is None or loaded == int(m) & 0xFFFFFFFF else -1.0
+        if _mtimes[name] != m:
+            try:
+                importlib.reload(mod)
+                _log(f"hot-reloaded {name}")
+            except Exception:
+                _log(f"hot reload of {name} failed:\n" + traceback.format_exc())
+            _mtimes[name] = m
+
+
 def guarded(fn):
     """Serialise, cap output, and turn exceptions into a readable message instead of a stack trace."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
             with _lock:
+                _hot_reload()
                 out = fn(*args, **kwargs)
         except (ValueError, sources.ConfigError, FileNotFoundError) as e:
             return f"error: {e}"
@@ -337,6 +380,8 @@ def se_guarded(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
+            with _lock:  # live-game tools hot-reload too (their calls aren't serialised beyond this)
+                _hot_reload()
             out = fn(*args, **kwargs)
         except (RuntimeError, TimeoutError, ValueError, sources.ConfigError) as e:
             return f"error: {e}"
@@ -669,7 +714,8 @@ def bg3_lint_stats(layer: str, layers: list[str] | None = None, limit: int = 200
     """Static stats lint for a mod layer, before the game ever loads it: enum values (Cooldown,
     StatsFunctorContext, RemoveEvents, SpellFlags, TickType...) and functor/condition/boost names that no
     other layer uses (the engine silently drops what it doesn't know), plus missing referenced entries
-    (statuses, unlocked spells/interrupts, using, containers) and unknown action resources."""
+    (statuses, unlocked spells/interrupts, using, containers), unknown action resources, and root templates
+    (the layer's templates' parents/Stats/SkillList, and templates its stats Summon/Spawn)."""
     from . import lint
     s = store()
     return lint.lint_stats(s, s.active(layers), layer, _limit(limit, 200, 2000))

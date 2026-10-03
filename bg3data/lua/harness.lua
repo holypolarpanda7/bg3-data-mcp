@@ -132,10 +132,60 @@ function T.snapshot(g, full)
     return s
 end
 
--- Snapshot the host plus every spawn, keyed by alias.
+-- Creatures `owner` has summoned (IsSummon.Summoner), with what a stat-block check needs.
+function T.summons(owner)
+    local oe, out = Ext.Entity.Get(uuid(owner)), {}
+    for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("IsSummon")) do
+        local ok, mine = pcall(function() return e.IsSummon.Summoner == oe end)
+        if ok and mine then
+            local g = e.Uuid.EntityUuid
+            local s = { guid = g, stats = e.Data and e.Data.StatsId, template = Osi.GetTemplate(g), hp = Osi.GetHitpoints(g),
+                        max_hp = Osi.GetMaxHitpoints(g), dead = Osi.IsDead(g) == 1, statuses = T.statuses(g),
+                        passives = T.passives(g), spells = {} }
+            for _, sp in ipairs(T.spells(g)) do s.spells[#s.spells + 1] = sp.id end
+            pcall(function() s.ac = e.Resistances.AC end)
+            pcall(function() s.level = e.EocLevel.Level end)
+            out[#out + 1] = s
+        end
+    end
+    return out
+end
+
+-- Give the newest summon this case created (optionally of Stats `stats`) a spawn alias, so casts/expectations can
+-- name it; it is then removed at cleanup like a spawn.
+function T.adoptSummon(alias, stats)
+    local best
+    for _, x in ipairs(T.summons(T.host())) do
+        if not (T.preSummons or {})[x.guid] and (not stats or stats == "" or x.stats == stats) then best = x.guid end
+    end
+    if best then T.spawns[alias] = best end
+    return best
+end
+
+-- Put `g` d metres from `target`, on the side facing the host (summon_as + near: ground casts go where the caster
+-- faces while spawns are offset on world X, so a summon could land out of reach of the spawn it should hit).
+function T.placeNear(g, target, d)
+    local tx, ty, tz = Osi.GetPosition(target)
+    local hx, _, hz = Osi.GetPosition(T.host())
+    local dx, dz = hx - tx, hz - tz
+    local len = math.sqrt(dx * dx + dz * dz)
+    if len < 0.01 then dx, dz, len = 1, 0, 1 end
+    d = d or 1.2
+    Osi.TeleportToPosition(g, tx + dx / len * d, ty, tz + dz / len * d, "", 0, 0, 0, 0, 1)
+    return true
+end
+
+-- Snapshot the host plus every spawn, keyed by alias; `_summons` = the host's summons. The first snapshot of a
+-- case remembers which summons already existed, so cleanup only removes the ones the case created.
 function T.world()
     local w = { host = T.snapshot(T.host()) }
     for alias, g in pairs(T.spawns) do w[alias] = T.snapshot(g) end
+    local ok, sm = pcall(T.summons, T.host())
+    w._summons = ok and sm or {}
+    if not T.preSummons then
+        T.preSummons = {}
+        for _, x in ipairs(w._summons) do T.preSummons[x.guid] = true end
+    end
     return w
 end
 
@@ -335,6 +385,15 @@ function T.cleanup()
         report.statuses = report.statuses + 1
     end
     T.spawns, T.grants, T.applied = {}, {}, {}
+    local ok, sm = pcall(T.summons, T.host())
+    for _, x in ipairs(ok and sm or {}) do
+        if not (T.preSummons or {})[x.guid] then  -- RequestDelete alone leaves a summon standing (2026-10-02)
+            if Osi.IsDead(x.guid) == 0 then pcall(Osi.Die, x.guid, 0, NULL, 0, 1) end
+            pcall(Osi.RequestDelete, x.guid)
+            report.summons = (report.summons or 0) + 1
+        end
+    end
+    T.preSummons = nil
     if T.restoreReactions then T.restoreReactions() end
     T.recording = false
     T.safety.tripped = false

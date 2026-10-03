@@ -129,6 +129,13 @@ setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", 
          { target = "A", status = "INTERDICTED", turns = -1, by = "host" }]  # by: the status's cause
 # expect also takes { log = "text" } (or "/regex/"): a line the SE log gained during the case - the check for
 # Lua-driven effects that leave no status (a status alone passed while the Lua half had failed, 2026-10-02)
+# expect also takes { summon = { stats = "X", count = [1, 1], ac = 15, max_hp = 50, level = 9,
+#   status_present = [...], passives = [...], spells = [...] } }: creatures the host summoned during the case
+#   (IsSummon.Summoner), matched by Stats entry (or `template` substring) and checked against the stat block.
+#   Summons the case created are removed at cleanup; ones that existed before are left alone.
+# casts entries take summon_as = "S" (+ summon_stats = "X"): the creature that cast summons becomes alias S, usable
+#   as caster/target/by; near = "A" (near_distance = 1.2) puts it next to spawn A - ground casts go where the caster
+#   faces, spawns are offset on world X, so without it a summon can land out of reach.
 expect = [
   { acted_first = true },                                   # first recorded turn was the host's
   { cast = true },                                          # the host cast `spell` (or cast = "OtherSpell")

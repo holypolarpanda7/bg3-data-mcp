@@ -223,13 +223,36 @@ def lint_stats(store, active, layer, limit=200):
             continue  # immediate casts skip the animation (verified in game: Shout_SpellMastery resolves)
         if not fl.get("SpellAnimation", ("",))[0]:
             add("SPELL", name, file, "no SpellAnimation (own or inherited): a normal cast never resolves")
+    # root templates: what the layer's own templates reference, and templates its stats summon (2026-10-02: a
+    # template skill that doesn't exist is silently missing from the creature's hotbar)
+    import json as _json
+    tw, tp = store._where(active)
+    known_tpl = {r[0] for r in store.db.execute(f"SELECT mapkey FROM templates WHERE {tw}", tp)}
+    for mk, tname, parent, src, attrs in store.db.execute(
+            "SELECT mapkey, name, parent, source, attrs FROM templates WHERE layer=?", (layer,)).fetchall():
+        a = _json.loads(attrs or "{}")
+        label = tname or mk
+        if parent and parent not in known_tpl:
+            add("TPL", label, src, f"ParentTemplateId '{parent}' doesn't exist")
+        if a.get("Stats") and a["Stats"] not in names:
+            add("TPL", label, src, f"Stats '{a['Stats']}' doesn't exist")
+        for sp in [x for x in (a.get("_SkillList") or "").split(";") if x]:
+            if sp not in names:
+                add("TPL", label, src, f"SkillList spell '{sp}' doesn't exist")
+        for st in [x for x in (a.get("_StatusList") or "").split(";") if x]:
+            if st not in names:
+                add("TPL", label, src, f"StatusList status '{st}' doesn't exist")
+    for name, typ, file, using, data in rows:
+        for g in re.findall(r"\b(?:Summon|SpawnInInventory|Spawn)\(\s*([0-9a-f]{8}-[0-9a-f-]{27})", data or ""):
+            if g not in known_tpl:
+                add("REF", name, file, f"template '{g}' (Summon/Spawn) doesn't exist")
     by_kind = {}
     for kind, *_ in issues:
         by_kind[kind] = by_kind.get(kind, 0) + 1
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TPL = root template reference that doesn't exist"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")

@@ -2,7 +2,8 @@
 
   bg3-data layers | refresh [layer|all] | entry NAME [--layers a,b] | diff NAME LAYER |
            search TEXT [--type T] [--field F] | refs TOKEN | loca Q | template KEY |
-           progression KEY [--level N] | visuals NAME | similar [--damage D] [--school S] [--keyword K]
+           progression KEY [--level N] | visuals NAME | similar [--damage D] [--school S] [--keyword K] |
+           convert IN OUT  (LSX <-> LSF/LSJ via Divine; formats from the extensions)
 """
 import argparse
 import sys
@@ -26,6 +27,13 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=25)
     a = ap.parse_args(argv)
     log = lambda m: print(m, file=sys.stderr)
+    if a.cmd == "convert":
+        from . import platform
+        src, dst = a.args[0], a.args[1]
+        ext = lambda f: f.rsplit(".", 1)[-1].lower()
+        print(sources.divine(sources.load_config(), "-a", "convert-resource", "-s", platform.to_win(src),
+                             "-d", platform.to_win(dst), "-i", ext(src), "-o", ext(dst)).strip())
+        return
     if a.cmd == "refresh":
         force = None if not a.args else (a.args[0] if a.args[0] == "all" else [a.args[0]])
         index.refresh(force=force, log=log)

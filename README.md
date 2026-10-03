@@ -151,6 +151,10 @@ serialised. Functor fields (`SpellSuccess`...) are exposed by SE as parsed userd
 as text. SE reports `ComboCategory` as empty.
 
 ## Hardening
+
+- **Hot reload**: tool modules (testing, drafting, lint, icons, deploy, format, parse, ...) are re-imported when their
+  source changes, so MCP code edits apply on the next tool call. `server.py`, `query`, `index`, `sources` and `se`
+  hold live state and still need a client reconnect.
 - One SQLite connection shared by MCP worker threads, serialised with a lock (WAL mode).
 - Every tool catches errors and returns a readable message; free-text inputs are capped at 500 characters
   (SQLite's LIKE limit), `limit` is clamped to 1-500, and output is capped at 24,000 characters.
