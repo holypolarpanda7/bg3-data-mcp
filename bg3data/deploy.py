@@ -128,6 +128,17 @@ def enable(layer):
     if missing:
         lines.append(f"WARNING: dependencies not enabled in modsettings.lsx: {', '.join(missing)}")
     if info["UUID"] in present:
+        def rename(mm):  # a renamed mod keeps its UUID: refresh the entry's Folder / Name
+            b = mm.group(0)
+            if f'value="{info["UUID"]}"' not in b:
+                return b
+            b = re.sub(r'(id="Folder" type="LSString" value=")[^"]*"', lambda x: x.group(1) + info["Folder"] + '"', b)
+            return re.sub(r'(id="Name" type="LSString" value=")[^"]*"', lambda x: x.group(1) + info["Name"] + '"', b)
+        new = re.sub(r'<node id="ModuleShortDesc">.*?</node>', rename, text, flags=re.S)
+        if new != text:
+            shutil.copy2(ms, ms + time.strftime(".%Y%m%d_%H%M%S.bak"))
+            open(ms, "w", encoding="utf-8", newline="").write(new)
+            lines.append(f"updated the modsettings.lsx entry to Folder {info['Folder']} / Name {info['Name']} (renamed mod)")
         return lines + [f"{info['Name']} is enabled in {os.path.basename(os.path.dirname(ms))}/modsettings.lsx"]
     shutil.copy2(ms, ms + time.strftime(".%Y%m%d_%H%M%S.bak"))
     node = ("                        <node id=\"ModuleShortDesc\">\n"
@@ -161,6 +172,11 @@ def deploy(layer, do_enable=True):
     if os.path.exists(target):
         backup = os.path.join(os.path.dirname(pak), time.strftime("previous_%Y%m%d_%H%M%S.pak", time.localtime(os.path.getmtime(target))))
         shutil.copy2(target, backup)
+    for other in glob.glob(os.path.join(mods_dir, f"*{info['UUID']}*.pak")):  # the same mod under an old Folder
+        if os.path.normcase(other) != os.path.normcase(target):                  # name (renamed mod): two paks with
+            moved = os.path.join(os.path.dirname(pak), "renamed_" + os.path.basename(other))  # one UUID would clash
+            shutil.move(other, moved)
+            lines.append(f"moved the old-name pak {os.path.basename(other)} out of the Mods folder -> {moved}")
     shutil.copy2(pak, target)
     lines.append(f"deployed {target}")
     for mgr in platform.mod_managers(cfg):
