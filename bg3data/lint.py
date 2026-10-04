@@ -150,6 +150,8 @@ def lint_stats(store, active, layer, limit=200):
     def add(kind, name, file, msg):
         issues.append((kind, name, os.path.basename(file or ""), msg))
 
+    loca_handles = {h for (h,) in store.db.execute("SELECT handle FROM loca")}
+
     # KHN condition functions declared with NO parameters (IsDamageTypeCold() reads the event's damage): Lua silently ignores an
     # argument, so IsDamageTypeCold(context.Target) can't test the target - the author probably meant something else (2026-10-04)
     zero_param = {n for n, at in store.db.execute("SELECT name, attrs FROM staticdata WHERE kind='KhnFunction'")
@@ -165,6 +167,12 @@ def lint_stats(store, active, layer, limit=200):
             if len(kids) > 42 or len(cs) > 1900:  # 44 spells / ~2080 chars hung the game at LoadModule (2026-10-02)
                 add("SIZE", name, file, f"ContainerSpells has {len(kids)} spells / {len(cs)} chars: 44 / ~2080 hung the game "
                                         "at load (43 / 2030 loaded; shipped max 42 / ~1000) - split the container")
+        # name/description handles with no text in any layer: blank names and tooltips in game (ten Apotheosis 13+ features pointed
+        # at placeholder handles, e.g. hg5h6i7j8..., while their written text sat under other handles; 2026-10-04)
+        for fld in ("DisplayName", "Description"):
+            hv = f.get(fld)
+            if isinstance(hv, str) and hv.startswith("h") and hv.split(";")[0] not in loca_handles:
+                add("TEXT", name, file, f"{fld} handle '{hv.split(';')[0]}' has no text in any layer - blank in game")
         # an explicit TARGET in a context passive's StatsFunctors doesn't reach the event's target (Frozen Haunt's
         # ApplyStatus(TARGET,CHILLED,..) never landed; ApplyStatus(CHILLED,..) does - verified in game 2026-10-04). None of the
         # ~400 base/dnd55e OnDamage/OnAttack/OnDamaged/OnCast passives use it.
@@ -281,7 +289,7 @@ def lint_stats(store, active, layer, limit=200):
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TPL = root template reference that doesn't exist"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TEXT = name/description handle with no text; TPL = root template reference that doesn't exist"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")
