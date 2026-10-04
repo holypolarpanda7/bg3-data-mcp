@@ -1422,6 +1422,62 @@ def run(store, active, layer, case_id, wait=4.0):
     return out
 
 
+def spell_handle(store, active, spell):
+    """A spell's DisplayName handle ("hsp...", without ";version"), as the level-up screen's view model names it."""
+    r = store.resolve(spell, active)
+    v = ((r or {}).get("fields", {}).get("DisplayName") or ("",))[0]
+    return v.split(";")[0] if v else None
+
+
+def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
+    """Level the host through a build's plan with the automatic level-up driver - its subclass and the spells its tests need -
+    validating every level (level +1, subclass, wanted spells, level_check) and running that level's automated tests. Starts at
+    the host's current level (load the build's start save first). Stops at the first failure. Returns the report text."""
+    from . import gameui
+    b = find_build(layer, build_id)
+    lo, hi = b["levels"]
+    hi = min(hi, to_level or hi)
+    ch = {}
+    plan(store, active, layer, build_id, write=False, choices=ch)
+    lv = gameui.host_level()
+    if lv is None:
+        return "no host level (is a game loaded?)"
+    if lv < lo - 1:
+        return f"host is level {lv}; build {build_id} starts at level {lo} - load its start save first"
+    cases_by_level = {}
+    for c in assign_cases(load_cases(layer), load_builds(layer)).get(build_id, []):
+        cases_by_level.setdefault(c.get("level"), []).append(c)
+    out = [f"build {build_id}: level {lv} -> {hi}"]
+    t_all = time.time()
+    for L in range(lv + 1, hi + 1):
+        g = grant_levels(store, active, 1)
+        if not g.get("granted") and g.get("level", 0) >= L:
+            out.append(f"L{L}: already reached")
+            continue
+        time.sleep(3)
+        want = ch.get(L, {})
+        spells = {sp: spell_handle(store, active, sp) for sp in want.get("spells", [])}
+        r = gameui.levelup_auto(subclass=want.get("subclass") if b.get("subclass") else None, spells=spells or None)
+        if not r.get("ok"):
+            out.append(f"L{L}: LEVEL-UP FAILED - {r.get('error')} | {r.get('log')}")
+            break
+        chk = level_check(store, active)
+        bad = [l.strip() for l in chk.splitlines() if l.strip().startswith(("FAIL", "WARN"))]
+        line = f"L{L}: ok {r.get('total_s')}s, {chk.splitlines()[0]}"
+        if want:
+            line += " | " + ", ".join(x for x in r["log"] if x.startswith(("subclass", "wanted")))
+        out.append(line)
+        out += [f"    {x}" for x in bad]
+        if any(x.startswith("FAIL") for x in bad):
+            break
+        if any(c.get("mode", "auto") != "player" for c in cases_by_level.get(L, [])):
+            rep = run_level(store, active, layer, None, L, wait, build_id)
+            out.append("    tests: " + rep.splitlines()[0])
+            out += [f"      {x}" for x in rep.splitlines()[1:] if x.strip() and ("FAIL" in x or "NOT RUN" in x or "ERROR" in x)]
+    out.append(f"done in {time.time() - t_all:.0f}s")
+    return "\n".join(out)
+
+
 def run_level(store, active, layer, cls, level, wait=4.0, build=None):
     if build:
         b = find_build(layer, build)
@@ -1572,8 +1628,9 @@ def _nodes(store, active, table_name, level):
     return [n for n in store.progression(table_name, active, level) if str(n[4].get("IsMulticlass", "")).lower() != "true"]
 
 
-def plan(store, active, layer, build_id, write=True, _picked_only=False):
-    """Exact level-up choices per level for a build, driven by the tests assigned to it."""
+def plan(store, active, layer, build_id, write=True, _picked_only=False, choices=None):
+    """Exact level-up choices per level for a build, driven by the tests assigned to it. choices: a dict to fill with the
+    machine-readable part, {level: {"subclass": id, "spells": [ids the tests need]}} (fillers are left to the driver)."""
     b = find_build(layer, build_id)
     cls, sub = b["class"], b.get("subclass")
     lo, hi = b["levels"]
@@ -1612,6 +1669,8 @@ def plan(store, active, layer, build_id, write=True, _picked_only=False):
                         f"({', '.join(sorted({n[3] for n in nodes if n[1] == cls}))}); the level-up screen may ask twice")
         for lvl, pname, table, src, a in nodes:
             if a.get("_SubClasses") and L >= lo:
+                if choices is not None and sub:
+                    choices.setdefault(L, {})["subclass"] = sub
                 ids = [x for x in a["_SubClasses"].split(";") if x]
                 sub_uuid_names = _class_names(ids, store, active)
                 disp = next((v[1] for v in sub_uuid_names.values() if v[0] == sub), sub) if sub else None
@@ -1647,6 +1706,8 @@ def plan(store, active, layer, build_id, write=True, _picked_only=False):
                     filler = [x for x in sorted(pool, key=lambda x: lvl_names[x]) if x not in req and x not in later and castable(x)][: n - len(req)]
                     for x in req + filler:
                         picked[x] = L
+                    if choices is not None and req and L >= lo:
+                        choices.setdefault(L, {}).setdefault("spells", []).extend(req)
                     items = [f"**{lvl_names[x]}** (tested at L{need[x]})" for x in req] + [f"{lvl_names[x]} (filler)" for x in filler]
                     what = "cantrips" if spell_lvl == "0" else f"level {spell_lvl} spells"
                     extra = f", {args[3]}" if len(args) > 3 and args[3] else ""

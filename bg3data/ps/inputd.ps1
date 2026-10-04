@@ -9,6 +9,9 @@
 #   rgb FX FY FW FH             mean R G B of a region (fractions of the client area)
 #   redrows FX FY FW FH         client height, then the y (client px) of red "!" markers inside that strip, comma separated
 #   tiles FX FY FW FH           icon-like blobs (bright, 24-70 px squares) inside a region: "ok H x:y,x:y,..." (client px)
+#   wheel FX FY NOTCHES         mouse wheel at a point (fractions of the client area); negative = scroll down
+#   drag X1 Y1 X2 Y2            left-button drag between two client pixels (smooth, ~0.5 s)
+#   allrows FX FY FW FH         like redrows, but every row's ring (done rows are white/grey)
 #   ping
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -120,8 +123,8 @@ while ($true) {
                       $sm = New-Object System.Drawing.Bitmap $bmp, 4, 4; $cr = 0; $cg = 0; $cb = 0
                       for ($y = 0; $y -lt 4; $y++) { for ($x = 0; $x -lt 4; $x++) { $c = $sm.GetPixel($x, $y); $cr += $c.R; $cg += $c.G; $cb += $c.B } }
                       $g.Dispose(); $bmp.Dispose(); $sm.Dispose(); $r = "ok " + [int]($cr / 16) + " " + [int]($cg / 16) + " " + [int]($cb / 16) }
-            "redrows" { # redrows FX FY FW FH: a strip given in fractions of the client area; replies "ok H y,y,..." (client px)
-                      $h = Get-Game; $s = Client-Size
+            { $_ -in "redrows", "allrows" } { # strip in fractions; replies "ok H y,y,..." (client px); allrows also counts white/grey rings
+                      $all = ($a[0] -eq "allrows"); $h = Get-Game; $s = Client-Size
                       $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
                       $x0 = [int]($s[0] * [double]$a[1]); $y0 = [int]($s[1] * [double]$a[2])
                       $w = [Math]::Max(4, [int]($s[0] * [double]$a[3])); $hh = [Math]::Max(4, [int]($s[1] * [double]$a[4]))
@@ -131,7 +134,8 @@ while ($true) {
                       $minh = [Math]::Max(2, [int]($s[1] / 270))
                       $rows = @(); $in = $false; $start = 0
                       for ($y = 0; $y -le $hh; $y++) { $hit = $false
-                        if ($y -lt $hh) { for ($x = 0; $x -lt $w; $x++) { $c = $bmp.GetPixel($x, $y); if ($c.R -gt 150 -and $c.G -lt 90 -and $c.B -lt 100) { $hit = $true; break } } }
+                        if ($y -lt $hh) { for ($x = 0; $x -lt $w; $x++) { $c = $bmp.GetPixel($x, $y)
+                          if (($c.R -gt 150 -and $c.G -lt 90 -and $c.B -lt 100) -or ($all -and $c.R -gt 150 -and $c.G -gt 140 -and $c.B -gt 110)) { $hit = $true; break } } }
                         if ($hit) { if (-not $in) { $in = $true; $start = $y } } elseif ($in) { $in = $false; if ($y - $start -ge $minh) { $rows += [int]($y0 + ($start + $y) / 2) } } }
                       $g.Dispose(); $bmp.Dispose(); $r = "ok " + $s[1] + " " + ($rows -join ",") }
             "tiles" { $h = Get-Game; $s = Client-Size
@@ -160,6 +164,24 @@ while ($true) {
                         if ($bw -ge $minc -and $bh -ge $minc -and $bw -le $maxc -and $bh -le $maxc -and $n -ge 0.4 * $bw * $bh) {
                           $out += ("" + [int]($x0 + ($lx + $hx + 1) * $cs / 2) + ":" + [int]($y0 + ($ly + $hy + 1) * $cs / 2)) } } }
                       $g.Dispose(); $bmp.Dispose(); $sm.Dispose(); $r = "ok " + $s[1] + " " + ($out -join ",") }
+            "wheel" { Set-Focus; $s = Client-Size; $hw = Get-Game
+                      $pt = New-Object ID+PT; $pt.X = [int]($s[0] * [double]$a[1]); $pt.Y = [int]($s[1] * [double]$a[2])
+                      [ID]::ClientToScreen($hw, [ref]$pt) | Out-Null
+                      [ID]::SetCursorPos($pt.X + 4, $pt.Y + 3) | Out-Null; Start-Sleep -Milliseconds 25
+                      [ID]::SetCursorPos($pt.X, $pt.Y) | Out-Null; Start-Sleep -Milliseconds 40
+                      $n = [int]$a[3]; $step = if ($n -lt 0) { -120 } else { 120 }
+                      for ($i = 0; $i -lt [Math]::Abs($n); $i++) {
+                        $in = New-Object ID+INPUT[] 1; $in[0].type = 0; $in[0].u.mi.dwFlags = 0x0800; $in[0].u.mi.data = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$step), 0)
+                        [ID]::SendInput(1, $in, [System.Runtime.InteropServices.Marshal]::SizeOf([type][ID+INPUT])) | Out-Null; Start-Sleep -Milliseconds 60 }
+                      $r = "ok" }
+            "drag"  { Set-Focus; $hw = Get-Game
+                      $p1 = New-Object ID+PT; $p1.X = [int]$a[1]; $p1.Y = [int]$a[2]; [ID]::ClientToScreen($hw, [ref]$p1) | Out-Null
+                      $p2 = New-Object ID+PT; $p2.X = [int]$a[3]; $p2.Y = [int]$a[4]; [ID]::ClientToScreen($hw, [ref]$p2) | Out-Null
+                      [ID]::SetCursorPos($p1.X + 4, $p1.Y + 3) | Out-Null; Start-Sleep -Milliseconds 30
+                      [ID]::SetCursorPos($p1.X, $p1.Y) | Out-Null; Start-Sleep -Milliseconds 60
+                      [ID]::Btn(0x0002); Start-Sleep -Milliseconds 80
+                      for ($i = 1; $i -le 20; $i++) { [ID]::SetCursorPos([int]($p1.X + ($p2.X - $p1.X) * $i / 20), [int]($p1.Y + ($p2.Y - $p1.Y) * $i / 20)) | Out-Null; Start-Sleep -Milliseconds 25 }
+                      Start-Sleep -Milliseconds 80; [ID]::Btn(0x0004); $r = "ok" }
             default { $r = "err unknown command" }
         }
     } catch { $r = "err " + $_.Exception.Message }

@@ -710,6 +710,19 @@ def bg3_test_run_level(layer: str, level: int, build: str | None = None, class_n
 
 
 @mcp.tool()
+@se_guarded
+def bg3_test_build(layer: str, build: str, to_level: int | None = None, wait: float = 4.0, layers: list[str] | None = None) -> str:
+    """Run a test build ([[build]] in the suite TOML) hands-free from the host's current level: every level is granted and taken with
+    the automatic level-up driver using the build's plan (bg3_test_plan) - its subclass and the spells its tests need, learned
+    through the level-up screen so they're class-sourced - then validated (level +1, subclass, wanted spells, level_check) and that
+    level's automated tests are run. Load the build's start save first (bg3_load_save). to_level stops early (~20-25 s per level
+    plus tests). Stops at the first failure."""
+    from . import testing
+    s, active = _testing_store(layers)
+    return testing.run_build(s, active, layer, build, to_level, wait)
+
+
+@mcp.tool()
 @guarded
 def bg3_lint_stats(layer: str, layers: list[str] | None = None, limit: int = 200) -> str:
     """Static stats lint for a mod layer, before the game ever loads it: enum values (Cooldown,

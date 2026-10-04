@@ -300,6 +300,19 @@ def test_auto():
     check("auto: no host level -> error before anything is clicked", not r["ok"] and "no host level" in r["error"], r)
 
 
+def test_grid_math():
+    # live 2026-10-03: 181 spells, Mind Blank at #174, Antimagic Field at #165; scrolled to the bottom the last row sits at y ~904
+    c = gameui._icon_candidates("grid", 165, 181)
+    check("a spell below the visible rows needs the panel scrolled, anchored on the last row", c and c[0] == ("scroll", 508, 816), c)
+    c = gameui._icon_candidates("grid", 18, 181)
+    check("a spell in the top rows is clicked unscrolled", c == [("", 370, 564)], c)
+    c = gameui._icon_candidates("grid", 165 - 2, 181 - 2)
+    check("selected spells leave the grid: two picks before #165 move it back two places", c and c[0] == ("scroll", 416, 816), c)
+    with Patch(_stable_tiles=lambda tries=4: [(480, 498), (458, 584), (502, 584)]):
+        c = gameui._icon_candidates(None, 2, 2)
+    check("an unmapped layout: the available icons are the last `count` in reading order", c == [("", 502, 584)], c)
+
+
 def test_helper_restart():
     import os
     d = gameui._InputDaemon()
@@ -327,6 +340,7 @@ if __name__ == "__main__":
     test_stable_rows()
     test_enter_only_when_dark()
     test_auto()
+    test_grid_math()
     test_helper_restart()
     if "--live" in sys.argv:
         live()

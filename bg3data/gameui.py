@@ -381,6 +381,21 @@ def _merge_rows(ys, gap=30):
     return [int(sum(g) / len(g)) for g in out]
 
 
+def all_rows():
+    """Reference-pixel y of every checklist row (done or pending), or None."""
+    x, y, w, h = MARKER_STRIP
+    ok, r = _fast("allrows %.5f %.5f %.5f %.5f" % (x / REF_W, y / REF_H, w / REF_W, h / REF_H), 8)
+    if not ok or not r.startswith("ok"):
+        return None
+    parts = r[2:].split()
+    try:
+        height = int(parts[0])
+        ys = [int(v) * REF_H / height for v in (parts[1].split(",") if len(parts) > 1 else [])]
+    except (IndexError, ValueError, ZeroDivisionError):
+        return None
+    return _merge_rows(ys)
+
+
 def pending_rows():
     """Reference-pixel y of every checklist row still showing the red "!" marker (top to bottom); None if unreadable."""
     x, y, w, h = MARKER_STRIP
@@ -421,24 +436,36 @@ def _row_pending(y):
 
 def _picker_kind():
     """Which icon picker the open page shows ("ritual", "grid", "savant"), or None for a page without icons (feat list, subclass...).
-    A band reads ~20 on the dark panel and 45+ across icon art; the brightest band above the threshold wins."""
-    best, best_lum = None, 40
-    for kind, (x, y, w, h) in ICON_PROBES.items():
+    Bands are checked in a fixed precedence - ritual, grid, savant - and the first lit one wins: a long spell grid also lights the
+    savant band further down (its later rows), but no grid lights the ritual band and no savant page lights the grid band."""
+    for kind in ("ritual", "grid", "savant"):
+        x, y, w, h = ICON_PROBES[kind]
         ok, r = _fast("lum %.5f %.5f %.5f %.5f" % (x / REF_W, y / REF_H, w / REF_W, h / REF_H), 5)
         try:
-            v = int(r.split()[1]) if ok else 0
+            if ok and int(r.split()[1]) >= 40:
+                return kind
         except (IndexError, ValueError):
-            v = 0
-        if v >= best_lum:
-            best, best_lum = kind, v
-    return best
+            pass
+    return None
 
 
-def _fill_row(y, log, max_clicks=10):
-    """Open the checklist row at y and fill its page until the row's marker clears. Returns True when it cleared."""
+def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
+    """Open the checklist row at y and fill its page until the row's marker clears (the wanted spells first, if this page offers
+    them). Returns True when it cleared."""
     _rclick(CHECKLIST_X, y)
     time.sleep(0.5)
+    _SCROLLED[0] = False
+    if wanted:                        # don't assume where the page is scrolled: put it at the top (probes expect that)
+        _scroll_panel(down=False)
+    _TAKEN.clear()
     kind = _picker_kind()
+    if wanted and (kind or _stable_tiles()):
+        for sid in _pick_wanted(y, kind, wanted, log):
+            wanted.pop(sid, None)
+        if not _row_pending(y):
+            return True
+    if wanted_only:
+        return True
     if kind is None:
         if not levelup_state().get("can_feat"):
             for i in range(max_clicks):    # an icon page in a layout not mapped above: click what the scanner finds
@@ -476,6 +503,8 @@ def _fill_row(y, log, max_clicks=10):
         return False
     ox, oy = ICON_ORIGINS[kind]
     for i in range(max_clicks):
+        if _icon_taken(i + 1):
+            continue                  # a wanted spell picked above sits here: clicking it would deselect it
         _rclick(ox + ICON_STEP * (i % 8), oy + ICON_ROW * (i // 8))
         time.sleep(0.35)
         if not _row_pending(y):
@@ -556,6 +585,195 @@ def _tiles():
     return sorted(((round(px), round(py)) for px, py in pts), key=lambda t: (-t[1], t[0]))
 
 
+_TAKEN = set()                    # (item index) of icons the wanted-spell step selected on the open page
+_KEEP = set()                     # handles of every spell wanted at this level (never freed to make room)
+
+
+def _icon_taken(j):
+    return j in _TAKEN
+
+
+def _spell_items(handles):
+    """Where the wanted spells sit in the open level-up's spell selectors: [(handle, selector key, selector i, item i, selected)]."""
+    res, _ = _client(FIND + _VM + """
+local want = {}
+for _, h in ipairs(%s) do want[h] = true end
+local out = {}
+local det = d.ClassProgressionDetails
+for _, key in ipairs({"NotSubSpellSelectors", "SubSpellSelectors"}) do
+  local col = det[key]
+  for i = 1, (col and #col or 0) do
+    local av = col[i].Available
+    for j = 1, #av do
+      local it = av[j]
+      local h = tostring(it.Spell.Name)
+      if want[h] and not it.NotAvailable then out[#out + 1] = {h, key, i, j, it.Selected == true} end
+    end
+  end
+end
+return out""" % ("{" + ",".join('"%s"' % h for h in handles) + "}"))
+    return [tuple(x) for x in res] if isinstance(res, list) else []
+
+
+def _item_selected(key, i, j):
+    res, _ = _client(FIND + _VM + "return d.ClassProgressionDetails.%s[%d].Available[%d].Selected == true" % (key, i, j))
+    return res is True
+
+
+# The spell grid can't be scrolled by the wheel, keys or properties; dragging the panel's scrollbar (x 736) works. Scrolled to the
+# bottom, the grid's LAST row sits at y ~904 (verified 2026-10-03 with 181 spells); rows are 44 px apart. Candidates around it
+# are each verified by click (and undone), so a few px of drift is harmless.
+SCROLLBAR_X = 736
+GRID_BOTTOM_Y = (904, 900, 908)
+
+
+def _stable_tiles(tries=4):
+    """The icon scan once two scans agree (a page fades in for a moment after its row is clicked)."""
+    prev = None
+    for _ in range(tries):
+        cur = sorted(_tiles(), key=lambda t: (t[1], t[0]))
+        if cur and cur == prev:
+            return cur
+        prev = cur
+        time.sleep(0.3)
+    return prev or []
+
+
+def _all_candidates(kind, j, count):
+    """_icon_candidates for the detected layout first, then the other known layouts and the icon scan: the page-type probe can
+    be fooled (text near a band), and every candidate is verified by click and undone if wrong."""
+    seen, out = set(), []
+    for k in [kind] + [x for x in ("grid", "ritual", "savant", None) if x != kind]:
+        for c in _icon_candidates(k, j, count):
+            if (c[1], c[2]) not in seen:
+                seen.add((c[1], c[2]))
+                out.append(c)
+    return out
+
+
+def _icon_candidates(kind, j, count):
+    """Possible screen positions (reference px) of the j-th (1-based) available icon on a picker page, most likely first.
+    Every candidate is checked through the item's Selected flag and undone if wrong, so extra candidates are safe."""
+    if kind in ICON_ORIGINS:
+        ox, oy = ICON_ORIGINS[kind]
+        k = j - 1
+        if kind == "grid" and k // 8 >= 9:   # below the visible rows: scroll the panel to the bottom first
+            rows = -(-count // 8)
+            back = rows - 1 - k // 8          # rows between this icon and the last row
+            return [("scroll", ox + ICON_STEP * (k % 8), by - ICON_ROW * back) for by in GRID_BOTTOM_Y
+                    if by - ICON_ROW * back > 60]
+        return [("", ox + ICON_STEP * (k % 8), oy + ICON_ROW * (k // 8))]
+    tiles = _stable_tiles()                  # reading order; the available icons are the last `count`
+    return [("", *tiles[-count:][j - 1])] if len(tiles) >= count >= j else []
+
+
+def _selector_info(key, i, j):
+    """{n, total selected, selected before item j, complete} of a spell selector, or None."""
+    res, _ = _client(FIND + _VM + """
+local sel = d.ClassProgressionDetails.%s[%d]
+local before, total = 0, 0
+for k = 1, #sel.Available do
+  if sel.Available[k].Selected then total = total + 1 if k < %d then before = before + 1 end end
+end
+return {n = #sel.Available, total = total, before = before, complete = sel.IsComplete == true}""" % (key, i, j))
+    return res if isinstance(res, dict) else None
+
+
+def _free_slot(key, i, y, log):
+    """Deselect one pick of a full selector that isn't a wanted spell, by clicking icons in the page's "Selected" row (above the
+    available icons). Each click is checked: a wanted spell deselected by mistake is clicked again (restored)."""
+    _want_scroll(False)
+    keep = "{" + ",".join('"%s"' % h for h in _KEEP) + "}"
+    state = lambda: _client(FIND + _VM + """
+local sel = d.ClassProgressionDetails.%s[%d]
+local keep = {}
+for _, h in ipairs(%s) do keep[h] = true end
+local added, kept = 0, 0
+for k = 1, #sel.Available do
+  local it = sel.Available[k]
+  if it.Selected then added = added + 1 if keep[tostring(it.Spell.Name)] then kept = kept + 1 end end
+end
+return {added = added, kept = kept}""" % (key, i, keep))[0] or {}
+    s0 = state()
+    tiles = sorted(_stable_tiles(), key=lambda t: (t[1], t[0]))
+    top = [t for t in tiles if t[1] < tiles[0][1] + 15] if tiles else []   # the topmost icon row = "Selected"
+    for tx, ty in top:
+        _rclick(tx, ty)
+        time.sleep(0.4)
+        s1 = state()
+        if s1.get("added", 0) < s0.get("added", 0) and s1.get("kept", 0) == s0.get("kept", 0):
+            log.append(f"row y={y}: freed a slot ({key}[{i}])")
+            return True
+        _rclick(tx, ty)               # restore whatever that click changed
+        time.sleep(0.4)
+    return False
+
+
+def _pick_wanted(y, kind, wanted, log):
+    """On the open page (row y), select the wanted spells this page offers. Each click is checked through the item's Selected
+    flag in the view model; a click that didn't select the wanted spell is clicked again (undone), so nothing else changes.
+    wanted: {spell id: handle}; returns the ids picked here."""
+    got = []
+    for sid, h in list(wanted.items()):
+        done = False
+        for _, key, i, j, sel in _spell_items([h]):
+            if sel:
+                got.append(sid)
+                done = True
+                break
+            info = _selector_info(key, i, j)
+            if not info:
+                continue
+            if info["complete"]:      # full of other picks: free one first (from the "Selected" row; verified)
+                _free_slot(key, i, y, log)
+                info = _selector_info(key, i, j)
+                if not info or info["complete"]:
+                    continue
+            # selected spells leave the grid for the "Selected" row: the icon's place counts only unselected items before it
+            j, count = j - info["before"], info["n"] - info["total"]
+            for how, px, py in _all_candidates(kind, j, count):
+                _want_scroll(how == "scroll")
+                _rclick(px, py)
+                time.sleep(0.4)
+                if _item_selected(key, i, j):
+                    got.append(sid)
+                    _TAKEN.add(j)
+                    log.append(f"row y={y}: picked {sid} ({key}[{i}] #{j}{', grid scrolled' if how else ''})")
+                    done = True
+                    break
+                _rclick(px, py)       # not this page's selector, or not this icon: undo
+                time.sleep(0.4)
+            if done:
+                break
+    _want_scroll(False)               # back to the top, where the filler clicks expect the grid
+    return got
+
+
+_SCROLLED = [False]                # is the left panel scrolled to the bottom right now?
+
+
+def _want_scroll(down):
+    """Bring the panel to the top (down=False) or bottom (down=True) if it isn't already."""
+    if _SCROLLED[0] != down:
+        _scroll_panel(down)
+        _SCROLLED[0] = down
+
+
+def _scroll_panel(down=True):
+    """Drag the left panel's scrollbar to the bottom (or top)."""
+    y1, y2 = (380, 1000) if down else (900, 60)
+    _fast("drag %d %d %d %d" % (round(SCROLLBAR_X * _sx()), round(y1 * _sy()), round(SCROLLBAR_X * _sx()), round(y2 * _sy())), 15)
+    time.sleep(0.6)
+
+
+def _sx():
+    return (_last_shot[0] * 2) / REF_W if _last_shot else 1.0
+
+
+def _sy():
+    return (_last_shot[1] * 2) / REF_H if _last_shot else 1.0
+
+
 def _set_subclass(name):
     """Choose a subclass by its IDString (e.g. "BattleMaster") on a level that offers one. Returns (ok, message)."""
     res, _ = _client(FIND + _VM + """
@@ -598,14 +816,15 @@ def subclasses():
     return r.get("result") if r.get("ok") and isinstance(r.get("result"), dict) else None
 
 
-def levelup_auto(finish=True, add_class=None, subclass=None):
+def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
     """Level the host up completely: open the screen, (add_class: take the level in that class instead - a multiclass, or another
     level of a second class), fill every pending checklist row (spells, cantrips, rituals, savant, feat / ability improvement),
     then accept and wait for the level to apply. Validates as it goes: each row's marker must clear, IsLevelUpComplete must be
     true before Accept, the host level must rise by exactly one (and with add_class, that class's level by one). Returns {ok, log,
     level_before, level_after, classes_before, classes_after, open_s, choices_s, total_s, error}. subclass: on a level that offers a
     subclass choice, take this one (its IDString, e.g. "BattleMaster"; verified on the character afterwards) - otherwise the game's
-    default (the first in its list) is kept."""
+    default (the first in its list) is kept. spells: {spell id: DisplayName handle} to learn at this level (the rest are filler);
+    each is confirmed selected before Accept, or the level-up stops unaccepted."""
     out = {"ok": False, "log": []}
     log = out["log"]
     t0 = time.time()
@@ -650,18 +869,33 @@ def levelup_auto(finish=True, add_class=None, subclass=None):
             out["error"] = f"couldn't choose subclass {subclass}: {msg}"
             return out
     _fill_passive_selectors(log)
+    wanted = dict(spells or {})
+    _KEEP.clear()
+    _KEEP.update(wanted.values())
     stuck = []
     rows = stable_pending_rows()
     for _ in range(14):
         rows = [y for y in rows if all(abs(y - z) > ROW_TOL for z in stuck)]
         if not rows:
             break
-        if not _fill_row(rows[0], log):
+        if not _fill_row(rows[0], log, wanted=wanted):
             stuck.append(rows[0])
             if len(stuck) > 2:
                 break
         rows = pending_rows() or []
+    if wanted:                        # wanted spells not offered on a pending row: they sit on rows already filled - visit those
+        for ry in (all_rows() or [])[1:]:     # the first row is "Level Up <class>"
+            if not wanted:
+                break
+            _fill_row(ry, log, wanted=wanted, wanted_only=True)
     out["choices_s"] = round(time.time() - t0 - out["open_s"], 1)
+    if spells:
+        have = {h for h, *_rest, sel in _spell_items(list(spells.values())) if sel}
+        missing = [sid for sid, h in spells.items() if h not in have]
+        if missing:
+            out["error"] = "wanted spells not selected (left unaccepted): " + ", ".join(missing)
+            return out
+        log.append("wanted spells selected: " + ", ".join(spells))
     if not _state().get("complete"):
         out["error"] = "choices still pending after the driver ran: " + "; ".join(log[-3:] or ["no pending rows were found"])
         return out
@@ -735,7 +969,7 @@ def load_save(index=0, timeout=90.0):
     Load Game, row `index` of the list (0 = first row = the game's newest), Load Game. Waits until a host exists in the new
     session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason)."""
     t0 = time.time()
-    for _ in range(4):
+    for _ in range(7):                # level-up page -> level-up -> sheet -> pause menu can take several
         names = screen()
         if names is None:
             return None, "the Script Extender didn't answer, so the menu state is unknown (nothing was clicked)"

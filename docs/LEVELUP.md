@@ -147,3 +147,26 @@ name), `tests/level_check_selftest.py` 13 (ability conditions, multiclass table,
 
 Tests: `tests/levelup_selftest.py` 41 (adds icon-scan fallback, unreadable page, subclass chosen / not offered / didn't stick, tile
 order/scaling), `tests/level_check_selftest.py` 13.
+
+## Test builds run hands-free (2026-10-03): `bg3_test_build`
+`bg3_test_build(layer, build, to_level)` takes the host from its current level through a build's plan: each level is granted, taken
+with the auto driver using the plan's subclass and the spells its tests need (`plan(..., choices=)` now returns them), validated
+(level +1, subclass, wanted spells selected before Accept, level_check) and that level's automated tests are run. Live:
+`wiz-abjurer` 2 -> 20, every level ALL PASS, level 15 tests 2/2 (Antimagic Field, Mind Blank learned through the level-up screen).
+~20 s per level.
+
+Picking a SPECIFIC spell (no view-model route: `SelectSpell` and `Selected` don't work, `Selected` is read-only):
+- The view model gives each spell selector's `Available[j]` (`Spell.Name` = the spell's DisplayName handle, `Selected`). The grid
+  shows the UNSELECTED items in order, 8 per row: selected ones move to the "Selected" row above. So item j sits at grid place
+  j - (selected items before it).
+- The grid is clicked, then `Available[j].Selected` is read back; a click that didn't select it is clicked again (undone). The page
+  type probe can be fooled, so every layout's candidate is tried that way.
+- Past the 9 visible rows the panel must be scrolled: the mouse wheel, keys and setting VerticalOffset/ScrollBar.Value (the value
+  changes, the view doesn't) all fail - DRAGGING the panel's scrollbar (x 736) works (`drag` helper command). Scrolled to the
+  bottom, the last row is at y ~904.
+- A selector already full of other picks: one non-wanted pick is freed from the "Selected" row (the topmost icon row), checked
+  through the counts; a wanted spell deselected by mistake is clicked back.
+- Missing wanted spells after the pending rows: the driver revisits filled rows (`allrows` helper finds every row) for the wanted
+  spells only - never filler clicks there (one run toggled prepared spells that way).
+- Lesson: iterate on a CLEAN level-up. Several partial attempts on one screen leave picks behind (Esc keeps them) and every
+  later run starts from that mess - reload the save and rebuild (`bg3_load_save` + `bg3_test_build`, ~6 min to level 14).
