@@ -12,6 +12,8 @@
 #   wheel FX FY NOTCHES         mouse wheel at a point (fractions of the client area); negative = scroll down
 #   drag X1 Y1 X2 Y2            left-button drag between two client pixels (smooth, ~0.5 s)
 #   allrows FX FY FW FH         like redrows, but every row's ring (done rows are white/grey)
+#   chord SCAN SCAN ...         hold the keys in order, release in reverse (e.g. 29 30 = Ctrl+A)
+#   text STRING                 type the rest of the line as Unicode characters (SendInput KEYEVENTF_UNICODE)
 #   ping
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -42,6 +44,8 @@ public class ID {
       if (c.ToString() == "SDL_app") { found = h; return false; } } return true; }, IntPtr.Zero); return found; }
   public static void Key(ushort scan, bool up) { var i = new INPUT[1]; i[0].type = 1; i[0].u.ki.wScan = scan;
     i[0].u.ki.dwFlags = 0x0008 | (up ? 0x0002u : 0u); SendInput(1, i, Marshal.SizeOf(typeof(INPUT))); }
+  public static void Uni(char ch, bool up) { var i = new INPUT[1]; i[0].type = 1; i[0].u.ki.wScan = (ushort)ch;
+    i[0].u.ki.dwFlags = 0x0004 | (up ? 0x0002u : 0u); SendInput(1, i, Marshal.SizeOf(typeof(INPUT))); }
   public static void Btn(uint flags) { var i = new INPUT[1]; i[0].type = 0; i[0].u.mi.dwFlags = flags; SendInput(1, i, Marshal.SizeOf(typeof(INPUT))); } }
 "@
 
@@ -182,6 +186,14 @@ while ($true) {
                       [ID]::Btn(0x0002); Start-Sleep -Milliseconds 80
                       for ($i = 1; $i -le 20; $i++) { [ID]::SetCursorPos([int]($p1.X + ($p2.X - $p1.X) * $i / 20), [int]($p1.Y + ($p2.Y - $p1.Y) * $i / 20)) | Out-Null; Start-Sleep -Milliseconds 25 }
                       Start-Sleep -Milliseconds 80; [ID]::Btn(0x0004); $r = "ok" }
+            "chord" { Set-Focus; $ks = $a[1..($a.Count - 1)] | ForEach-Object { [uint16][int]$_ }
+                      foreach ($k in $ks) { [ID]::Key($k, $false); Start-Sleep -Milliseconds 40 }
+                      Start-Sleep -Milliseconds 60
+                      for ($n = $ks.Count - 1; $n -ge 0; $n--) { [ID]::Key($ks[$n], $true); Start-Sleep -Milliseconds 30 }
+                      $r = "ok" }
+            "text"  { Set-Focus; $t = $line.Substring(5)
+                      foreach ($ch in $t.ToCharArray()) { [ID]::Uni($ch, $false); [ID]::Uni($ch, $true); Start-Sleep -Milliseconds 25 }
+                      $r = "ok" }
             default { $r = "err unknown command" }
         }
     } catch { $r = "err " + $_.Exception.Message }

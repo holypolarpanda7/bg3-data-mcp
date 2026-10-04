@@ -710,16 +710,62 @@ def bg3_test_run_level(layer: str, level: int, build: str | None = None, class_n
 
 
 @mcp.tool()
+@guarded
+def bg3_save_game(name: str) -> str:
+    """Save the running game under a name (pause menu -> Save Game -> New Save, the name typed in). Waits until the save exists."""
+    from . import gameui
+    ok, info = gameui.save_game(name)
+    return f"saved: {info}" if ok else "not saved: " + info
+
+
+@mcp.tool()
+@guarded
+def bg3_new_character(cls: str, save_as: str | None = None) -> str:
+    """A level 1 character of any class from the current host, through the game's respec (Osi.StartRespec - what Withers does):
+    the class's choices are pre-filled by the game; race, background, name and XP stay. Load a low-level save first (the XP carries
+    over: from "Tavizard L2 Base" the new character is level 1 with XP for level 2). save_as: save it under that name (e.g.
+    "Barbarian L1 Base") as a start save for test builds."""
+    from . import gameui
+    ok, msg = gameui.respec(cls)
+    if not ok:
+        return "respec failed: " + msg
+    if save_as:
+        ok2, info = gameui.save_game(save_as)
+        return f"{msg}; " + (f"saved as {info}" if ok2 else "save failed: " + info)
+    return msg
+
+
+@mcp.tool()
 @se_guarded
-def bg3_test_build(layer: str, build: str, to_level: int | None = None, wait: float = 4.0, layers: list[str] | None = None) -> str:
+def bg3_test_build(layer: str, build: str, to_level: int | None = None, wait: float = 4.0, layers: list[str] | None = None,
+                   background: bool = False) -> str:
     """Run a test build ([[build]] in the suite TOML) hands-free from the host's current level: every level is granted and taken with
     the automatic level-up driver using the build's plan (bg3_test_plan) - its subclass and the spells its tests need, learned
     through the level-up screen so they're class-sourced - then validated (level +1, subclass, wanted spells, level_check) and that
-    level's automated tests are run. Load the build's start save first (bg3_load_save). to_level stops early (~20-25 s per level
-    plus tests). Stops at the first failure."""
+    level's automated tests are run. A build with `from` loads its start save by name when the host isn't that character. to_level
+    stops early (~20-25 s per level plus tests). Stops at the first failure. background=True: `build` may be several ids
+    separated by commas; they run one after another in a detached process (a full build is ~10 min) - read progress with
+    bg3_test_build_status."""
     from . import testing
+    if background:
+        import subprocess, sys
+        log = os.path.join(sources.CACHE, "test_builds.log")
+        ids = [x.strip() for x in build.split(",") if x.strip()]
+        subprocess.Popen([sys.executable, "-m", "bg3data.runbuilds", log, layer] + ids, cwd=os.path.dirname(os.path.dirname(__file__)),
+                         stdout=subprocess.DEVNULL, stderr=open(log + ".err", "a"), start_new_session=True)
+        return f"started {len(ids)} build(s) in the background; progress: bg3_test_build_status (log {log})"
     s, active = _testing_store(layers)
     return testing.run_build(s, active, layer, build, to_level, wait)
+
+
+@mcp.tool()
+@guarded
+def bg3_test_build_status(lines: int = 60) -> str:
+    """The background test-build log (bg3_test_build(background=True)): the last `lines` lines."""
+    log = os.path.join(sources.CACHE, "test_builds.log")
+    if not os.path.exists(log):
+        return "no background build has run"
+    return "\n".join(open(log, encoding="utf-8").read().splitlines()[-lines:])
 
 
 @mcp.tool()
@@ -879,13 +925,14 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17, add_class: str | 
 
 @mcp.tool()
 @guarded
-def bg3_load_save(index: int = 0) -> str:
+def bg3_load_save(index: int = 0, name: str | None = None) -> str:
     """Load a save in the RUNNING game from the pause menu (no restart, ~15-40 s): Esc, Load Game, the save in row `index` of the
     list (0 = first row = the game's newest), Load Game; clears the [ForceUpdate] box and waits for a host. Clicks nothing unless
-    the pause menu is confirmed open. Returns the host level, so a wrong row shows up immediately. Take a bg3_screenshot of
+    the pause menu is confirmed open. Returns the host level, so a wrong row shows up immediately. name: load by (part of) the save's
+    name instead - looked up in the game's list order (newest SaveTime first). Take a bg3_screenshot of
     the Load list first if unsure which row is which."""
     from . import gameui
-    t, info = gameui.load_save(index)
+    t, info = gameui.load_save(index, name=name)
     return f"loaded in {t}s, host level {info}" if t is not None else "not loaded: " + info
 
 

@@ -1433,6 +1433,21 @@ def spell_handle(store, active, spell):
     return v.split(";")[0] if v else None
 
 
+def subclass_ui_name(store, active, cls, sub):
+    """The level-up screen's IDString for a build's subclass. Builds and cases name subclasses by progression table
+    (AberrantSorcery, ScionThree, NobleGenies), the screen by ClassDescription (Aberrant, DeadThree, NobleGenie); names clash
+    across classes (Barbarian's WildMagicPath), so match the ClassDescription whose parent is `cls` and whose table is `sub`."""
+    tables = {t for (t,) in store.db.execute("SELECT DISTINCT table_uuid FROM prog WHERE name=?", [sub])}
+    parent = None
+    rows = store.db.execute("SELECT uuid, name, attrs FROM staticdata WHERE kind='ClassDescription'").fetchall()
+    for u, n, at in rows:
+        if n == cls and not json.loads(at).get("ParentGuid"):
+            parent = u
+    hits = [n for u, n, at in rows if json.loads(at).get("ProgressionTableUUID") in tables
+            and (parent is None or json.loads(at).get("ParentGuid") == parent)]
+    return hits[0] if hits else sub
+
+
 def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
     """Level the host through a build's plan with the automatic level-up driver - its subclass and the spells its tests need -
     validating every level (level +1, subclass, wanted spells, level_check) and running that level's automated tests. Starts at
@@ -1446,6 +1461,14 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
     lv = gameui.host_level()
     if lv is None:
         return "no host level (is a game loaded?)"
+    parent = find_build(layer, b["from"]) if b.get("from") else None
+    cl = gameui.class_levels() or {}
+    if parent and parent.get("save_as") and (lv < lo - 1 or set(cl) != {b["class"]}):
+        # not this build's character: load its start save by name (made with bg3_new_character)
+        t, info = gameui.load_save(name=parent["save_as"])
+        if t is None:
+            return f"host is {cl} level {lv}; couldn't load the start save {parent['save_as']!r}: {info}"
+        lv = info
     if lv < lo - 1:
         return f"host is level {lv}; build {build_id} starts at level {lo} - load its start save first"
     cases_by_level = {}
@@ -1464,7 +1487,8 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
             break
         want = ch.get(L, {})
         spells = {sp: spell_handle(store, active, sp) for sp in want.get("spells", [])}
-        r = gameui.levelup_auto(subclass=want.get("subclass") if b.get("subclass") else None, spells=spells or None)
+        sub = want.get("subclass") if b.get("subclass") else None
+        r = gameui.levelup_auto(subclass=subclass_ui_name(store, active, b["class"], sub) if sub else None, spells=spells or None)
         if not r.get("ok"):
             out.append(f"L{L}: LEVEL-UP FAILED - {r.get('error')} | {r.get('log')}")
             break

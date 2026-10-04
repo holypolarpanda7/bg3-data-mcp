@@ -40,6 +40,22 @@ def list_saves(cfg, limit=10):
     return sorted(out, reverse=True)[:limit]
 
 
+def game_order(cfg, limit=60):
+    """Saves in the order the game's Load/Save lists show them: newest SaveTime first (meta.lsf; NOT the file time - the game
+    ignores mtime). Returns [(folder name, path, SaveTime, leader name)]."""
+    import tempfile
+    out = []
+    for _mt, d, p in list_saves(cfg, limit):
+        try:
+            txt = read_meta(cfg, p, tempfile.mkdtemp())
+        except Exception:
+            txt = ""
+        t = re.search(r'id="SaveTime"[^/]*value="(\d+)"', txt)
+        who = re.search(r'id="LeaderName"[^/]*value="([^"]*)"', txt)
+        out.append((d, p, int(t.group(1)) if t else 0, who.group(1) if who else ""))
+    return sorted(out, key=lambda x: -x[2])
+
+
 def find_save(cfg, query):
     saves = list_saves(cfg, 10_000)
     if not query or query == "latest":

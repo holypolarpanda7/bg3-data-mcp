@@ -185,3 +185,19 @@ Portent, Alter Memories ...). Fixes found on the way:
   the next level-up couldn't open. run_build now runs the harness cleanup plus `end_combat()` (kills hostile non-party characters in
   combat) after each level's tests, and won't start a level-up in combat.
 - level_check applies passive adds/removes in level order (Apotheosis removes SongVictory at 12 and re-adds it at 14).
+
+## Test characters for every class (2026-10-04)
+- `bg3_new_character(cls, save_as)`: `Osi.StartRespec(host)` opens the game's respec screen (`CharacterRespec`, what Withers does);
+  the class grid sits at (294 + 124 * col, 176 + 124 * row); picking a class PRE-FILLS its level-1 choices (abilities rearranged for
+  the class, cantrips, spells, weapon mastery), CONFIRM at (1196, 1032). Race, background, name and XP stay - from "Tavizard L2
+  Base" every class starts at level 1 with XP for level 2. Verified: the host is exactly {cls: 1}. ~8 s.
+- `bg3_save_game(name)`: pause menu -> Save Game (960,524) -> New Save (608,200) -> description field (958,738), Ctrl+A, the name typed
+  as Unicode (`chord` / `text` helper commands) -> Save (1066,862); waits for the save folder. ~17 s.
+- `bg3_load_save(name=...)`: the Load list is ordered by the save's `SaveTime` (meta.lsf), newest first - not the file time - so a
+  name maps to a row (`saves.game_order`). Refuses when saves of several characters are listed (grouped rows).
+- Builds and cases name subclasses by progression table (AberrantSorcery, ScionThree, NobleGenies); the level-up screen by
+  ClassDescription (Aberrant, DeadThree, NobleGenie) - `testing.subclass_ui_name` maps within the class (names clash across
+  classes, e.g. Barbarian's WildMagicPath).
+- `bg3_test_build(background=True)` runs a comma-separated batch in a detached process (`bg3data/runbuilds.py`), log via
+  `bg3_test_build_status`; a build with `from` loads its start save by name when the host isn't that character.
+- Epic Boon: the "+1 to an ability" passive list now prefers the option naming the primary ability.

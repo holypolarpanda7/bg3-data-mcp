@@ -535,22 +535,31 @@ _VM = 'local d = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0).DataContext '
 
 def _fill_passive_selectors(log, limit=24):
     """Passive choices (manoeuvres, and other "pick N passives" lists) through the view model: TogglePassive on the first enabled,
-    unselected option of any selector short of its count. One toggle per call (several in one frame don't all land)."""
+    unselected option of any selector short of its count - preferring one that names the primary ability. One toggle per call
+    (several in one frame don't all land)."""
     n = 0
+    prim = (_asi_order() or [""])[0][:3].lower()
     for _ in range(limit):
-        res, _ = _client(FIND + _VM + """
+        res, _ = _client(FIND + _VM + ('local PRIMARY = "%s" ' % prim) + """
 local det = d.ClassProgressionDetails
 for _, key in ipairs({"SubPassiveSelectors", "NotSubPassiveSelectors"}) do
   local col = det[key]
   for i = 1, (col and #col or 0) do
     local sel = col[i]
     if sel.SelectedPassiveCount < sel.MaxSelectedPassiveCount then
+      -- prefer an option naming the class's primary ability (Epic Boon "+1 to an ability": EpicBoonAbility_Int for a
+      -- Wizard), else the first selectable one
+      local pick
       for j = 1, #sel.Passives do
         local it = sel.Passives[j]
         if it.Enabled and not it.Blocked and tonumber(it.Value) == 0 then
-          d.TogglePassive:Execute(it)
-          return {toggled = it.IconName}
+          pick = pick or it
+          if PRIMARY ~= "" and string.find(string.lower(tostring(it.IconName) .. tostring(it.Id or "")), PRIMARY, 1, true) then pick = it break end
         end
+      end
+      if pick then
+        d.TogglePassive:Execute(pick)
+        return {toggled = pick.IconName}
       end
       return {stuck = key .. "[" .. i .. "]"}
     end
@@ -1030,20 +1039,44 @@ return {ok = ok, err = ok and "" or tostring(err)}""")
     return False, f"accepted, but the level hadn't risen after {wait:.0f}s"
 
 
-def load_save(index=0, timeout=90.0):
-    """Load a save from the pause menu of the RUNNING game (no restart): Esc until the pause menu (GameMenu) is confirmed open,
-    Load Game, row `index` of the list (0 = first row = the game's newest), Load Game. Waits until a host exists in the new
-    session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason)."""
-    t0 = time.time()
+def _pause_menu():
+    """Bring up the pause menu (GameMenu), pressing Esc as needed; False if it can't be confirmed (then nothing is clicked)."""
     for _ in range(7):                # level-up page -> level-up -> sheet -> pause menu can take several
         names = screen()
         if names is None:
-            return None, "the Script Extender didn't answer, so the menu state is unknown (nothing was clicked)"
+            return False
         if "GameMenu" in names:
-            break
-        send_key(0x01, hold_ms=100)   # closes whatever is open (level-up, sheet), then opens the pause menu
+            return True
+        send_key(0x01, hold_ms=100)
         time.sleep(1.0)
-    else:
+    return False
+
+
+def _close_menus():
+    for _ in range(4):
+        names = screen() or []
+        if not any(n in names for n in ("GameMenu", "SaveLoad", "Save", "Load")):
+            return
+        send_key(0x01, hold_ms=100)
+        time.sleep(0.8)
+
+
+def load_save(index=0, timeout=90.0, name=None):
+    """Load a save from the pause menu of the RUNNING game (no restart): Esc until the pause menu (GameMenu) is confirmed open,
+    Load Game, the save's row, Load Game. `name` (a substring of the save's folder name, e.g. "Barbarian L1 Base") is looked up in
+    the game's own list order (newest SaveTime first); else row `index` (0 = first). Waits until a host exists in the new
+    session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason)."""
+    t0 = time.time()
+    if name:
+        from . import saves, sources
+        order = saves.game_order(sources.load_config())
+        hits = [i for i, (d, *_rest) in enumerate(order) if name.lower() in d.lower()]
+        if len(hits) != 1:
+            return None, f"{len(hits)} saves match {name!r}: " + ", ".join(order[i][0] for i in hits[:6])
+        if len({o[3] for o in order}) > 1:
+            return None, "saves of several characters: the Load list groups them, row positions aren't known - use index"
+        index = hits[0]
+    if not _pause_menu():
         return None, "the pause menu didn't open (nothing was clicked)"
     _rclick(960, 568)                 # Load Game
     time.sleep(3.0)                   # the list fills in after a spinner
@@ -1058,6 +1091,71 @@ def load_save(index=0, timeout=90.0):
         if lv is not None:
             return round(time.time() - t0, 1), lv
     return None, f"no host after {timeout:.0f}s"
+
+
+def save_game(name, timeout=40.0):
+    """Save the running game under `name` (pause menu -> Save Game -> New Save -> name -> Save) and wait until the save folder
+    exists. Returns (ok, folder or reason)."""
+    from . import saves, sources
+    cfg = sources.load_config()
+    before = {d for _m, d, _p in saves.list_saves(cfg, 500)}
+    if not _pause_menu():
+        return False, "the pause menu didn't open (nothing was clicked)"
+    _rclick(960, 524)                 # Save Game
+    time.sleep(2.5)
+    _rclick(608, 200)                 # New Save
+    time.sleep(1.2)
+    _rclick(958, 738)                 # the description field
+    time.sleep(0.4)
+    _fast("chord 29 30")              # Ctrl+A: replace the default description
+    time.sleep(0.2)
+    _fast("text " + name)
+    time.sleep(0.4)
+    _rclick(1066, 862)                # Save
+    t = time.time()
+    while time.time() - t < timeout:
+        time.sleep(1.5)
+        new = [d for _m, d, _p in saves.list_saves(cfg, 500) if d not in before]
+        if any(name.lower() in d.lower() for d in new):
+            time.sleep(2.0)           # let the write finish
+            _close_menus()
+            return True, next(d for d in new if name.lower() in d.lower())
+    _close_menus()
+    return False, f"no new save named {name!r} after {timeout:.0f}s"
+
+
+RESPEC_CLASS_TILES = {n: (294 + 124 * (i % 4), 176 + 124 * (i // 4)) for i, n in enumerate(
+    ["Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk", "Paladin", "Ranger", "Rogue", "Sorcerer", "Warlock", "Wizard"])}
+RESPEC_CONFIRM = (1196, 1032)
+
+
+def respec(cls, timeout=20.0):
+    """Turn the host into a level 1 `cls` through the game's respec (Osi.StartRespec - what Withers does): pick the class tile;
+    the game pre-fills that class's choices (abilities rearranged for it, cantrips, spells, weapon mastery); CONFIRM. Race,
+    background, name and XP stay. Verified afterwards: the host is exactly {cls: 1}. Returns (ok, message)."""
+    if cls not in RESPEC_CLASS_TILES:
+        return False, f"unknown class {cls!r}"
+    _close_menus()
+    r = se.eval_lua("local ok, e = pcall(function() Osi.StartRespec(Osi.GetHostCharacter()) end) return ok", "server", timeout=10)
+    if not (r.get("ok") and r.get("result")):
+        return False, "Osi.StartRespec failed"
+    t = time.time()
+    while time.time() - t < timeout and "CharacterRespec" not in (screen() or []):
+        time.sleep(0.5)
+    if "CharacterRespec" not in (screen() or []):
+        return False, "the respec screen didn't open"
+    time.sleep(1.0)
+    _rclick(*RESPEC_CLASS_TILES[cls])
+    time.sleep(1.5)
+    if pending_rows():
+        return False, f"{cls}'s first-level choices weren't all pre-filled (rows {pending_rows()}) - not confirmed"
+    _rclick(*RESPEC_CONFIRM)
+    t = time.time()
+    while time.time() - t < timeout and "CharacterRespec" in (screen() or ["CharacterRespec"]):
+        time.sleep(0.5)
+    time.sleep(1.0)
+    got = class_levels()
+    return (got == {cls: 1}), f"host is now {got}"
 
 
 # ---------------------------------------------------------------- fast input: one long-lived PowerShell helper
