@@ -569,6 +569,38 @@ return {done = true}""")
     return n
 
 
+def _fill_skill_selectors(log, limit=12):
+    """Skill choices (e.g. Bladesinger's Training in War and Song) through the view model: ClassSkills / AllSkills have
+    SelectedSkillCount and MaxSelectedSkillCount; ToggleSkill on the first enabled skill the character isn't proficient in.
+    One toggle per call."""
+    n = 0
+    for _ in range(limit):
+        res, _ = _client(FIND + _VM + """
+for _, key in ipairs({"ClassSkills", "AllSkills"}) do
+  local c = d[key]
+  if c and c.SelectedSkillCount < c.MaxSelectedSkillCount then
+    for i = 1, #c.Skills do
+      local it = c.Skills[i]
+      if it.Enabled and not it.Selected and not it.IsProficient then
+        d.ToggleSkill:Execute(it)
+        return {toggled = tostring(it.Skill)}
+      end
+    end
+    return {stuck = key}
+  end
+end
+return {done = true}""")
+        if not isinstance(res, dict) or res.get("done"):
+            break
+        if res.get("stuck"):
+            log.append(f"skills {res['stuck']}: no selectable skill left")
+            break
+        n += 1
+        log.append(f"skill {res['toggled']} chosen through the view model")
+        time.sleep(0.35)
+    return n
+
+
 def _tiles():
     """Icon-like blobs in the page area (reference pixels), bottom row first: picked icons move UP to the "Selected" row, so the
     bottom row is always the available ones."""
@@ -624,7 +656,7 @@ def _item_selected(key, i, j):
 # bottom, the grid's LAST row sits at y ~904 (verified 2026-10-03 with 181 spells); rows are 44 px apart. Candidates around it
 # are each verified by click (and undone), so a few px of drift is harmless.
 SCROLLBAR_X = 736
-GRID_BOTTOM_Y = (904, 900, 908)
+GRID_BOTTOM_Y = (904,)
 
 
 def _stable_tiles(tries=4):
@@ -663,19 +695,32 @@ def _icon_candidates(kind, j, count):
             return [("scroll", ox + ICON_STEP * (k % 8), by - ICON_ROW * back) for by in GRID_BOTTOM_Y
                     if by - ICON_ROW * back > 60]
         return [("", ox + ICON_STEP * (k % 8), oy + ICON_ROW * (k // 8))]
-    tiles = _stable_tiles()                  # reading order; the available icons are the last `count`
-    return [("", *tiles[-count:][j - 1])] if len(tiles) >= count >= j else []
+    out = []
+    # an unmapped layout (e.g. Savant at 13+): the available icons are a centred row (44 px apart, around x 480) at y ~584 -
+    # live 2026-10-03: 2 icons at 458/502 - or, failing that, the last `count` icons the scan finds in reading order
+    if count and count <= 8:
+        for ry in (584, 582, 586):
+            out.append(("", round(480 + 44 * (j - (count + 1) / 2)), ry))
+    tiles = _stable_tiles()
+    if len(tiles) >= count >= j and ("", *tiles[-count:][j - 1]) not in out:
+        out.append(("", *tiles[-count:][j - 1]))
+    return out
 
 
 def _selector_info(key, i, j):
-    """{n, total selected, selected before item j, complete} of a spell selector, or None."""
+    """{n, hidden, hidden_before, sel, sel_before, complete} of a spell selector, or None. The grid hides selected items (they move
+    to the "Selected" row) and items whose Spell.Override is Worse or Different (live 2026-10-04: 168 items, 2 selected + 2 Worse
+    + 1 Different = 5 hidden, 163 shown; the 27 Equal / NotAvailable ones are shown greyed)."""
     res, _ = _client(FIND + _VM + """
 local sel = d.ClassProgressionDetails.%s[%d]
-local before, total = 0, 0
+local hb, ht, sb, st = 0, 0, 0, 0
 for k = 1, #sel.Available do
-  if sel.Available[k].Selected then total = total + 1 if k < %d then before = before + 1 end end
+  local it = sel.Available[k]
+  local o = tostring(it.Spell.Override)
+  if it.Selected then st = st + 1 if k < %d then sb = sb + 1 end end
+  if it.Selected or o == "Worse" or o == "Different" then ht = ht + 1 if k < %d then hb = hb + 1 end end
 end
-return {n = #sel.Available, total = total, before = before, complete = sel.IsComplete == true}""" % (key, i, j))
+return {n = #sel.Available, hidden = ht, hidden_before = hb, sel = st, sel_before = sb, complete = sel.IsComplete == true}""" % (key, i, j, j))
     return res if isinstance(res, dict) else None
 
 
@@ -716,12 +761,13 @@ def _pick_wanted(y, kind, wanted, log):
     got = []
     for sid, h in list(wanted.items()):
         done = False
-        for _, key, i, j, sel in _spell_items([h]):
-            if sel:
-                got.append(sid)
-                done = True
-                break
-            info = _selector_info(key, i, j)
+        items = _spell_items([h])
+        if any(x[4] for x in items):
+            got.append(sid)
+            continue
+        infos = [(x, _selector_info(x[1], x[2], x[3])) for x in items]
+        infos.sort(key=lambda t: bool(t[1] and t[1]["complete"]))   # selectors with room first: freeing is the last resort
+        for (_, key, i, j, sel), info in infos:
             if not info:
                 continue
             if info["complete"]:      # full of other picks: free one first (from the "Selected" row; verified)
@@ -729,9 +775,18 @@ def _pick_wanted(y, kind, wanted, log):
                 info = _selector_info(key, i, j)
                 if not info or info["complete"]:
                     continue
-            # selected spells leave the grid for the "Selected" row: the icon's place counts only unselected items before it
-            j, count = j - info["before"], info["n"] - info["total"]
-            for how, px, py in _all_candidates(kind, j, count):
+            # selected spells leave the GRID for the "Selected" row (the icon's place counts only unselected items before it);
+            # on a Savant row they stay in place - so both places are candidates (each is verified)
+            # The grid hides some items (5 of 168 for a Bladesinger at 13 - not the selected ones, and no flag on the items says
+            # which), so the icon's place is searched: the raw index first, then up to 10 places earlier and 2 later, each click
+            # verified through Selected and undone if wrong. The best estimate (Worse/Different overrides hidden) goes first.
+            est = info["hidden_before"] - info["sel_before"]
+            shifts = sorted(set(range(-2, 11)) | {est}, key=lambda h: (abs(h - est), -h))
+            cands = []
+            for h in shifts:
+                if 1 <= j - h:
+                    cands += [c for c in _all_candidates(kind, j - h, info["n"] - max(h, 0)) if c not in cands][:1]
+            for how, px, py in cands:
                 _want_scroll(how == "scroll")
                 _rclick(px, py)
                 time.sleep(0.4)
@@ -833,6 +888,10 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
         out["error"] = "no host level from the Script Extender (is a game loaded?)"
         return out
     st = levelup_open()
+    if st.get("known") and not st.get("levelup_open"):   # the bar click can miss while the sheet is still settling: once more
+        send_key(0x01, hold_ms=100)
+        time.sleep(1.5)
+        st = levelup_open()
     if not st.get("known"):
         out["error"] = "the Script Extender didn't answer while opening the level-up screen"
         return out
@@ -869,6 +928,7 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
             out["error"] = f"couldn't choose subclass {subclass}: {msg}"
             return out
     _fill_passive_selectors(log)
+    _fill_skill_selectors(log)
     wanted = dict(spells or {})
     _KEEP.clear()
     _KEEP.update(wanted.values())
@@ -888,6 +948,12 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
             if not wanted:
                 break
             _fill_row(ry, log, wanted=wanted, wanted_only=True)
+        for _ in range(6):            # a slot freed for a wanted spell may have left its row short: fill it again
+            rows = pending_rows() or []
+            if not rows:
+                break
+            if not _fill_row(rows[0], log):
+                break
     out["choices_s"] = round(time.time() - t0 - out["open_s"], 1)
     if spells:
         have = {h for h, *_rest, sel in _spell_items(list(spells.values())) if sel}

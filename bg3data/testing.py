@@ -229,7 +229,7 @@ def level_check(store, active):
     for ci, c in enumerate(classes):
         tables = [(c["class"], c["class_table"])] + ([(c["subclass"], c["subclass_table"])] if c.get("subclass") else [])
         lines.append(f"{c['class']} {c['level']}" + (f" / {c['subclass']}" if c.get("subclass") else " (no subclass yet)"))
-        added, removed, spell_lists, choices = {}, set(), [], []
+        added, removed, spell_lists, choices = {}, {}, [], []
         for name, table in tables:
             seen_nodes = set()
             for lvl, pname, _, src, a in store.progression(table, active):
@@ -250,7 +250,7 @@ def level_check(store, active):
                 for p in filter(None, (a.get("PassivesAdded") or "").split(";")):
                     added[p] = (lvl, src)
                 for p in filter(None, (a.get("PassivesRemoved") or "").split(";")):
-                    removed.add(p)
+                    removed[p] = max(removed.get(p, 0), lvl)
                 for rname, rlvl, amt in _boost_resources(a.get("Boosts")):
                     if rname == "SpellSlot" and multi_caster:
                         continue      # a multiclassed caster's slots come from the multiclass table (below)
@@ -271,13 +271,17 @@ def level_check(store, active):
                     for p in filter(None, (a.get("PassivesAdded") or "").split(";")):
                         added[p] = (lvl, f"{src}, {race['name']}")
                     for p in filter(None, (a.get("PassivesRemoved") or "").split(";")):
-                        removed.add(p)
+                        removed[p] = max(removed.get(p, 0), lvl)
                     for rname, rlvl, amt in _boost_resources(a.get("Boosts")):
                         res[(rname, rlvl)] = res.get((rname, rlvl), 0) + amt
                         race_res.setdefault((rname, rlvl), []).append((f"{race['name']} L{lvl}", amt))
                     for sel in re.findall(r"AddSpells\(([^),]*)", a.get("Selectors") or ""):
                         if sel.strip():
                             spell_lists.append((lvl, sel.strip(), f"{src}, {race['name']}"))
+        # nodes apply in level order: a passive removed and added again later (Apotheosis moves features to their 2024 level,
+        # e.g. SongVictory removed at 12, added at 14) is expected; one added and removed later is not
+        for p in [p for p in removed if p in added and added[p][0] > removed[p]]:
+            del removed[p]
         for p, (lvl, src) in sorted(added.items(), key=lambda t: t[1][0]):
             if p in removed:
                 continue
@@ -288,7 +292,7 @@ def level_check(store, active):
         for p in sorted(removed):
             if p in have_p:
                 fails += 1
-                lines.append(f"  FAIL passive {p} should have been removed (PassivesRemoved)")
+                lines.append(f"  FAIL passive {p} should have been removed (PassivesRemoved at L{removed[p]})")
         for lvl, uuid, src in spell_lists:
             spells = _list_spells(store, active, uuid)
             if spells is None:

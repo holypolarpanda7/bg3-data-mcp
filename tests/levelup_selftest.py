@@ -189,6 +189,7 @@ class FakeScreen:
             _picker_kind=lambda: (self.rows[self.page][0] if self.page is not None and self.rows[self.page][0] in gameui.ICON_ORIGINS else None),
             _tiles=lambda: ([(456, 476), (500, 476)] if self.page is not None and self.rows[self.page][0] == "icons" else []),
             _fill_passive_selectors=lambda log, limit=24: 0,
+            _fill_skill_selectors=lambda log, limit=12: 0,
             _set_subclass=lambda name: ((self.__setattr__("sub", name), (True, "subclass now " + name))[1]
                                         if name in self.offered else (False, "not offered here")),
             subclasses=lambda: {"Fighter": self.sub_applied},
@@ -310,7 +311,11 @@ def test_grid_math():
     check("selected spells leave the grid: two picks before #165 move it back two places", c and c[0] == ("scroll", 416, 816), c)
     with Patch(_stable_tiles=lambda tries=4: [(480, 498), (458, 584), (502, 584)]):
         c = gameui._icon_candidates(None, 2, 2)
-    check("an unmapped layout: the available icons are the last `count` in reading order", c == [("", 502, 584)], c)
+    check("an unmapped layout: centred-row formula first (2 icons -> x 458/502 around 480), scan position kept, no duplicates",
+          c[0] == ("", 502, 584) and ("", 502, 584) in c and len(c) == len(set(c)), c)
+    with Patch(_stable_tiles=lambda tries=4: []):
+        c = gameui._icon_candidates(None, 1, 2)
+    check("centred-row formula works even when the scan misses (greyed icons)", c and c[0] == ("", 458, 584), c)
 
 
 def test_helper_restart():
