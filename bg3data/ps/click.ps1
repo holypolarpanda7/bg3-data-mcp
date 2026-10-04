@@ -1,4 +1,4 @@
-param([int]$X = 0, [int]$Y = 0, [switch]$Right, [int]$Count = 1)
+param([int]$X = 0, [int]$Y = 0, [double]$Fx = -1, [double]$Fy = -1, [switch]$Right, [int]$Count = 1)
 # OS-level mouse click at (X, Y) in the GAME's client area pixels (the game is brought to the front first).
 Add-Type @"
 using System; using System.Text; using System.Runtime.InteropServices;
@@ -11,6 +11,8 @@ public class CK {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [StructLayout(LayoutKind.Sequential)] public struct RC { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RC r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] i, int size);
@@ -22,6 +24,9 @@ $h = [IntPtr]::Zero
 foreach ($p in (Get-Process bg3_dx11,bg3 -ErrorAction SilentlyContinue)) { $h = [CK]::Find([uint32]$p.Id); if ($h -ne [IntPtr]::Zero) { break } }
 if ($h -eq [IntPtr]::Zero) { "no game window"; exit 1 }
 & (Join-Path $PSScriptRoot "focus_game.ps1") | Out-Null; Start-Sleep -Milliseconds 300
+if ($Fx -ge 0 -and $Fy -ge 0) {  # fractions of the client area: independent of the window resolution
+  $rc = New-Object CK+RC; [CK]::GetClientRect($h, [ref]$rc) | Out-Null
+  $X = [int](($rc.Right - $rc.Left) * $Fx); $Y = [int](($rc.Bottom - $rc.Top) * $Fy) }
 $pt = New-Object CK+PT; $pt.X = $X; $pt.Y = $Y; [CK]::ClientToScreen($h, [ref]$pt) | Out-Null
 [CK]::SetCursorPos($pt.X, $pt.Y) | Out-Null; Start-Sleep -Milliseconds 250
 $down = if ($Right) { 0x0008 } else { 0x0002 }; $up = if ($Right) { 0x0010 } else { 0x0004 }

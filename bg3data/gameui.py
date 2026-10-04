@@ -6,6 +6,7 @@ the game window; the main menu's view model exposes ContinueGameCommand / QuitGa
 taskkill - a killed or hung load makes the next launch start in a no-mods safe mode.
 """
 import os
+import re
 import time
 
 from . import platform, se
@@ -72,12 +73,20 @@ def send_key(scan=0x2E, hold_ms=120, focus=True):
     return r.returncode == 0 and "sent scan" in (r.stdout or "")
 
 
-def click(x, y, right=False, count=1):
-    """An OS-level mouse click at (x, y) in the game's client-area pixels (1920x1080 at full size; a half-size
-    screenshot's coordinates x2). Brings the game to the front, so don't run it while someone is typing."""
+_last_shot = (960, 540)  # size of the last screenshot (half the client area)
+
+
+def click(x, y, right=False, count=1, shot=False):
+    """An OS-level mouse click in the game's client area. (x, y) are client pixels, or with shot=True pixels of the
+    last bg3_screenshot (sent as fractions of the window, so it holds at any resolution of the same aspect ratio).
+    Brings the game to the front, so don't run it while someone is typing."""
     ps = os.path.join(os.path.dirname(__file__), "ps", "click.ps1")
     args = ["powershell.exe" if platform.IS_WSL else "powershell", "-ExecutionPolicy", "Bypass", "-File", platform.to_win(ps),
-            "-X", str(int(x)), "-Y", str(int(y)), "-Count", str(count)] + (["-Right"] if right else [])
+            "-Count", str(count)] + (["-Right"] if right else [])
+    if shot:
+        args += ["-Fx", f"{x / _last_shot[0]:.5f}", "-Fy", f"{y / _last_shot[1]:.5f}"]
+    else:
+        args += ["-X", str(int(x)), "-Y", str(int(y))]
     r = platform.run_win(args, timeout=30)
     return r.returncode == 0 and "clicked" in (r.stdout or "")
 
@@ -88,11 +97,17 @@ def screenshot(out=None):
     out = out or os.path.join(tempfile.gettempdir(), "bg3_screenshot.png")
     if platform.IS_WSL:  # a Windows path the PowerShell script can write to, readable from WSL
         out = os.path.join(platform.windows_temp(), "bg3_screenshot.png")
+    focus_game()  # a screen capture only sees what is visible: the game must be in front of the editor
+    time.sleep(0.4)
     ps = os.path.join(os.path.dirname(__file__), "ps", "screenshot.ps1")
     r = platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-ExecutionPolicy", "Bypass", "-File",
                           platform.to_win(ps), "-Out", platform.to_win(out)], timeout=60)
     if r.returncode != 0 or not os.path.exists(out):
         raise RuntimeError("screenshot failed: " + ((r.stdout or "") + (r.stderr or "")).strip()[-300:])
+    m = re.search(r"scaled (\d+)x(\d+)", r.stdout or "")
+    if m:
+        global _last_shot
+        _last_shot = (int(m.group(1)), int(m.group(2)))
     return out
 
 
@@ -241,3 +256,57 @@ def quit_game(processes, tasklist, wait=45):
             return True
         time.sleep(2)
     return False
+
+
+# ---------------------------------------------------------------- level-up screen
+LEVELUP_BAR = (0.34375, 0.1574)  # the LEVEL UP bar on the character sheet, as fractions of the client area (16:9 layout)
+
+
+def levelup_state():
+    """{sheet_open, levelup_open, complete} read from the UI tree (no screenshot needed)."""
+    res, _ = _client(FIND + """
+local root = Ext.UI.GetRoot()
+local out = {sheet_open = find(root, "CharacterPanel", 0) ~= nil}
+local w = find(root, "CharacterLevelUp", 0)
+out.levelup_open = w ~= nil
+if w then
+  local ok, v = pcall(function() return w.DataContext.IsLevelUpComplete end)
+  out.complete = ok and v == true
+end
+return out""")
+    return res if isinstance(res, dict) else {"sheet_open": False, "levelup_open": False}
+
+
+def levelup_open(sheet_scan=0x17, wait=6.0):
+    """Open the level-up screen: the character sheet key (I in a default profile), then the LEVEL UP bar. Returns the state."""
+    st = levelup_state()
+    if st.get("levelup_open"):
+        return st
+    if not st.get("sheet_open"):
+        send_key(sheet_scan)
+        time.sleep(1.5)
+    focus_game()
+    ps = os.path.join(os.path.dirname(__file__), "ps", "click.ps1")
+    platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-ExecutionPolicy", "Bypass", "-File",
+                      platform.to_win(ps), "-Fx", str(LEVELUP_BAR[0]), "-Fy", str(LEVELUP_BAR[1])], timeout=30)
+    end = time.time() + wait
+    while time.time() < end:
+        time.sleep(0.5)
+        st = levelup_state()
+        if st.get("levelup_open"):
+            break
+    return st
+
+
+def levelup_finish():
+    """Accept a completed level-up through the screen's own FinishLevelUp command. Returns (ok, message)."""
+    st = levelup_state()
+    if not st.get("levelup_open"):
+        return False, "the level-up screen isn't open"
+    if not st.get("complete"):
+        return False, "choices are still pending (IsLevelUpComplete is false): finish them first"
+    res, raw = _client(FIND + """
+local w = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0)
+local ok, err = pcall(function() w.DataContext.FinishLevelUp:Execute(nil) end)
+return {ok = ok, err = ok and "" or tostring(err)}""")
+    return bool(res and res.get("ok")), (res or {}).get("err", "") if res else "no answer from the client"

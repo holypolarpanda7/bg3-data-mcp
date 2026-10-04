@@ -58,3 +58,11 @@ Working path, all through the MCP's own pieces:
    FinishLevelUp) from the plan `bg3_test_plan` already writes, then verify with `bg3_level_check`.
 - Use `bg3_screenshot` + Read after each step to see the page; coordinates are client pixels.
 - The level-up is in-session only; restart reloads the save. Check `bg3_saves` for stray autosaves.
+
+
+## RESULT 2: a full level-up through the MCP (same day)
+Wizard 3 -> 6 completed with `bg3_level_up` + I key + LEVEL UP bar click + checklist clicks + `FinishLevelUp`. Key facts:
+`CharacterLevelUp.DataContext.IsLevelUpComplete` (bool) flips to true when the last choice is made; `FinishLevelUp:Execute(nil)`
+accepts without clicking Accept; `SelectSpell:Execute(item)` on `ProgressionSpells` items does nothing (they are slot placeholders);
+the checklist rows have uneven spacing, so choices are clicked by looking at a screenshot. Packaged as `bg3_levelup`
+(see docs/LEVELUP.md).

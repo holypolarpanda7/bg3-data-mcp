@@ -798,7 +798,7 @@ def bg3_game_dialog(dismiss: bool = True) -> str:
 @guarded
 def bg3_screenshot() -> str:
     """Capture the running game's window to a PNG (half size) and return its file path - open it with an image-capable
-    Read to see what is on screen (dialogs, the HUD, a level-up screen). Needs the game running; no focus required."""
+    Read to see what is on screen (dialogs, the HUD, a level-up screen). Needs the game running; it brings the game to the front first (a capture only sees what is visible), so use it while nobody is typing."""
     from . import gameui
     return gameui.screenshot()
 
@@ -815,11 +815,31 @@ def bg3_press_key(scan: int = 0x2E, hold_ms: int = 120, focus: bool = True) -> s
 
 @mcp.tool()
 @guarded
-def bg3_click(x: int, y: int, right: bool = False, count: int = 1) -> str:
-    """An OS-level mouse click at (x, y) in the game's client-area pixels (full size 1920x1080; a bg3_screenshot is half
-    size, so double its coordinates). Brings the game to the front, so use it while nobody is typing."""
+def bg3_click(x: int, y: int, right: bool = False, count: int = 1, shot: bool = True) -> str:
+    """An OS-level mouse click. By default (shot=True) x, y are pixels of the LAST bg3_screenshot, so you can click what
+    you see; they are sent as fractions of the window and hold at any resolution of the same aspect ratio. shot=False:
+    game client pixels (1920x1080 at full size). Brings the game to the front, so use it while nobody is typing."""
     from . import gameui
-    return "clicked" if gameui.click(x, y, right, count) else "failed (is the game running?)"
+    return "clicked" if gameui.click(x, y, right, count, shot) else "failed (is the game running?)"
+
+
+@mcp.tool()
+@guarded
+def bg3_levelup(action: str = "state", sheet_scan: int = 0x17) -> str:
+    """Level-up screen helper (needs the character level-up ready: bg3_level_up grants the XP). action: 'state' (sheet /
+    level-up screen open? is every choice made = IsLevelUpComplete), 'open' (character sheet key, then the LEVEL UP bar;
+    sheet_scan is the scan code of the sheet key, 0x17 = I), 'finish' (accept via FinishLevelUp once complete).
+    The choices in between (class, subclass, spells, feat, ability points) are clicked with bg3_screenshot + bg3_click;
+    after 'open' take a screenshot, click through the checklist on the left, and call 'state' until complete is true."""
+    from . import gameui
+    if action == "state":
+        return json.dumps(gameui.levelup_state())
+    if action == "open":
+        return json.dumps(gameui.levelup_open(sheet_scan))
+    if action == "finish":
+        ok, msg = gameui.levelup_finish()
+        return "accepted" if ok else "not accepted: " + msg
+    return "action must be state, open or finish"
 
 
 @mcp.tool()
