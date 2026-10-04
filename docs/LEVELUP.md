@@ -124,3 +124,26 @@ cleared in its exact count; level_check ALL PASS at 7.
 
 Tests: `tests/levelup_selftest.py` 35 offline checks (ASI incl. a capped primary, add_class success / wrong class / unknown
 name), `tests/level_check_selftest.py` 13 (ability conditions, multiclass table, caster modifiers).
+
+## Multiclass, subclasses and passive lists (2026-10-03, live on one character: Wizard 3 / Cleric 4 / Barbarian 1 / Fighter 3)
+- **A class the character already has is greyed out on Add Class** (clicking it leaves the page's default - the first time this put a
+  level into Barbarian; the class-level validation caught it). Owned classes are levelled from the class carousel at the panel's
+  top: `SelectFirstUsedClass` then `SelectNextUsedClass` k times. The carousel is ALPHABETICAL (Wizard, Cleric, Barbarian, Fighter
+  taken in that order -> Barbarian, Cleric, Fighter, Wizard). One command per call: several in one frame moved it only once (put a
+  level into Cleric instead of Fighter - caught by validation again).
+- **Subclass**: the game pre-selects the first in its list (Cleric 3 got Apocalypse Domain, Fighter 3 Arcane Archer). `subclass=`
+  sets `SelectedSubClass` by IDString (works; a read in the same frame still shows the old value), checked before Accept and on
+  the character after. A subclass not offered stops before Accept with the list of choices.
+- **Passive lists** (Battle Master manoeuvres are a checkbox list, `SelectPassives`): filled through the view model -
+  `ClassProgressionDetails.Sub/NotSubPassiveSelectors[i]` (`SelectedPassiveCount`, `MaxSelectedPassiveCount`, `Passives[j]` with
+  `Enabled`, `Blocked`, `Value` 1 = picked) and `TogglePassive:Execute(item)`, one per call.
+- **Icon pages in other layouts** (Arcane Archer's cantrip page centres its 2 icons, missed by the three fixed probes): `tiles`
+  helper command finds icon-sized bright blobs in the page area; the driver clicks the bottom row first (picked icons move up to
+  "Selected"). Pages with neither (none seen live now) are reported with the row.
+- **level_check**: the base game ships some progression nodes twice (BattleMaster L3 in Shared AND SharedDev, identical but for the
+  UUID; the game applies one) - exact duplicates now count once (was: SuperiorityDie expected 8, game 4). A resource short by
+  exactly its ability-conditional boosts after an ASI in the session is a NOTE: the game hadn't re-evaluated ArcaneWard_Resource's
+  INT conditions (max stayed at the INT 17 value with INT 19).
+
+Tests: `tests/levelup_selftest.py` 41 (adds icon-scan fallback, unreadable page, subclass chosen / not offered / didn't stick, tile
+order/scaling), `tests/level_check_selftest.py` 13.

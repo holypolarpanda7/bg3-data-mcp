@@ -137,6 +137,7 @@ class FakeScreen:
         self.page, self.feat, self.extras, self.clicks = None, None, 0, []
         self.capped, self.asi_points = set(capped), 0       # abilities already at 20: their "+" does nothing
         self.classes, self.chosen, self.wrong_class = dict(classes or {"Wizard": level}), None, wrong_class
+        self.offered, self.sub, self.sub_applied, self.drop_sub = {"BattleMaster", "Champion"}, None, None, False
 
     def pending(self):
         return sorted(y for y, (k, n, p) in self.rows.items() if p < n)
@@ -155,6 +156,9 @@ class FakeScreen:
         if self.page is None:
             return True
         kind, need, picked = self.rows[self.page]
+        if kind == "icons" and (x, y) in [(456, 476), (500, 476)] and picked < need:
+            self.rows[self.page][2] += 1
+            return True
         if kind in gameui.ICON_ORIGINS:
             ox, oy = gameui.ICON_ORIGINS[kind]
             on_icon = (x - ox) % gameui.ICON_STEP == 0 and (y - oy) % gameui.ICON_ROW == 0
@@ -183,6 +187,11 @@ class FakeScreen:
             _state=lambda tries=3: {"known": True, "levelup_open": True, "complete": not self.pending()},
             pending_rows=lambda: [y for y in self.pending()],
             _picker_kind=lambda: (self.rows[self.page][0] if self.page is not None and self.rows[self.page][0] in gameui.ICON_ORIGINS else None),
+            _tiles=lambda: ([(456, 476), (500, 476)] if self.page is not None and self.rows[self.page][0] == "icons" else []),
+            _fill_passive_selectors=lambda log, limit=24: 0,
+            _set_subclass=lambda name: ((self.__setattr__("sub", name), (True, "subclass now " + name))[1]
+                                        if name in self.offered else (False, "not offered here")),
+            subclasses=lambda: {"Fighter": self.sub_applied},
             _rclick=self.rclick,
             levelup_finish=lambda wait=30.0: (self.apply(), (True, "accepted"))[1],
             class_levels=lambda: dict(self.classes),
@@ -192,6 +201,7 @@ class FakeScreen:
     def apply(self):
         if not self.rises:
             return
+        self.sub_applied = None if self.drop_sub else self.sub
         self.level += 1
         cls = "Wizard" if (self.chosen is None or self.wrong_class) else self.chosen
         self.classes[cls] = self.classes.get(cls, 0) + 1
@@ -256,6 +266,34 @@ def test_auto():
         r = gameui.levelup_auto(add_class="Artificer")
     check("auto: an unknown class name is refused before clicking a tile",
           not r["ok"] and "unknown class" in r["error"] and not fs.clicks, r)
+
+    fs = FakeScreen({177: ("icons", 1)})
+    with fs.patch():
+        r = gameui.levelup_auto()
+    check("auto: an icon page in an unmapped layout is filled from the icon scan", r["ok"] and any("scanned icons, 1" in l for l in r["log"]), r["log"])
+    fs = FakeScreen({177: ("subclass", 1)})
+    with fs.patch():
+        r = gameui.levelup_auto()
+    check("auto: a page with no icons at all is reported, not clicked blindly", not r["ok"] and "can't read" in r.get("error", ""), r)
+
+    fs = FakeScreen({}, level=2)
+    with fs.patch():
+        r = gameui.levelup_auto(subclass="BattleMaster")
+    check("auto: subclass chosen and verified on the character", r["ok"] and fs.sub_applied == "BattleMaster", r)
+    fs = FakeScreen({}, level=2)
+    with fs.patch():
+        r = gameui.levelup_auto(subclass="Samurai")
+    check("auto: a subclass not offered stops before Accept", not r["ok"] and "couldn't choose" in r["error"] and fs.level == 2, r)
+    fs = FakeScreen({}, level=2)
+    fs.drop_sub = True
+    with fs.patch():
+        r = gameui.levelup_auto(subclass="BattleMaster")
+    check("auto: a subclass that didn't stick fails validation", not r["ok"] and "isn't on the character" in r["error"], r)
+
+    sent = []
+    with Patch(_fast=lambda cmd, timeout=15: (sent.append(cmd), (True, "ok 1440 600:635,400:635,500:300"))[1]):
+        t = gameui._tiles()
+    check("tile scan: scaled to reference px, bottom row first, left to right", t == [(300, 476), (450, 476), (375, 225)], t)
 
     with Patch(host_level=lambda: None):
         r = gameui.levelup_auto()

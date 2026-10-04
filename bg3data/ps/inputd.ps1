@@ -8,6 +8,7 @@
 #   lum FX FY FW FH             mean brightness (0-255) of a region (fractions of the client area), no focus change
 #   rgb FX FY FW FH             mean R G B of a region (fractions of the client area)
 #   redrows FX FY FW FH         client height, then the y (client px) of red "!" markers inside that strip, comma separated
+#   tiles FX FY FW FH           icon-like blobs (bright, 24-70 px squares) inside a region: "ok H x:y,x:y,..." (client px)
 #   ping
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -133,6 +134,32 @@ while ($true) {
                         if ($y -lt $hh) { for ($x = 0; $x -lt $w; $x++) { $c = $bmp.GetPixel($x, $y); if ($c.R -gt 150 -and $c.G -lt 90 -and $c.B -lt 100) { $hit = $true; break } } }
                         if ($hit) { if (-not $in) { $in = $true; $start = $y } } elseif ($in) { $in = $false; if ($y - $start -ge $minh) { $rows += [int]($y0 + ($start + $y) / 2) } } }
                       $g.Dispose(); $bmp.Dispose(); $r = "ok " + $s[1] + " " + ($rows -join ",") }
+            "tiles" { $h = Get-Game; $s = Client-Size
+                      $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
+                      $x0 = [int]($s[0] * [double]$a[1]); $y0 = [int]($s[1] * [double]$a[2])
+                      $w = [Math]::Max(8, [int]($s[0] * [double]$a[3])); $hh = [Math]::Max(8, [int]($s[1] * [double]$a[4]))
+                      $bmp = New-Object System.Drawing.Bitmap $w, $hh
+                      $g = [System.Drawing.Graphics]::FromImage($bmp)
+                      $g.CopyFromScreen($pt.X + $x0, $pt.Y + $y0, 0, 0, (New-Object System.Drawing.Size $w, $hh))
+                      $cs = [Math]::Max(3, [int]($s[1] / 270)); $cw = [int]($w / $cs); $ch = [int]($hh / $cs)
+                      $sm = New-Object System.Drawing.Bitmap $bmp, $cw, $ch          # one pixel per cell = the cell's mean colour
+                      $on = New-Object 'bool[,]' $cw, $ch
+                      for ($y = 0; $y -lt $ch; $y++) { for ($x = 0; $x -lt $cw; $x++) { $c = $sm.GetPixel($x, $y)
+                        $on[$x, $y] = (0.299 * $c.R + 0.587 * $c.G + 0.114 * $c.B) -ge 70 } }
+                      $seen = New-Object 'bool[,]' $cw, $ch; $out = @()
+                      $minc = [int](0.022 * $s[1] / $cs); $maxc = [int](0.065 * $s[1] / $cs) + 1
+                      for ($y = 0; $y -lt $ch; $y++) { for ($x = 0; $x -lt $cw; $x++) {
+                        if (-not $on[$x, $y] -or $seen[$x, $y]) { continue }
+                        $stack = New-Object System.Collections.Stack; $stack.Push(@($x, $y)); $seen[$x, $y] = $true
+                        $n = 0; $lx = $x; $hx = $x; $ly = $y; $hy = $y
+                        while ($stack.Count -gt 0) { $p = $stack.Pop(); $px = $p[0]; $py = $p[1]; $n++
+                          if ($px -lt $lx) { $lx = $px }; if ($px -gt $hx) { $hx = $px }; if ($py -lt $ly) { $ly = $py }; if ($py -gt $hy) { $hy = $py }
+                          foreach ($d in @(@(1,0),@(-1,0),@(0,1),@(0,-1))) { $nx = $px + $d[0]; $ny = $py + $d[1]
+                            if ($nx -ge 0 -and $ny -ge 0 -and $nx -lt $cw -and $ny -lt $ch -and $on[$nx, $ny] -and -not $seen[$nx, $ny]) { $seen[$nx, $ny] = $true; $stack.Push(@($nx, $ny)) } } }
+                        $bw = $hx - $lx + 1; $bh = $hy - $ly + 1
+                        if ($bw -ge $minc -and $bh -ge $minc -and $bw -le $maxc -and $bh -le $maxc -and $n -ge 0.4 * $bw * $bh) {
+                          $out += ("" + [int]($x0 + ($lx + $hx + 1) * $cs / 2) + ":" + [int]($y0 + ($ly + $hy + 1) * $cs / 2)) } } }
+                      $g.Dispose(); $bmp.Dispose(); $sm.Dispose(); $r = "ok " + $s[1] + " " + ($out -join ",") }
             default { $r = "err unknown command" }
         }
     } catch { $r = "err " + $_.Exception.Message }

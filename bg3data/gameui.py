@@ -284,6 +284,7 @@ FEATS = [("Ability Improvement", (380, 194), "asi"),
 ADD_CLASS_BUTTON = (708, 120)
 CLASS_TILES = {n: (300 + 116 * (i % 4), 230 + 98 * (i // 4)) for i, n in enumerate(
     ["Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk", "Paladin", "Ranger", "Rogue", "Sorcerer", "Warlock", "Wizard"])}
+TILE_AREA = (280, 160, 460, 740)  # the left panel's page area, scanned for icons when no known picker layout matches
 DARK, BRIGHT = 60, 130            # sky-area brightness: the intro is ~0-25, the interface ~180
 
 
@@ -440,7 +441,16 @@ def _fill_row(y, log, max_clicks=10):
     kind = _picker_kind()
     if kind is None:
         if not levelup_state().get("can_feat"):
-            log.append(f"row y={y}: page without icons and not a feat page (subclass/race/ability?) - not handled")
+            for i in range(max_clicks):    # an icon page in a layout not mapped above: click what the scanner finds
+                tiles = _tiles()
+                if not tiles:
+                    break
+                _rclick(*tiles[0])
+                time.sleep(0.35)
+                if not _row_pending(y):
+                    log.append(f"row y={y}: scanned icons, {i + 1} click(s)")
+                    return True
+            log.append(f"row y={y}: page the driver can't read (no known picker, no icons found, not a feat page) - not handled")
             return False
         for name, pos, extra in FEATS:
             _rclick(*pos)
@@ -491,6 +501,81 @@ def _asi_order():
     return order
 
 
+_VM = 'local d = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0).DataContext '
+
+
+def _fill_passive_selectors(log, limit=24):
+    """Passive choices (manoeuvres, and other "pick N passives" lists) through the view model: TogglePassive on the first enabled,
+    unselected option of any selector short of its count. One toggle per call (several in one frame don't all land)."""
+    n = 0
+    for _ in range(limit):
+        res, _ = _client(FIND + _VM + """
+local det = d.ClassProgressionDetails
+for _, key in ipairs({"SubPassiveSelectors", "NotSubPassiveSelectors"}) do
+  local col = det[key]
+  for i = 1, (col and #col or 0) do
+    local sel = col[i]
+    if sel.SelectedPassiveCount < sel.MaxSelectedPassiveCount then
+      for j = 1, #sel.Passives do
+        local it = sel.Passives[j]
+        if it.Enabled and not it.Blocked and tonumber(it.Value) == 0 then
+          d.TogglePassive:Execute(it)
+          return {toggled = it.IconName}
+        end
+      end
+      return {stuck = key .. "[" .. i .. "]"}
+    end
+  end
+end
+return {done = true}""")
+        if not isinstance(res, dict) or res.get("done"):
+            break
+        if res.get("stuck"):
+            log.append(f"passive selector {res['stuck']}: no selectable option left")
+            break
+        n += 1
+        time.sleep(0.35)
+    if n:
+        log.append(f"passives: {n} toggled through the view model")
+    return n
+
+
+def _tiles():
+    """Icon-like blobs in the page area (reference pixels), bottom row first: picked icons move UP to the "Selected" row, so the
+    bottom row is always the available ones."""
+    x, y, w, h = TILE_AREA
+    ok, r = _fast("tiles %.5f %.5f %.5f %.5f" % (x / REF_W, y / REF_H, w / REF_W, h / REF_H), 10)
+    if not ok or not r.startswith("ok"):
+        return []
+    parts = r[2:].split()
+    try:
+        height = int(parts[0])
+        pts = [tuple(int(v) * REF_H / height for v in p.split(":")) for p in (parts[1].split(",") if len(parts) > 1 else [])]
+    except (IndexError, ValueError, ZeroDivisionError):
+        return []
+    return sorted(((round(px), round(py)) for px, py in pts), key=lambda t: (-t[1], t[0]))
+
+
+def _set_subclass(name):
+    """Choose a subclass by its IDString (e.g. "BattleMaster") on a level that offers one. Returns (ok, message)."""
+    res, _ = _client(FIND + _VM + """
+local ids, target = {}, nil
+for i = 1, #d.SelectableSubClasses do
+  local it = d.SelectableSubClasses[i]
+  ids[#ids + 1] = it.IDString
+  if string.lower(it.IDString) == string.lower(%r) then target = it end
+end
+if #ids == 0 then return {err = "this level offers no subclass choice"} end
+if not target then return {err = "not offered here; choices: " .. table.concat(ids, ", ")} end
+d.SelectedSubClass = target
+return {ok = true}""" % name)
+    if not isinstance(res, dict) or not res.get("ok"):
+        return False, (res or {}).get("err", "no answer") if isinstance(res, dict) else "no answer from the client"
+    time.sleep(1.0)                   # read back in a later frame: the same frame still shows the old value
+    res, _ = _client(FIND + _VM + "return tostring(d.SelectedSubClass and d.SelectedSubClass.IDString)")
+    return (str(res).lower() == name.lower()), f"subclass now {res}"
+
+
 def class_levels():
     """{class name: level} of the host, or None."""
     try:
@@ -501,12 +586,26 @@ def class_levels():
     return r.get("result") if r.get("ok") and isinstance(r.get("result"), dict) else None
 
 
-def levelup_auto(finish=True, add_class=None):
+def subclasses():
+    """{class name: subclass name or None} of the host, or None."""
+    try:
+        r = se.eval_lua("local t = {} for _, c in ipairs(Ext.Entity.Get(Osi.GetHostCharacter()).Classes.Classes) do "
+                        "local sd = c.SubClassUUID and Ext.StaticData.Get(c.SubClassUUID, 'ClassDescription') "
+                        "t[Ext.StaticData.Get(c.ClassUUID, 'ClassDescription').Name] = sd and sd.Name or false end return t",
+                        "server", timeout=8)
+    except (RuntimeError, TimeoutError):
+        return None
+    return r.get("result") if r.get("ok") and isinstance(r.get("result"), dict) else None
+
+
+def levelup_auto(finish=True, add_class=None, subclass=None):
     """Level the host up completely: open the screen, (add_class: take the level in that class instead - a multiclass, or another
     level of a second class), fill every pending checklist row (spells, cantrips, rituals, savant, feat / ability improvement),
     then accept and wait for the level to apply. Validates as it goes: each row's marker must clear, IsLevelUpComplete must be
     true before Accept, the host level must rise by exactly one (and with add_class, that class's level by one). Returns {ok, log,
-    level_before, level_after, classes_before, classes_after, open_s, choices_s, total_s, error}."""
+    level_before, level_after, classes_before, classes_after, open_s, choices_s, total_s, error}. subclass: on a level that offers a
+    subclass choice, take this one (its IDString, e.g. "BattleMaster"; verified on the character afterwards) - otherwise the game's
+    default (the first in its list) is kept."""
     out = {"ok": False, "log": []}
     log = out["log"]
     t0 = time.time()
@@ -526,12 +625,31 @@ def levelup_auto(finish=True, add_class=None):
         if add_class not in CLASS_TILES:
             out["error"] = f"unknown class {add_class!r} (one of {', '.join(CLASS_TILES)})"
             return out
-        out["classes_before"] = class_levels()
-        _rclick(*ADD_CLASS_BUTTON)
-        time.sleep(1.2)
-        _rclick(*CLASS_TILES[add_class])
-        time.sleep(1.5)               # the class's first-level picks are pre-filled as it switches
-        log.append(f"added class {add_class}")
+        out["classes_before"] = owned = class_levels() or {}
+        if add_class in owned:
+            # A class the character has is greyed out on Add Class; it's levelled from the class carousel at the panel's top,
+            # which lists the owned classes ALPHABETICALLY (verified 2026-10-03: Wizard, Cleric, Barbarian, Fighter taken in
+            # that order -> Barbarian, Cleric, Fighter, Wizard). The level check after Accept catches a wrong pick.
+            # One command per call with a pause: several in one frame only move the carousel once (seen 2026-10-03).
+            steps = sorted(owned).index(add_class)
+            for cmd in ["SelectFirstUsedClass"] + ["SelectNextUsedClass"] * steps:
+                _client(FIND + 'local d = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0).DataContext d.%s:Execute(nil) return true' % cmd)
+                time.sleep(0.6)
+            time.sleep(0.9)
+            log.append(f"levelled owned class {add_class} (carousel position {steps + 1} of {len(owned)})")
+        else:
+            _rclick(*ADD_CLASS_BUTTON)
+            time.sleep(1.2)
+            _rclick(*CLASS_TILES[add_class])
+            time.sleep(1.5)           # the class's first-level picks are pre-filled as it switches
+            log.append(f"added class {add_class}")
+    if subclass:
+        ok, msg = _set_subclass(subclass)
+        log.append(f"subclass {subclass}: {msg}")
+        if not ok:
+            out["error"] = f"couldn't choose subclass {subclass}: {msg}"
+            return out
+    _fill_passive_selectors(log)
     stuck = []
     rows = stable_pending_rows()
     for _ in range(14):
@@ -558,7 +676,13 @@ def levelup_auto(finish=True, add_class=None):
     out["ok"] = bool(ok and la == lb + 1)
     if not out["ok"]:
         out["error"] = f"level did not rise by one ({lb} -> {la}): {msg}"
-    elif add_class:
+    if out["ok"] and subclass:
+        subs = subclasses() or {}
+        got = [v for v in subs.values() if v and str(v).lower() == subclass.lower()]
+        if not got:
+            out["ok"] = False
+            out["error"] = f"subclass {subclass} isn't on the character after the level-up: {subs}"
+    if out["ok"] and add_class:
         out["classes_after"] = class_levels()
         before = (out.get("classes_before") or {}).get(add_class, 0)
         after = (out["classes_after"] or {}).get(add_class)

@@ -231,9 +231,16 @@ def level_check(store, active):
         lines.append(f"{c['class']} {c['level']}" + (f" / {c['subclass']}" if c.get("subclass") else " (no subclass yet)"))
         added, removed, spell_lists, choices = {}, set(), [], []
         for name, table in tables:
+            seen_nodes = set()
             for lvl, pname, _, src, a in store.progression(table, active):
                 if lvl > c["level"]:
                     continue
+                # the base game ships some nodes twice (Shared and SharedDev, identical but for the UUID; e.g. BattleMaster L3)
+                # and the game applies one: an exact duplicate is counted once
+                sig = json.dumps({k: v for k, v in a.items() if k != "UUID"}, sort_keys=True)
+                if sig in seen_nodes:
+                    continue
+                seen_nodes.add(sig)
                 # the first class uses the normal nodes; a class taken later uses its IsMulticlass node at level 1 instead
                 is_multi = str(a.get("IsMulticlass", "")).lower() == "true"
                 if name == c["class"] and lvl == 1 and is_multi != (ci > 0):
@@ -307,12 +314,16 @@ def level_check(store, active):
     # resource boosts from the host's passives (class-granted ones like ArcaneWard_Resource too, origin feats, race,
     # background...); conditional ones are evaluated when they test an ability score, otherwise they widen the range
     lines.append("Resources (shared by all classes)" if len(classes) > 1 else "Resources")
-    other, maybe = {}, {}
+    other, maybe, by_ability = {}, {}, {}
     for p in have_p:
         r = store.resolve(p, active)
-        for rname, rlvl, amt, on in _resource_boosts((r or {}).get("fields", {}).get("Boosts", ("", ""))[0], st.get("abilities") or {}):
+        boosts = (r or {}).get("fields", {}).get("Boosts", ("", ""))[0]
+        for (rname, rlvl, amt, on), part in zip(_resource_boosts(boosts, st.get("abilities") or {}),
+                                               [x for x in (boosts or "").split(";") if _COND_BOOST.search(x.strip())]):
             if on is True:
                 other.setdefault((rname, rlvl), []).append((p, amt))
+                if part.strip().startswith("IF("):
+                    by_ability[(rname, rlvl)] = by_ability.get((rname, rlvl), 0) + amt
             elif on is None:
                 maybe.setdefault((rname, rlvl), []).append((p, amt))
     for (rname, rlvl), amt in sorted(res.items()):
@@ -330,6 +341,12 @@ def level_check(store, active):
         if total <= mx <= hi:
             if parts or unsure or len(res_src.get((rname, rlvl)) or {}) > 1 or multi_caster and rname == "SpellSlot":
                 lines.append(f"  PASS resource {rname}[{rlvl}] max {mx:g} = {base}" + (f" {why}" if why else ""))
+        elif total - by_ability.get((rname, rlvl), 0) <= mx < total:
+            # short only by boosts that hang on an ability score: the game evaluates those conditions when they're applied,
+            # so after an ability change (an ASI this session) the max can lag until they're re-evaluated
+            lines.append(f"  NOTE resource {rname}[{rlvl}] max {mx:g}, {total:g} by the current ability scores ({base}"
+                         + (f" {why}" if why else "") + ") - the game hasn't re-evaluated the ability-conditional boosts yet "
+                         "(seen after an ASI in the same session)")
         else:
             warns += 1
             lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, expected {total:g}" + (f"-{hi:g}" if hi != total else "")

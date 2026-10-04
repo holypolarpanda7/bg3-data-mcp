@@ -835,10 +835,10 @@ def bg3_click(x: int = 0, y: int = 0, right: bool = False, count: int = 1, shot:
 
 @mcp.tool()
 @guarded
-def bg3_levelup(action: str = "state", sheet_scan: int = 0x17, add_class: str | None = None) -> str:
+def bg3_levelup(action: str = "state", sheet_scan: int = 0x17, add_class: str | None = None, subclass: str | None = None) -> str:
     """Level-up screen helper (needs the character level-up ready: bg3_level_up grants the XP). action: 'state' (sheet /
     level-up screen open? is every choice made = IsLevelUpComplete), 'open' (character sheet key, then the LEVEL UP bar;
-    sheet_scan is the scan code of the sheet key, 0x17 = I), 'finish' (accept via FinishLevelUp once complete, then waits until the new level is really applied), 'auto' (open, fill every pending choice - spells, cantrips, rituals, savant, a feat: Ability Improvement +2 to the primary ability, else the first free feat - accept, verify the level rose by one and run level_check; returns a log with timings). add_class (auto only): take the level in that class instead (multiclass; Barbarian, Bard, Cleric, Druid, Fighter, Monk, Paladin, Ranger, Rogue, Sorcerer, Warlock, Wizard) - the game pre-fills its first-level picks, and the class's level is verified.
+    sheet_scan is the scan code of the sheet key, 0x17 = I), 'finish' (accept via FinishLevelUp once complete, then waits until the new level is really applied), 'auto' (open, fill every pending choice - spells, cantrips, rituals, savant, a feat: Ability Improvement +2 to the primary ability, else the first free feat - accept, verify the level rose by one and run level_check; returns a log with timings). add_class (auto only): take the level in that class instead (multiclass; Barbarian, Bard, Cleric, Druid, Fighter, Monk, Paladin, Ranger, Rogue, Sorcerer, Warlock, Wizard) - the game pre-fills its first-level picks, and the class's level is verified; a class the character has is levelled from the class carousel. subclass (auto only): on a level that offers one, take this subclass (IDString, e.g. BattleMaster) instead of the game's default - verified on the character.
     The choices in between (class, subclass, spells, feat, ability points) are clicked with bg3_screenshot + bg3_click;
     after 'open' take a screenshot, click through the checklist on the left, and call 'state' until complete is true."""
     from . import gameui
@@ -850,7 +850,7 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17, add_class: str | 
         ok, msg = gameui.levelup_finish()
         return ("accepted " + msg).strip() if ok else "not accepted: " + msg
     if action == "auto":
-        r = gameui.levelup_auto(add_class=add_class)
+        r = gameui.levelup_auto(add_class=add_class, subclass=subclass)
         if r.get("ok"):   # validate: the host must match its class progression at the new level
             from . import testing
             st, active = _testing_store(None)
