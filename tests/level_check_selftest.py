@@ -29,5 +29,23 @@ check("an AbilityGreaterThan with no ability data stays unknown",
       _resource_boosts("IF(AbilityGreaterThan('Wisdom',13)):ActionResource(KiPoint,1,0)", {})[0][3] is None)
 check("boosts from one passive are summed in the report", _group([("A", 1), ("B", 2), ("A", 1)]) == [("A", 2), ("B", 2)])
 
+from bg3data.testing import MULTICLASS_SLOTS, _caster_mod
+
+
+class FakeStore:
+    MODS = {"Wizard": "1", "Cleric": "1", "Paladin": "0.5", "Fighter": "0", "EldritchKnight": "0.333"}
+
+    def static(self, kind, name, active):
+        return ("x", "y", {"MulticlassSpellcasterModifier": self.MODS[name]}) if name in self.MODS else None
+
+
+st = FakeStore()
+check("multiclass table at caster level 9 = 4/3/3/3/1 (as the game applied for Wizard 8 / Cleric 1)", MULTICLASS_SLOTS[9] == [4, 3, 3, 3, 1])
+check("table has all 20 caster levels, 9th-level slot from 17", len(MULTICLASS_SLOTS) == 20 and len(MULTICLASS_SLOTS[17]) == 9)
+check("full caster modifier 1", _caster_mod(st, None, {"class": "Wizard"}) == 1)
+check("Paladin 5 -> 2 caster levels (half, rounded down per class)", int(5 * _caster_mod(st, None, {"class": "Paladin"})) == 2)
+check("Eldritch Knight's modifier comes from the subclass", abs(_caster_mod(st, None, {"class": "Fighter", "subclass": "EldritchKnight"}) - 0.333) < 1e-9)
+check("non-caster = 0", _caster_mod(st, None, {"class": "Fighter"}) == 0)
+
 print(f"{len(FAILS)} FAILED" if FAILS else "all passed")
 sys.exit(1 if FAILS else 0)

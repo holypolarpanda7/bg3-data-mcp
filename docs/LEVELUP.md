@@ -102,3 +102,25 @@ fail. `--live` levels the running host once and also fails if any picker needed 
 
 Live, Wizard 2 -> 7 from the L2 save (2026-10-03): 20.9 s, 22.4 s (feat), 17.7 s, 16.6 s, 19.3 s (ritual + grid + savant); every row
 cleared in its exact count; level_check ALL PASS at 7.
+
+## Open items closed (2026-10-03)
+- **Enter does not accept a level-up.** With every choice made, Enter and then Space were pressed on the interface: the level stayed
+  (checked by `Osi.GetLevel`). The dark-only Enter rule stays as a precaution.
+- **Ability Score Improvement** is now first in the feat chain: +2 to the class's primary ability (`ClassDescription.PrimaryAbility`,
+  read in game), spilling to Constitution and then the rest when capped at 20. Live: Wizard 8, INT 17 -> 19. Panel: "+" at
+  (1080, 316 + 44 * ability index).
+- **Multiclass**: `bg3_levelup(action="auto", add_class="Cleric")`. The button at the panel's top right (708,120) opens Add Class (4x3
+  grid of tiles); the game PRE-FILLS a new class's first-level picks (Cleric: 3 cantrips, Divine Order, deity, prepared spells),
+  so the row loop only mops up. Validation adds: that class's level rose by one. Live: Wizard 8 -> Wizard 8 / Cleric 1.
+- **level_check WARNs were the check's bugs, not mod bugs** (traced through the game's `BoostsContainer`, which names each boost's
+  cause): it ignored race/subrace progressions (High Elf L3 +1 1st-level slot, L5 +1 2nd-level slot), skipped resource boosts of
+  passives the class itself grants (ArcaneWard_Resource), and couldn't read `IF(AbilityGreaterThan(...))` (the ward's +INT mod). Now:
+  race tables are walked (passives, spells, resources), every host passive's boosts count, ability conditions are evaluated against
+  the real scores, other conditions give a range. Resources are pooled over all classes (one shared pool), a later class uses
+  its IsMulticlass level-1 node (as the game does), and a multiclassed caster's slots come from the multiclass spellcaster table
+  at the combined caster level (verified: Wizard 8 / Cleric 1 = 4/3/3/3/1).
+- Subclass pages: a 2024 subclass comes at class level 3, so a subclass page shows when a class reaches 3 without one (the test
+  save's Wizard had Abjuration from creation). Pages the driver can't fill are reported by row ("not handled"); not seen live yet.
+
+Tests: `tests/levelup_selftest.py` 35 offline checks (ASI incl. a capped primary, add_class success / wrong class / unknown
+name), `tests/level_check_selftest.py` 13 (ability conditions, multiclass table, caster modifiers).

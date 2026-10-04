@@ -274,8 +274,16 @@ ICON_STEP, ICON_ROW = 46, 44
 ROW_TOL = 14                      # rows are >= 22 px apart: a marker within this of y is the same row
 # Feats tried in order until the Feat row clears: (name, list position, extra clicks). A taken feat can't be picked again, and
 # some need an ability point or a passive ticked, hence the chain. The details panel fades in ~1 s after the click.
-FEATS = [("Actor", (380, 220), []), ("Alert", (394, 246), [(1080, 316), (870, 452)]),
+ABILITIES = ["Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma"]
+ASI_PLUS = (1080, 316)            # the "+" of Strength on the Ability Improvement panel; the other abilities follow 44 px apart
+FEATS = [("Ability Improvement", (380, 194), "asi"),
+         ("Actor", (380, 220), []), ("Alert", (394, 246), [(1080, 316), (870, 452)]),
          ("Athlete", (394, 272), [(1080, 316)]), ("Charger", (394, 298), [])]
+# Multiclassing: the button at the level-up panel's top right opens "Add Class", a 4x3 grid of class tiles. The game pre-fills
+# a new class's first-level choices (cantrips, Divine Order, deity, weapon mastery...), so the row loop only mops up leftovers.
+ADD_CLASS_BUTTON = (708, 120)
+CLASS_TILES = {n: (300 + 116 * (i % 4), 230 + 98 * (i // 4)) for i, n in enumerate(
+    ["Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk", "Paladin", "Ranger", "Rogue", "Sorcerer", "Warlock", "Wizard"])}
 DARK, BRIGHT = 60, 130            # sky-area brightness: the intro is ~0-25, the interface ~180
 
 
@@ -437,6 +445,16 @@ def _fill_row(y, log, max_clicks=10):
         for name, pos, extra in FEATS:
             _rclick(*pos)
             time.sleep(1.1)           # the details panel fades in
+            if extra == "asi":        # +2 to the class's primary ability; past the cap of 20 the rest spills over to the next ones
+                order = _asi_order()
+                for ab in order:
+                    for _ in range(2):
+                        _rclick(ASI_PLUS[0], ASI_PLUS[1] + 44 * ABILITIES.index(ab))
+                        time.sleep(0.3)
+                    if not _row_pending(y):
+                        log.append(f"row y={y}: feat {name} ({ab})")
+                        return True
+                continue
             for e in extra:
                 _rclick(*e)
                 time.sleep(0.5)
@@ -457,11 +475,38 @@ def _fill_row(y, log, max_clicks=10):
     return False
 
 
-def levelup_auto(finish=True):
-    """Level the host up completely: open the screen, fill every pending checklist row (spells, cantrips, rituals, savant, feat),
+def _asi_order():
+    """Abilities to raise with an Ability Score Improvement: the host class's primary ability first, then Constitution, then the
+    rest (so a capped primary spills somewhere useful)."""
+    try:
+        r = se.eval_lua("local e = Ext.Entity.Get(Osi.GetHostCharacter()) local c = e.Classes.Classes[1] "
+                        "return tostring(Ext.StaticData.Get(c.ClassUUID, 'ClassDescription').PrimaryAbility)", "server", timeout=8)
+        primary = r.get("result") if r.get("ok") else None
+    except (RuntimeError, TimeoutError):
+        primary = None
+    order = [primary] if primary in ABILITIES else []
+    for ab in ["Constitution"] + ABILITIES:
+        if ab not in order:
+            order.append(ab)
+    return order
+
+
+def class_levels():
+    """{class name: level} of the host, or None."""
+    try:
+        r = se.eval_lua("local t = {} for _, c in ipairs(Ext.Entity.Get(Osi.GetHostCharacter()).Classes.Classes) do "
+                        "t[Ext.StaticData.Get(c.ClassUUID, 'ClassDescription').Name] = c.Level end return t", "server", timeout=8)
+    except (RuntimeError, TimeoutError):
+        return None
+    return r.get("result") if r.get("ok") and isinstance(r.get("result"), dict) else None
+
+
+def levelup_auto(finish=True, add_class=None):
+    """Level the host up completely: open the screen, (add_class: take the level in that class instead - a multiclass, or another
+    level of a second class), fill every pending checklist row (spells, cantrips, rituals, savant, feat / ability improvement),
     then accept and wait for the level to apply. Validates as it goes: each row's marker must clear, IsLevelUpComplete must be
-    true before Accept, the host level must rise by exactly one. Returns {ok, log, level_before, level_after, open_s, choices_s,
-    total_s, error}."""
+    true before Accept, the host level must rise by exactly one (and with add_class, that class's level by one). Returns {ok, log,
+    level_before, level_after, classes_before, classes_after, open_s, choices_s, total_s, error}."""
     out = {"ok": False, "log": []}
     log = out["log"]
     t0 = time.time()
@@ -477,6 +522,16 @@ def levelup_auto(finish=True):
         out["error"] = "the level-up screen did not open (is a level-up ready? bg3_level_up grants the XP)"
         return out
     out["open_s"] = round(time.time() - t0, 1)
+    if add_class:
+        if add_class not in CLASS_TILES:
+            out["error"] = f"unknown class {add_class!r} (one of {', '.join(CLASS_TILES)})"
+            return out
+        out["classes_before"] = class_levels()
+        _rclick(*ADD_CLASS_BUTTON)
+        time.sleep(1.2)
+        _rclick(*CLASS_TILES[add_class])
+        time.sleep(1.5)               # the class's first-level picks are pre-filled as it switches
+        log.append(f"added class {add_class}")
     stuck = []
     rows = stable_pending_rows()
     for _ in range(14):
@@ -503,6 +558,13 @@ def levelup_auto(finish=True):
     out["ok"] = bool(ok and la == lb + 1)
     if not out["ok"]:
         out["error"] = f"level did not rise by one ({lb} -> {la}): {msg}"
+    elif add_class:
+        out["classes_after"] = class_levels()
+        before = (out.get("classes_before") or {}).get(add_class, 0)
+        after = (out["classes_after"] or {}).get(add_class)
+        if after != before + 1:
+            out["ok"] = False
+            out["error"] = f"the level went to another class: {add_class} {before} -> {after} ({out['classes_after']})"
     return out
 
 

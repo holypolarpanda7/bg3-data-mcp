@@ -223,27 +223,40 @@ def level_check(store, active):
     lines.append(f"host level {st['level']}  (region {st['region']}, XP {st.get('xp')})")
     if any(s.startswith("TUT_SUMMON_BLOCK") for s in st["statuses"]):
         lines.append("  note: tutorial region (TUT_SUMMON_BLOCK) - summon spells can't be tested here")
-    for c in st["classes"]:
+    classes = st["classes"]
+    res, res_src, race_res = {}, {}, {}      # resources summed over every class, subclass and race: they share one pool
+    multi_caster = len(classes) > 1 and sum(1 for c in classes if _caster_mod(store, active, c) > 0) > 0
+    for ci, c in enumerate(classes):
         tables = [(c["class"], c["class_table"])] + ([(c["subclass"], c["subclass_table"])] if c.get("subclass") else [])
         lines.append(f"{c['class']} {c['level']}" + (f" / {c['subclass']}" if c.get("subclass") else " (no subclass yet)"))
-        added, removed, res, spell_lists, choices, race_res = {}, set(), {}, [], [], {}
+        added, removed, spell_lists, choices = {}, set(), [], []
         for name, table in tables:
             for lvl, pname, _, src, a in store.progression(table, active):
-                if lvl > c["level"] or str(a.get("IsMulticlass", "")).lower() == "true":
+                if lvl > c["level"]:
+                    continue
+                # the first class uses the normal nodes; a class taken later uses its IsMulticlass node at level 1 instead
+                is_multi = str(a.get("IsMulticlass", "")).lower() == "true"
+                if name == c["class"] and lvl == 1 and is_multi != (ci > 0):
+                    continue
+                if is_multi and not (name == c["class"] and lvl == 1):
                     continue
                 for p in filter(None, (a.get("PassivesAdded") or "").split(";")):
                     added[p] = (lvl, src)
                 for p in filter(None, (a.get("PassivesRemoved") or "").split(";")):
                     removed.add(p)
                 for rname, rlvl, amt in _boost_resources(a.get("Boosts")):
+                    if rname == "SpellSlot" and multi_caster:
+                        continue      # a multiclassed caster's slots come from the multiclass table (below)
                     res[(rname, rlvl)] = res.get((rname, rlvl), 0) + amt
+                    res_src.setdefault((rname, rlvl), {}).setdefault(c["class"], 0)
+                    res_src[(rname, rlvl)][c["class"]] += amt
                 for sel in re.findall(r"(\w+)\(([^)]*)\)", a.get("Selectors") or ""):
                     kind, args = sel[0], [x.strip() for x in sel[1].split(",")]
                     if kind == "AddSpells" and args and args[0]:
                         spell_lists.append((lvl, args[0], src))
                     elif kind.startswith("Select") and lvl == c["level"]:
                         choices.append(f"{kind}({', '.join(args[:2])}) [{src}]")
-        if c is st["classes"][0]:     # race / subrace progressions go by character level; counted once, with the first class
+        if ci == 0:                   # race / subrace progressions go by character level; listed with the first class
             for race in st.get("races") or []:
                 for lvl, pname, _, src, a in store.progression(race["table"], active):
                     if lvl > st["level"]:
@@ -280,38 +293,70 @@ def level_check(store, active):
                 fails += not ok
                 if not ok or lvl == c["level"]:
                     lines.append(f"  {'PASS' if ok else 'FAIL'} spell {sp} (L{lvl} AddSpells, {src})" + (f" source={have_s[sp]}" if ok else ""))
-        # resource boosts from the host's passives (class-granted ones like ArcaneWard_Resource too, origin feats, race,
-        # background...); conditional ones are evaluated when they test an ability score, otherwise they widen the range
-        other, maybe = {}, {}
-        for p in have_p:
-            r = store.resolve(p, active)
-            for rname, rlvl, amt, on in _resource_boosts((r or {}).get("fields", {}).get("Boosts", ("", ""))[0], st.get("abilities") or {}):
-                if on is True:
-                    other.setdefault((rname, rlvl), []).append((p, amt))
-                elif on is None:
-                    maybe.setdefault((rname, rlvl), []).append((p, amt))
-        for (rname, rlvl), amt in sorted(res.items()):
-            got = (st["resources"].get(rname) or {}).get(str(rlvl))
-            mx = got[1] if got else 0
-            extra = other.get((rname, rlvl), [])
-            unsure = maybe.get((rname, rlvl), [])
-            total = amt + sum(a for _, a in extra)
-            hi = total + sum(a for _, a in unsure)
-            parts = [f"+{a:g} {n}" for n, a in race_res.get((rname, rlvl), [])] + [f"+{a:g} {p}" for p, a in _group(extra)]
-            why = ", ".join(parts)
-            if unsure:
-                why += (", " if why else "") + f"up to +{hi - total:g} conditional ({', '.join(sorted({p for p, _ in unsure}))})"
-            if total <= mx <= hi:
-                if parts or unsure:
-                    lines.append(f"  PASS resource {rname}[{rlvl}] max {mx:g} = class progression {amt - sum(a for _, a in race_res.get((rname, rlvl), [])):g} {why}")
-            else:
-                warns += 1
-                lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, expected {total:g}" + (f"-{hi:g}" if hi != total else "")
-                             + f" (class progression {amt - sum(a for _, a in race_res.get((rname, rlvl), [])):g}" + (f" {why}" if why else "") + ")")
         for ch in choices:
             lines.append(f"  info this level's choice: {ch}")
+
+    # a multiclassed caster's slots: the multiclass spellcaster table at the combined caster level (each class's level times its
+    # MulticlassSpellCasterModifier, rounded down per class)
+    if multi_caster:
+        cl = sum(int(c["level"] * _caster_mod(store, active, c)) for c in classes)
+        for i, n in enumerate(MULTICLASS_SLOTS.get(min(cl, 20), [])):
+            res[("SpellSlot", i + 1)] = res.get(("SpellSlot", i + 1), 0) + n
+            res_src.setdefault(("SpellSlot", i + 1), {})[f"multiclass table (caster level {cl})"] = n
+
+    # resource boosts from the host's passives (class-granted ones like ArcaneWard_Resource too, origin feats, race,
+    # background...); conditional ones are evaluated when they test an ability score, otherwise they widen the range
+    lines.append("Resources (shared by all classes)" if len(classes) > 1 else "Resources")
+    other, maybe = {}, {}
+    for p in have_p:
+        r = store.resolve(p, active)
+        for rname, rlvl, amt, on in _resource_boosts((r or {}).get("fields", {}).get("Boosts", ("", ""))[0], st.get("abilities") or {}):
+            if on is True:
+                other.setdefault((rname, rlvl), []).append((p, amt))
+            elif on is None:
+                maybe.setdefault((rname, rlvl), []).append((p, amt))
+    for (rname, rlvl), amt in sorted(res.items()):
+        got = (st["resources"].get(rname) or {}).get(str(rlvl))
+        mx = got[1] if got else 0
+        extra = other.get((rname, rlvl), [])
+        unsure = maybe.get((rname, rlvl), [])
+        total = amt + sum(a for _, a in extra)
+        hi = total + sum(a for _, a in unsure)
+        base = ", ".join(f"{k} {v:g}" for k, v in (res_src.get((rname, rlvl)) or {}).items()) or "progression 0"
+        parts = [f"+{a:g} {n}" for n, a in race_res.get((rname, rlvl), [])] + [f"+{a:g} {p}" for p, a in _group(extra)]
+        why = ", ".join(parts)
+        if unsure:
+            why += (", " if why else "") + f"up to +{hi - total:g} conditional ({', '.join(sorted({p for p, _ in unsure}))})"
+        if total <= mx <= hi:
+            if parts or unsure or len(res_src.get((rname, rlvl)) or {}) > 1 or multi_caster and rname == "SpellSlot":
+                lines.append(f"  PASS resource {rname}[{rlvl}] max {mx:g} = {base}" + (f" {why}" if why else ""))
+        else:
+            warns += 1
+            lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, expected {total:g}" + (f"-{hi:g}" if hi != total else "")
+                         + f" ({base}" + (f" {why}" if why else "") + ")")
     lines.insert(0, f"LEVEL CHECK: {'ALL PASS' if not fails else f'{fails} FAIL'}" + (f", {warns} warning(s)" if warns else ""))
     return "\n".join(lines)
+
+
+# Multiclass spellcaster table (PHB): caster level -> slots of levels 1..9. The engine adds these to a multiclassed caster, through
+# the later class's IsMulticlass node (verified in game: Wizard 8 / Cleric 1 = caster level 9 = 4/3/3/3/1).
+MULTICLASS_SLOTS = {1: [2], 2: [3], 3: [4, 2], 4: [4, 3], 5: [4, 3, 2], 6: [4, 3, 3], 7: [4, 3, 3, 1], 8: [4, 3, 3, 2],
+                    9: [4, 3, 3, 3, 1], 10: [4, 3, 3, 3, 2], 11: [4, 3, 3, 3, 2, 1], 12: [4, 3, 3, 3, 2, 1],
+                    13: [4, 3, 3, 3, 2, 1, 1], 14: [4, 3, 3, 3, 2, 1, 1], 15: [4, 3, 3, 3, 2, 1, 1, 1],
+                    16: [4, 3, 3, 3, 2, 1, 1, 1], 17: [4, 3, 3, 3, 2, 1, 1, 1, 1], 18: [4, 3, 3, 3, 3, 1, 1, 1, 1],
+                    19: [4, 3, 3, 3, 3, 2, 1, 1, 1], 20: [4, 3, 3, 3, 3, 2, 2, 1, 1]}
+
+
+def _caster_mod(store, active, c):
+    """A class entry's MulticlassSpellcasterModifier (1 full caster, 0.5 half, 0.333 third via the subclass, 0 none)."""
+    mod = 0.0
+    for name in (c.get("class"), c.get("subclass")):
+        row = store.static("ClassDescription", name, active) if name else None
+        try:
+            mod = max(mod, float((row[2] if row else {}).get("MulticlassSpellcasterModifier") or 0))
+        except (TypeError, ValueError):
+            pass
+    return mod
 
 
 def _group(pairs):

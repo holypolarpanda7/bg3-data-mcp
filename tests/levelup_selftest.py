@@ -131,16 +131,24 @@ def test_enter_only_when_dark():
 class FakeScreen:
     """A level-up screen: rows {y: [kind, needed, picked]}; kind is grid/ritual/savant/feat/subclass. Clicks go through _rclick."""
 
-    def __init__(self, rows, taken_feats=(), level=4, rises=True, open_ok=True):
+    def __init__(self, rows, taken_feats=(), level=4, rises=True, open_ok=True, capped=(), classes=None, wrong_class=False):
         self.rows = {y: [k, n, 0] for y, (k, n) in rows.items()}
         self.taken, self.level, self.rises, self.open_ok = set(taken_feats), level, rises, open_ok
         self.page, self.feat, self.extras, self.clicks = None, None, 0, []
+        self.capped, self.asi_points = set(capped), 0       # abilities already at 20: their "+" does nothing
+        self.classes, self.chosen, self.wrong_class = dict(classes or {"Wizard": level}), None, wrong_class
 
     def pending(self):
         return sorted(y for y, (k, n, p) in self.rows.items() if p < n)
 
     def rclick(self, x, y):
         self.clicks.append((x, y))
+        if (x, y) == gameui.ADD_CLASS_BUTTON:
+            return True
+        hit_class = next((n for n, pos in gameui.CLASS_TILES.items() if pos == (x, y)), None)
+        if hit_class:
+            self.chosen = hit_class
+            return True
         if x == gameui.CHECKLIST_X:
             self.page = min(self.rows, key=lambda r: abs(r - y))
             return True
@@ -156,9 +164,14 @@ class FakeScreen:
             hit = next((f for f in gameui.FEATS if f[1] == (x, y)), None)
             if hit:
                 self.feat, self.extras = (hit if hit[0] not in self.taken else None), 0
-            elif self.feat and (x, y) in self.feat[2]:
+            elif self.feat and self.feat[2] == "asi" and x == gameui.ASI_PLUS[0]:
+                ab = gameui.ABILITIES[(y - gameui.ASI_PLUS[1]) // 44]
+                if ab not in self.capped and self.asi_points < 2:
+                    self.asi_points += 1
+                self.last_asi = ab
+            elif self.feat and self.feat[2] != "asi" and (x, y) in self.feat[2]:
                 self.extras += 1
-            if self.feat and self.extras >= len(self.feat[2]):
+            if self.feat and (self.asi_points >= 2 if self.feat[2] == "asi" else self.extras >= len(self.feat[2])):
                 self.rows[self.page][2] = 1
         return True
 
@@ -171,8 +184,17 @@ class FakeScreen:
             pending_rows=lambda: [y for y in self.pending()],
             _picker_kind=lambda: (self.rows[self.page][0] if self.page is not None and self.rows[self.page][0] in gameui.ICON_ORIGINS else None),
             _rclick=self.rclick,
-            levelup_finish=lambda wait=30.0: (setattr(self, "level", self.level + (1 if self.rises else 0)), (True, "accepted"))[1],
+            levelup_finish=lambda wait=30.0: (self.apply(), (True, "accepted"))[1],
+            class_levels=lambda: dict(self.classes),
+            _asi_order=lambda: ["Intelligence", "Constitution", "Strength", "Dexterity", "Wisdom", "Charisma"],
             sleep=lambda s: None)
+
+    def apply(self):
+        if not self.rises:
+            return
+        self.level += 1
+        cls = "Wizard" if (self.chosen is None or self.wrong_class) else self.chosen
+        self.classes[cls] = self.classes.get(cls, 0) + 1
 
 
 def test_auto():
@@ -182,10 +204,10 @@ def test_auto():
     check("auto: spells + savant -> ok, level 2 -> 3", r["ok"] and r["level_after"] == 3, r)
     check("auto: picks exactly what each row needs (3 icon clicks + 2 row clicks)", len(fs.clicks) == 5, fs.clicks)
 
-    fs = FakeScreen({177: ("grid", 1), 221: ("ritual", 1), 390: ("feat", 1)}, taken_feats={"Actor"})
+    fs = FakeScreen({177: ("grid", 1), 221: ("ritual", 1), 390: ("feat", 1)}, taken_feats={"Ability Improvement", "Actor"})
     with fs.patch():
         r = gameui.levelup_auto()
-    check("auto: a taken feat falls through to the next in the chain", r["ok"] and any("feat Alert" in l for l in r["log"]), r["log"])
+    check("auto: unavailable feats (ASI, a taken Actor) fall through to the next in the chain", r["ok"] and any("feat Alert" in l for l in r["log"]), r["log"])
     check("auto: the ritual row is handled as a ritual picker (1 click)", any("ritual picker, 1 icon" in l for l in r["log"]), r["log"])
 
     fs = FakeScreen({177: ("grid", 2), 300: ("subclass", 1)})
@@ -208,6 +230,32 @@ def test_auto():
     with fs.patch():
         r = gameui.levelup_auto()
     check("auto: a level with no choices goes straight to Accept", r["ok"] and not fs.clicks, r)
+
+    fs = FakeScreen({390: ("feat", 1)}, taken_feats={"Actor"}, level=7)
+    with fs.patch():
+        r = gameui.levelup_auto()
+    check("auto: a feat level takes Ability Improvement, +2 to the primary ability",
+          r["ok"] and any("Ability Improvement (Intelligence)" in l for l in r["log"]), r["log"])
+    fs = FakeScreen({390: ("feat", 1)}, capped={"Intelligence"}, level=7)
+    with fs.patch():
+        r = gameui.levelup_auto()
+    check("auto: a capped primary ability spills over to Constitution",
+          r["ok"] and any("(Constitution)" in l for l in r["log"]), r["log"])
+
+    fs = FakeScreen({}, level=8, classes={"Wizard": 8})
+    with fs.patch():
+        r = gameui.levelup_auto(add_class="Cleric")
+    check("auto: add_class takes the level in that class and validates it",
+          r["ok"] and r["classes_after"] == {"Wizard": 8, "Cleric": 1} and (gameui.CLASS_TILES["Cleric"] in fs.clicks), r)
+    fs = FakeScreen({}, level=8, classes={"Wizard": 8}, wrong_class=True)
+    with fs.patch():
+        r = gameui.levelup_auto(add_class="Cleric")
+    check("auto: the level landing in the wrong class fails validation", not r["ok"] and "another class" in r.get("error", ""), r)
+    fs = FakeScreen({}, level=8)
+    with fs.patch():
+        r = gameui.levelup_auto(add_class="Artificer")
+    check("auto: an unknown class name is refused before clicking a tile",
+          not r["ok"] and "unknown class" in r["error"] and not fs.clicks, r)
 
     with Patch(host_level=lambda: None):
         r = gameui.levelup_auto()
