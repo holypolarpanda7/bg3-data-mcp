@@ -136,6 +136,9 @@ def vocabulary(store, active, layer):
     return enums, calls | ENGINE_FUNCTORS, resources, names, fields, desc_calls - calls - ENGINE_FUNCTORS
 
 
+ARITY = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\(\s*(\))?")
+
+
 def lint_stats(store, active, layer, limit=200):
     enums, calls, resources, names, known_fields, desc_only = vocabulary(store, active, layer)
     rows = store.db.execute("SELECT name, type, file, using_, data FROM stats WHERE layer=? ORDER BY file, name", (layer,)).fetchall()
@@ -146,6 +149,11 @@ def lint_stats(store, active, layer, limit=200):
 
     def add(kind, name, file, msg):
         issues.append((kind, name, os.path.basename(file or ""), msg))
+
+    # KHN condition functions declared with NO parameters (IsDamageTypeCold() reads the event's damage): Lua silently ignores an
+    # argument, so IsDamageTypeCold(context.Target) can't test the target - the author probably meant something else (2026-10-04)
+    zero_param = {n for n, at in store.db.execute("SELECT name, attrs FROM staticdata WHERE kind='KhnFunction'")
+                  if not (json.loads(at or "{}").get("args") or "").strip()}
 
     for name, typ, file, using, data in rows:
         f = _fields(data)
@@ -178,6 +186,10 @@ def lint_stats(store, active, layer, limit=200):
                         add("CALL", name, file, f"{k}: '{c}(' only appears in tooltips (DescriptionParams) elsewhere - not a functor/boost any layer uses")
                     else:
                         add("CALL", name, file, f"{k}: '{c}(' isn't used by any other layer")
+                for fn, empty in ARITY.findall(v):
+                    if not empty and fn in zero_param:
+                        add("ARGS", name, file, f"{k}: '{fn}(...)' is given an argument, but it's declared with no parameters "
+                                                f"(CommonConditions.khn) - the argument is ignored")
                 for fn, args in STATUS_REF.findall(v):
                     for a in [x.strip() for x in args.split(",")]:
                         if re.fullmatch(r"[A-Z][A-Z0-9_]+", a) and a not in TARGET_ARGS:

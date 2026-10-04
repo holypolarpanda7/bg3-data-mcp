@@ -1671,12 +1671,86 @@ def lint_progressions(store, active, layer):
     if wrong:
         out.append(f"WRONG TABLE ({len(wrong)}) - the node's Name belongs to a different table:")
         out += wrong
+    # a table reaching a new spell-slot level with no spell grant at that level, while its other new slot levels have one: the
+    # spells of that level can never be learned/prepared (Apotheosis' Druid 17 had the 9th-level slot and no list, 2026-10-04)
+    # merged like the game: one node per UUID, the highest layer wins (rows are in rank order)
+    merged = {}
+    for r in rows:
+        merged[r[4] or id(r)] = r
+    by_table = {}
+    for r in merged.values():
+        by_table.setdefault(r[3], {}).setdefault(r[2], []).append(r)
+    noslotspells = []
+    for t, levels in by_table.items():
+        seen_max, new_levels = 0, []
+        for L in sorted(levels):
+            mx = max([int(x) for n in levels[L] for x in re.findall(r"ActionResource\((?:SpellSlot|WarlockSpellSlot)\s*,\s*[\d.]+\s*,\s*(\d+)\)",
+                                                                      json.loads(n[5]).get("Boosts") or "")] or [0])
+            if mx > seen_max:
+                if seen_max:
+                    has = any(re.search(r"(Add|Select)Spells\(", json.loads(n[5]).get("Selectors") or "") for n in levels[L])
+                    new_levels.append((L, mx, has, any(n[0] == layer for n in levels[L])))
+                seen_max = mx
+        with_spells = sum(1 for x in new_levels if x[2])
+        for L, mx, has, ours in new_levels:
+            if not has and ours and with_spells >= 2:
+                noslotspells.append(f"  {levels[L][0][1]} L{L}: first level-{mx} slot, but no AddSpells/SelectSpells at that level "
+                                    f"({with_spells} other new slot levels have one)")
+    if noslotspells:
+        out.append(f"NEW SLOT LEVEL WITHOUT SPELLS ({len(noslotspells)}) - that level's spells can't be learned or prepared:")
+        out += noslotspells
+    # subclass nodes below the level the class offers its subclass: the game applies a subclass's nodes from the level it's
+    # chosen, so lower ones never land (dnd55e War Domain L1/L2 - Guided Strike never granted - seen in game 2026-10-04)
+    cd = {u: (n, json.loads(at)) for u, n, at in store.db.execute(f"SELECT uuid, name, attrs FROM staticdata WHERE kind='ClassDescription' AND {w}", p)}
+    table_cd = {at.get("ProgressionTableUUID"): (u, n, at) for u, (n, at) in cd.items()}
+    pick_level, pick_owner = {}, {}
+    for t, levels in by_table.items():
+        for L in sorted(levels):
+            picks = [n for n in levels[L] if json.loads(n[5]).get("_SubClasses") and str(json.loads(n[5]).get("IsMulticlass", "")).lower() != "true"]
+            if picks:
+                pick_level[t], pick_owner[t] = L, {n[0] for n in picks}
+                break
+    early = []
+    for t, levels in by_table.items():
+        me = table_cd.get(t)
+        if not me or not me[2].get("ParentGuid"):
+            continue
+        parent = cd.get(me[2]["ParentGuid"])
+        ptable = parent[1].get("ProgressionTableUUID") if parent else None
+        pl = pick_level.get(ptable)
+        if not pl:
+            continue
+        # this layer is responsible when it owns the early node, or when it moved the subclass choice above an older layer's nodes
+        moved_here = layer in pick_owner.get(ptable, set())
+
+        def feats(nodes):
+            ps, sp = set(), set()
+            for n in nodes:
+                at = json.loads(n[5])
+                ps |= {x for x in (at.get("PassivesAdded") or "").split(";") if x}
+                for u in re.findall(r"(?:Add|Select)Spells\(([0-9a-f-]+)", at.get("Selectors") or ""):
+                    sp |= set(_list_spells(store, active, u) or [u])
+            return ps, sp
+        later_p, later_s = feats([n for L2, ns in levels.items() if L2 >= pl for n in ns])
+        for L in sorted(levels):
+            if L >= pl:
+                continue
+            for n in levels[L]:
+                if not (n[0] == layer or moved_here):
+                    continue
+                ps, sp = feats([n])
+                lost = sorted(ps - later_p) + sorted(sp - later_s)
+                if lost:   # features granted again at or above the pick level were moved, not lost
+                    early.append(f"  {me[1]} L{L} [{n[0]}] (subclass chosen at L{pl}): never applied, not granted later - {', '.join(lost)[:160]}")
+    if early:
+        out.append(f"SUBCLASS NODES BELOW THE SUBCLASS LEVEL ({len(early)}) - the game never applies them:")
+        out += early
     if dup:
         out.append(f"STACKED choices ({len(dup)}): several nodes for one table+level each grant choices/feats - all load, so they're offered twice:")
         for (t, l), v in sorted(dup, key=lambda d: (d[1][0][1], d[0][1])):
             out.append(f"  {v[0][1]} L{l}: " + "; ".join(f"{x[0]} {x[4]}" + (" [AllowImprovement]" if json.loads(x[5]).get("AllowImprovement") == "true" else "")
                                                       + (" [Selectors]" if json.loads(x[5]).get("Selectors") else "") for x in v))
-    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources")] + out)
+    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources, {len(noslotspells)} slot levels without spells, {len(early)} early subclass nodes")] + out)
 
 
 # ------------------------------------------------------------------ build plans
