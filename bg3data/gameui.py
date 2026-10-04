@@ -298,9 +298,11 @@ def levelup_open(sheet_scan=0x17, wait=8.0, skip_intro=True):
         if st.get("levelup_open"):
             break
     if st.get("levelup_open") and skip_intro and not st.get("complete"):
-        for _ in range(3):  # the intro plays for a few seconds: Enter skips it to the interface
-            send_key(0x1C, hold_ms=40)
-            time.sleep(0.35)
+        # the intro ignores Enter until it has faded in (~4 s after the bar click): start late, then press once a second
+        time.sleep(2.5)
+        for _ in range(4):
+            send_key(0x1C, hold_ms=120)
+            time.sleep(0.9)
         st = levelup_state()
     return st
 
