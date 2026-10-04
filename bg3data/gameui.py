@@ -554,7 +554,8 @@ for _, key in ipairs({"SubPassiveSelectors", "NotSubPassiveSelectors"}) do
         local it = sel.Passives[j]
         if it.Enabled and not it.Blocked and tonumber(it.Value) == 0 then
           pick = pick or it
-          if PRIMARY ~= "" and string.find(string.lower(tostring(it.IconName) .. tostring(it.Id or "")), PRIMARY, 1, true) then pick = it break end
+          local okn, nm = pcall(function() return string.lower(tostring(it.IconName)) end)
+          if PRIMARY ~= "" and okn and string.find(nm, PRIMARY, 1, true) then pick = it break end
         end
       end
       if pick then
@@ -585,14 +586,25 @@ def _fill_skill_selectors(log, limit=12):
     n = 0
     for _ in range(limit):
         res, _ = _client(FIND + _VM + """
-for _, key in ipairs({"ClassSkills", "AllSkills"}) do
-  local c = d[key]
-  if c and c.SelectedSkillCount < c.MaxSelectedSkillCount then
+-- skill groups: ClassSkills (e.g. Bladesinger's skill), and AllSkills' ClassProficientSkills / ExpertiseSkills /
+-- RaceProficientSkills (Expertise: Bard 2, Ranger 2, Rogue 1 - its options are skills the character is already proficient in)
+local groups = {{"ClassSkills", d.ClassSkills, false}}
+local all = d.AllSkills
+if all then
+  for _, k in ipairs({"ClassProficientSkills", "ExpertiseSkills", "RaceProficientSkills"}) do
+    local ok, g = pcall(function() return all[k] end)
+    if ok and g then groups[#groups + 1] = {k, g, k == "ExpertiseSkills"} end
+  end
+end
+for _, gk in ipairs(groups) do
+  local key, c, expertise = gk[1], gk[2], gk[3]
+  local ok, short = pcall(function() return c.SelectedSkillCount < c.MaxSelectedSkillCount end)
+  if ok and short then
     for i = 1, #c.Skills do
       local it = c.Skills[i]
-      if it.Enabled and not it.Selected and not it.IsProficient then
+      if it.Enabled and not it.Selected and (expertise or not it.IsProficient) and not it.IsExpert then
         d.ToggleSkill:Execute(it)
-        return {toggled = tostring(it.Skill)}
+        return {toggled = key .. ":" .. tostring(it.Skill)}
       end
     end
     return {stuck = key}
@@ -856,6 +868,38 @@ return {ok = true}""" % name)
     time.sleep(1.0)                   # read back in a later frame: the same frame still shows the old value
     res, _ = _client(FIND + _VM + "return tostring(d.SelectedSubClass and d.SelectedSubClass.IDString)")
     return (str(res).lower() == name.lower()), f"subclass now {res}"
+
+
+def levelup_vm_summary():
+    """Every choice the open level-up screen's view model exposes, with its fill state - to see which kind of page is unfilled."""
+    res, _ = _client(FIND + _VM + """
+local out = {}
+local det = d.ClassProgressionDetails
+for _, key in ipairs({"SubPassiveSelectors", "NotSubPassiveSelectors"}) do
+  local c = det[key]
+  for i = 1, (c and #c or 0) do out[#out + 1] = key .. i .. ": " .. c[i].SelectedPassiveCount .. "/" .. c[i].MaxSelectedPassiveCount .. " of " .. #c[i].Passives end
+end
+for _, key in ipairs({"SubSpellSelectors", "NotSubSpellSelectors"}) do
+  local c = det[key]
+  for i = 1, (c and #c or 0) do out[#out + 1] = key .. i .. ": added " .. c[i].AddedCount .. " complete=" .. tostring(c[i].IsComplete) .. " of " .. #c[i].Available end
+end
+for _, key in ipairs({"SubEquipmentSelectors", "NotSubEquipmentSelectors"}) do
+  local c = det[key]
+  out[#out + 1] = key .. ": " .. tostring(c and #c or 0)
+end
+out[#out + 1] = "abilities " .. tostring(det.SelectedAbilityCount) .. "/" .. tostring(det.MaxSelectedAbilityCount) .. " complete=" .. tostring(det.IsAbilitySelectionComplete)
+local groups = {{"ClassSkills", d.ClassSkills}}
+for _, k in ipairs({"ClassProficientSkills", "ExpertiseSkills", "RaceProficientSkills"}) do
+  local ok, g = pcall(function() return d.AllSkills[k] end)
+  if ok and g then groups[#groups + 1] = {k, g} end
+end
+for _, gk in ipairs(groups) do
+  local ok, txt = pcall(function() return gk[1] .. ": " .. gk[2].SelectedSkillCount .. "/" .. gk[2].MaxSelectedSkillCount end)
+  out[#out + 1] = ok and txt or (gk[1] .. ": ?")
+end
+for _, key in ipairs({"UnusedAbilityPoints", "CanSelectFeat", "IsLevelUpComplete"}) do out[#out + 1] = key .. "=" .. tostring(d[key]) end
+return out""")
+    return res
 
 
 def class_levels():
