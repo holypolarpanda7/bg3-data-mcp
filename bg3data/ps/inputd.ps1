@@ -6,6 +6,8 @@
 #   clickpx X Y [L|R] [COUNT]   mouse click at client pixels
 #   shot PATH                   PNG of the game window, half size (game focused first); replies "ok WxH SWxSH"
 #   lum FX FY FW FH             mean brightness (0-255) of a region (fractions of the client area), no focus change
+#   rgb FX FY FW FH             mean R G B of a region (fractions of the client area)
+#   redrows                     y (client px) of red "!" markers in the level-up checklist strip (x 10-42, y 70-500), comma separated
 #   ping
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -61,7 +63,8 @@ function Do-Click([int]$x, [int]$y, [string]$btn, [int]$n) {
     Set-Focus
     $h = Get-Game
     $pt = New-Object ID+PT; $pt.X = $x; $pt.Y = $y; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
-    [ID]::SetCursorPos($pt.X, $pt.Y) | Out-Null; Start-Sleep -Milliseconds 40
+    [ID]::SetCursorPos($pt.X + 4, $pt.Y + 3) | Out-Null; Start-Sleep -Milliseconds 25   # the UI needs a real move to hover a target
+    [ID]::SetCursorPos($pt.X, $pt.Y) | Out-Null; Start-Sleep -Milliseconds 45
     $down = if ($btn -eq "R") { 0x0008 } else { 0x0002 }; $up = if ($btn -eq "R") { 0x0010 } else { 0x0004 }
     for ($i = 0; $i -lt $n; $i++) { [ID]::Btn($down); Start-Sleep -Milliseconds 35; [ID]::Btn($up); Start-Sleep -Milliseconds 60 }
 }
@@ -107,6 +110,26 @@ while ($true) {
                       $sm = New-Object System.Drawing.Bitmap $bmp, 8, 8; $t = 0
                       for ($y = 0; $y -lt 8; $y++) { for ($x = 0; $x -lt 8; $x++) { $c = $sm.GetPixel($x, $y); $t += 0.299 * $c.R + 0.587 * $c.G + 0.114 * $c.B } }
                       $g.Dispose(); $bmp.Dispose(); $sm.Dispose(); $r = "ok " + [int]($t / 64) }
+            "rgb"   { $h = Get-Game; $s = Client-Size
+                      $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
+                      $w = [Math]::Max(1, [int]($s[0] * [double]$a[3])); $hh = [Math]::Max(1, [int]($s[1] * [double]$a[4]))
+                      $bmp = New-Object System.Drawing.Bitmap $w, $hh
+                      $g = [System.Drawing.Graphics]::FromImage($bmp)
+                      $g.CopyFromScreen($pt.X + [int]($s[0] * [double]$a[1]), $pt.Y + [int]($s[1] * [double]$a[2]), 0, 0, (New-Object System.Drawing.Size $w, $hh))
+                      $sm = New-Object System.Drawing.Bitmap $bmp, 4, 4; $cr = 0; $cg = 0; $cb = 0
+                      for ($y = 0; $y -lt 4; $y++) { for ($x = 0; $x -lt 4; $x++) { $c = $sm.GetPixel($x, $y); $cr += $c.R; $cg += $c.G; $cb += $c.B } }
+                      $g.Dispose(); $bmp.Dispose(); $sm.Dispose(); $r = "ok " + [int]($cr / 16) + " " + [int]($cg / 16) + " " + [int]($cb / 16) }
+            "redrows" { $h = Get-Game; $s = Client-Size
+                      $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
+                      $bmp = New-Object System.Drawing.Bitmap 32, 430
+                      $g = [System.Drawing.Graphics]::FromImage($bmp)
+                      $g.CopyFromScreen($pt.X + 10, $pt.Y + 70, 0, 0, (New-Object System.Drawing.Size 32, 430))
+                      $hits = @(); for ($y = 0; $y -lt 430; $y++) { $n = 0
+                        for ($x = 0; $x -lt 32; $x++) { $c = $bmp.GetPixel($x, $y); if ($c.R -gt 150 -and $c.G -lt 90 -and $c.B -lt 100) { $n++ } }
+                        $hits += $n }
+                      $rows = @(); $in = $false; $start = 0
+                      for ($y = 0; $y -lt 430; $y++) { if ($hits[$y] -gt 0) { if (-not $in) { $in = $true; $start = $y } } elseif ($in) { $in = $false; if ($y - $start -ge 4) { $rows += [int](70 + ($start + $y) / 2) } } }
+                      $g.Dispose(); $bmp.Dispose(); $r = "ok " + ($rows -join ",") }
             default { $r = "err unknown command" }
         }
     } catch { $r = "err " + $_.Exception.Message }

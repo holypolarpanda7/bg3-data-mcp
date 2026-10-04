@@ -272,6 +272,8 @@ out.levelup_open = w ~= nil
 if w then
   local ok, v = pcall(function() return w.DataContext.IsLevelUpComplete end)
   out.complete = ok and v == true
+  local ok2, st = pcall(function() return tostring(w.DataContext.LevelUpStep) end)
+  out.step = ok2 and st or nil
 end
 return out""")
     return res if isinstance(res, dict) else {"sheet_open": False, "levelup_open": False}
@@ -302,6 +304,8 @@ def levelup_open(sheet_scan=0x17, wait=8.0, skip_intro=True):
             seen_dark = True
         if seen_dark and lum is not None and lum > 130:
             break
+        if time.time() - t0 > 6 and not seen_dark and not levelup_state().get("levelup_open"):
+            break                     # the bar click opened nothing: no level-up is ready
         if skip_intro and time.time() - last_key >= 0.5 and time.time() - t0 > 0.8:
             send_key(0x1C, hold_ms=100)
             last_key = time.time()
@@ -316,6 +320,138 @@ def _lum():
         return int(r.split()[1]) if ok and r.startswith("ok") else None
     except (IndexError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------- automatic level-up
+# Geometry in client pixels (1920x1080). Pickers put their icons in one of three places; which one is in use is found by
+# brightness (icons are bright on a dark panel), so no screenshot is needed.
+ICON_ORIGINS = {"grid": (324, 476), "ritual": (370, 454), "savant": (324, 582)}
+ICON_STEP = 46
+# Feats tried in order until the Feat row clears: (name, list position, extra clicks). A taken feat can't be picked again, and
+# some need an ability point or a passive ticked, hence the chain. The details panel fades in ~1 s after the click.
+FEATS = [("Actor", (380, 220), []), ("Alert", (394, 246), [(1080, 316), (870, 452)]),
+         ("Athlete", (394, 272), [(1080, 316)]), ("Charger", (394, 298), [])]
+ACCEPT = (1174, 1004)
+
+
+def pending_rows():
+    """Client-pixel y of every checklist row still showing the red "!" marker (top to bottom)."""
+    ok, r = _fast("redrows", 8)
+    if not ok or not r.startswith("ok"):
+        return None
+    ys = [int(v) for v in r[2:].replace(",", " ").split()]
+    out = []
+    for y in ys:                      # the ring and the "!" come back as separate clusters: merge those within 30 px
+        if out and y - out[-1][-1] < 30:
+            out[-1].append(y)
+        else:
+            out.append([y])
+    return [int(sum(g) / len(g)) for g in out]
+
+
+def stable_pending_rows(timeout=4.0):
+    """pending_rows once two reads 0.4 s apart agree (the checklist is still fading in right after the screen opens)."""
+    prev = None
+    end = time.time() + timeout
+    while time.time() < end:
+        cur = pending_rows()
+        if cur is not None and cur == prev and cur:
+            return cur
+        prev = cur
+        time.sleep(0.4)
+    return pending_rows() or []
+
+
+def _row_pending(y):
+    """Is a checklist row near y still marked? (an unreadable helper counts as still pending; an empty list as cleared)"""
+    rows = pending_rows()
+    return rows is None or any(abs(v - y) < 14 for v in rows)
+
+
+def _icons_at(origin):
+    """True when bright icon art sits at a picker's first slot (a dark panel reads ~20, an icon 45+)."""
+    x, y = origin
+    ok, r = _fast("lum %.4f %.4f 0.014 0.022" % ((x - 13) / 1920, (y - 12) / 1080), 5)
+    try:
+        return ok and int(r.split()[1]) >= 40
+    except (IndexError, ValueError):
+        return False
+
+
+def _fill_row(y, log, max_clicks=10):
+    """Open the checklist row at y and pick icons until its marker clears. Returns True when the row cleared."""
+    click(70, y, shot=False)
+    time.sleep(0.5)
+    kind = next((k for k, o in ICON_ORIGINS.items() if _icons_at(o)), None)
+    if kind is None:                  # a text list (feat): try the chain until the row clears
+        for name, pos, extra in FEATS:
+            click(*pos, shot=False)
+            time.sleep(1.1)
+            for e in extra:
+                click(*e, shot=False)
+                time.sleep(0.5)
+            time.sleep(0.4)
+            if not _row_pending(y):
+                log.append(f"row y={y}: list page, feat {name}")
+                return True
+        log.append(f"row y={y}: list page, no feat in the chain cleared it")
+        return False
+    ox, oy = ICON_ORIGINS[kind]
+    clicked = 0
+    for i in range(max_clicks):
+        click(ox + ICON_STEP * (i % 8), oy + 44 * (i // 8), shot=False)
+        clicked += 1
+        time.sleep(0.35)
+        if not _row_pending(y):
+            log.append(f"row y={y}: {kind} picker, {clicked} icon(s)")
+            return True
+    log.append(f"row y={y}: {kind} picker, still pending after {clicked} icons (markers now {pending_rows()})")
+    return False
+
+
+def levelup_auto(feats=True, finish=True):
+    """Level the host up completely: open the screen, fill every pending checklist row (spells, cantrips, rituals, savant, feat),
+    then accept and wait for the level to apply. Validates as it goes: the pending markers must clear, IsLevelUpComplete must be
+    true before Accept, the host level must rise by one afterwards. Returns a dict {ok, log, level_before, level_after, error}."""
+    out = {"ok": False, "log": []}
+    log = out["log"]
+    t0 = time.time()
+    out["level_before"] = host_level()
+    st = levelup_state()
+    if not st.get("levelup_open"):
+        st = levelup_open()
+    if not st.get("levelup_open"):
+        out["error"] = "the level-up screen did not open (is a level-up ready? bg3_level_up grants the XP)"
+        return out
+    out["open_s"] = round(time.time() - t0, 1)
+    stuck = set()
+    stable_pending_rows()
+    for _ in range(14):
+        rows = [y for y in (stable_pending_rows(1.6) if not stuck else pending_rows() or []) if all(abs(y - z) > 15 for z in stuck)]
+        if not rows:
+            break
+        y = rows[0]
+        if not _fill_row(y, log):
+            stuck.add(y)
+            if len(stuck) > 2:
+                break
+    out["choices_s"] = round(time.time() - t0 - out["open_s"], 1)
+    st = levelup_state()
+    if not st.get("complete"):
+        out["error"] = "choices still pending after the driver ran (a page type it doesn't know): " + "; ".join(log[-3:])
+        return out
+    if not finish:
+        out["ok"] = True
+        return out
+    ok, msg = levelup_finish()
+    out["total_s"] = round(time.time() - t0, 1)
+    out["level_after"] = host_level()
+    out["log"].append(msg)
+    lb, la = out["level_before"], out["level_after"]
+    out["ok"] = bool(ok and lb is not None and la == lb + 1)
+    if not out["ok"]:
+        out["error"] = f"level did not rise by one ({lb} -> {la}): {msg}"
+    return out
 
 
 def host_level():

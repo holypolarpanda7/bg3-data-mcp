@@ -54,3 +54,24 @@ Verified 2026-10-03: Wizard 3 -> 6 (cantrip, spells, ritual spell, Savant spell,
 - `bg3_load_save(index)` loads a save from the pause menu of the running game (no restart): ~34 s, clears [ForceUpdate].
 - Measured, Wizard 2 -> 5 from the L2 save: L3 open 13.5 s + choices 1.9 s + finish 3.6 s = 19 s; L4 open 10.1 + choices 3.5 +
   finish 4.1 = 17.7 s (feat included); L5 choices+finish 7.7 s. Open is the floor: ~3 s for the sheet + the 6-9 s intro.
+
+## Round 3 (2026-10-03): `bg3_levelup auto`
+`auto` opens the screen, fills every pending checklist row, accepts, and validates. Needs a `/mcp` reconnect to appear as an action.
+- Rows still pending are found by the red "!" marker (helper command `redrows`, scans a 32 px strip; ring and glyph clusters
+  merge into one row). The picker type is found by brightness at the three known icon origins (`lum`): grid (spells/cantrips),
+  ritual, savant; no icons = a text list = feat. Icons are clicked until that row's marker clears, so the right NUMBER is
+  picked without reading "0/2". Feats try a chain (Actor, Alert, Athlete, Charger) until the Feat row clears (a taken feat
+  can't be picked again; the details panel fades in ~1 s after the click).
+- Validation built in: every row's marker must clear; `IsLevelUpComplete` must be true before Accept; the host level must rise by exactly one
+  (`Osi.GetLevel`); the server action then runs `level_check` and fails the result on any FAIL line. The result carries
+  `open_s / choices_s / total_s` and a log of what each row did.
+- `tests/levelup_selftest.py` (offline logic tests, `--live` runs one real level) .
+- Live results, Wizard 2 -> 6 from the L2 save: L3 27.8 s, L4 (feat) 25.6 s, L5 24.8 s, L6 20.4 s, all level_check PASS; "no
+  level-up ready" fails cleanly in ~12 s.
+- Bugs this round found and fixed: an empty marker list was read as "still pending" (extra icon clicks); row tolerance 25 px matched the
+  next row (now 14); repeated clicks at the same spot did nothing because the UI needs a real mouse move (the helper now
+  nudges 4 px first - this also explains earlier "click did nothing" cases); `LevelUpStep` ("IntroComplete") exists in the view model
+  but its intro value was not caught.
+- Known gaps: subclass/race/multiclass/ability-score pages aren't handled (the driver reports the row it couldn't clear and
+  stops); the ArcaneWard / SpellSlot WARNs in level_check read +INT mod and an extra level-1/2 slot - the check ignores ability
+  modifiers, not investigated further.

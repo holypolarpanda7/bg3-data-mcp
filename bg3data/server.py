@@ -838,7 +838,7 @@ def bg3_click(x: int = 0, y: int = 0, right: bool = False, count: int = 1, shot:
 def bg3_levelup(action: str = "state", sheet_scan: int = 0x17) -> str:
     """Level-up screen helper (needs the character level-up ready: bg3_level_up grants the XP). action: 'state' (sheet /
     level-up screen open? is every choice made = IsLevelUpComplete), 'open' (character sheet key, then the LEVEL UP bar;
-    sheet_scan is the scan code of the sheet key, 0x17 = I), 'finish' (accept via FinishLevelUp once complete, then waits until the new level is really applied).
+    sheet_scan is the scan code of the sheet key, 0x17 = I), 'finish' (accept via FinishLevelUp once complete, then waits until the new level is really applied), 'auto' (open, fill every pending choice - spells, cantrips, rituals, savant, a feat - accept, and verify the level rose by one; returns a log).
     The choices in between (class, subclass, spells, feat, ability points) are clicked with bg3_screenshot + bg3_click;
     after 'open' take a screenshot, click through the checklist on the left, and call 'state' until complete is true."""
     from . import gameui
@@ -849,7 +849,17 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17) -> str:
     if action == "finish":
         ok, msg = gameui.levelup_finish()
         return ("accepted " + msg).strip() if ok else "not accepted: " + msg
-    return "action must be state, open or finish"
+    if action == "auto":
+        r = gameui.levelup_auto()
+        if r.get("ok"):   # validate: the host must match its class progression at the new level
+            from . import testing
+            st, active = _testing_store(None)
+            chk = testing.level_check(st, active)
+            r["level_check"] = chk.splitlines()[0]
+            r["level_check_fails"] = [l.strip() for l in chk.splitlines() if l.strip().startswith("FAIL")]
+            r["ok"] = not r["level_check_fails"]
+        return json.dumps(r)
+    return "action must be state, open, finish or auto"
 
 
 @mcp.tool()
