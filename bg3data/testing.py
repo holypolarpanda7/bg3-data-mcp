@@ -219,6 +219,12 @@ def level_check(store, active):
     st = host_state()
     have_p = set(st["passives"])
     have_s = {s["id"]: s["source"] for s in st["spells"]}
+    # the spellbook can hold a spell as a numbered variant: Pact Magic upcasts (Zone_Fear_4 for a Warlock whose slots are level 4)
+    # and container children (Shout_WildResurgence_1) - count the base id as present too (seen 2026-10-04 on Warlock / Druid)
+    for sid, src in list(have_s.items()):
+        m = re.match(r"^(.*)_\d+$", sid)
+        if m:
+            have_s.setdefault(m.group(1), src)
     lines, fails, warns = [], 0, 0
     lines.append(f"host level {st['level']}  (region {st['region']}, XP {st.get('xp')})")
     if any(s.startswith("TUT_SUMMON_BLOCK") for s in st["statuses"]):
@@ -257,6 +263,12 @@ def level_check(store, active):
                     res[(rname, rlvl)] = res.get((rname, rlvl), 0) + amt
                     res_src.setdefault((rname, rlvl), {}).setdefault(c["class"], 0)
                     res_src[(rname, rlvl)][c["class"]] += amt
+                # ActionResourceOverride(R, amount, level) SETS the max (Pact Magic: slots move up a level and the old level is
+                # overridden to 0); nodes are walked in level order, so it replaces what was summed so far
+                for rname, amt, rlvl in re.findall(r"ActionResourceOverride\(\s*(\w+)\s*,\s*([\d.]+)\s*,\s*(\d+)\s*\)", a.get("Boosts") or ""):
+                    key = (rname, int(rlvl))
+                    res[key] = float(amt)
+                    res_src[key] = {f"{c['class']} (override at L{lvl})": float(amt)}
                 for sel in re.findall(r"(\w+)\(([^)]*)\)", a.get("Selectors") or ""):
                     kind, args = sel[0], [x.strip() for x in sel[1].split(",")]
                     if kind == "AddSpells" and args and args[0]:
@@ -684,7 +696,9 @@ def stage(store, active, layer, case_id):
         blockers.append(f"host is {cl['class']} {cl['level']}; case needs level {c['level']}")
     elif cl and c.get("level") and cl["level"] > c["level"]:
         notes.append(f"host is {cl['class']} {cl['level']} (case written for {c['level']})")
-    if c.get("subclass") and not any(x.get("subclass") == c["subclass"] for x in st["classes"]):
+    # cases name subclasses by progression table (AberrantSorcery), the host by ClassDescription (Aberrant): accept either
+    if c.get("subclass") and not any(x.get("subclass") in (c["subclass"], subclass_ui_name(store, active, x["class"], c["subclass"]))
+                                     for x in st["classes"]):
         blockers.append(f"host lacks subclass {c['subclass']}")
     if c.get("spell") and c.get("caster", "host") == "host":
         known = {s["id"]: s["source"] for s in st["spells"]}
