@@ -201,3 +201,14 @@ Portent, Alter Memories ...). Fixes found on the way:
 - `bg3_test_build(background=True)` runs a comma-separated batch in a detached process (`bg3data/runbuilds.py`), log via
   `bg3_test_build_status`; a build with `from` loads its start save by name when the host isn't that character.
 - Epic Boon: the "+1 to an ability" passive list now prefers the option naming the primary ability.
+
+## Every class, 2 -> 20 (2026-10-04)
+37 builds (9 Wizard + 28 for the other 11 classes, `tests/bg3/class_builds.toml` in Apotheosis) pass every level with level_check,
+and every automated 13+ case passes in game. Base characters for each class come from `bg3_new_character` (respec of "Tavizard L2
+Base"); `bg3_test_build(background=True)` runs batches. `known_fails` in a build shows a check failure as KNOWN without stopping the
+run (War Domain: upstream #1556). Driver additions on the way: expertise and the other AllSkills groups, Metamagic/boon passive
+lists (after fixing a regression of mine), Mystic Arcanum pages (centred row at ~476; the row the icon scan sees is tried first),
+late [ForceUpdate] boxes after loading, hostiles a test left standing next to the host. level_check additions: numbered spell
+variants and container children, ActionResourceOverride (Pact Magic), level-ordered passive add/remove. Lints: new slot level
+without spells, subclass nodes below the pick level, unpickable spell choices, TARGET in context-passive functors, arguments to
+zero-parameter KHN conditions.

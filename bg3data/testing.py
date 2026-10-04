@@ -1517,6 +1517,9 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
             break
         chk = level_check(store, active)
         bad = [l.strip() for l in chk.splitlines() if l.strip().startswith(("FAIL", "WARN"))]
+        # a build's known_fails (e.g. an upstream bug already reported) are shown but don't stop the run
+        known = [k for k in (b.get("known_fails") or [])]
+        bad = [("KNOWN " + l[5:] if l.startswith("FAIL") and any(k in l for k in known) else l) for l in bad]
         line = f"L{L}: ok {r.get('total_s')}s, {chk.splitlines()[0]}"
         if want:
             line += " | " + ", ".join(x for x in r["log"] if x.startswith(("subclass", "wanted")))
