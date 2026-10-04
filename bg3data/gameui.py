@@ -717,15 +717,19 @@ def _icon_candidates(kind, j, count):
                     if by - ICON_ROW * back > 60]
         return [("", ox + ICON_STEP * (k % 8), oy + ICON_ROW * (k // 8))]
     out = []
-    # an unmapped layout (e.g. Savant at 13+): the available icons are a centred row (44 px apart, around x 480) at y ~584 -
-    # live 2026-10-03: 2 icons at 458/502 - or, failing that, the last `count` icons the scan finds in reading order
-    if count and count <= 8:
-        # Savant rows sit at ~584; Mystic Arcanum and other short lists put theirs right under "Available" at ~476 (or ~454)
-        for ry in (584, 476, 454):
-            out.append(("", round(480 + 44 * (j - (count + 1) / 2)), ry))
+    # an unmapped layout (Savant at 13+, Mystic Arcanum): the available icons are a centred row (44 px apart, around x 480) -
+    # Savant at y ~584, Arcanum ~476 (live 2026-10-04: 5 icons 392..566 at 476) - or the last `count` icons the scan finds.
+    # The row the scan actually sees goes first: callers keep only the first candidate per guess.
     tiles = _stable_tiles()
+    rows = (584, 476, 454)
+    if tiles:
+        seen_y = tiles[-1][1]
+        rows = tuple(sorted(rows, key=lambda r: abs(r - seen_y)))
+    if count and count <= 8:
+        for ry in rows:
+            out.append(("", round(480 + 44 * (j - (count + 1) / 2)), ry))
     if len(tiles) >= count >= j and ("", *tiles[-count:][j - 1]) not in out:
-        out.append(("", *tiles[-count:][j - 1]))
+        out.insert(1 if out else 0, ("", *tiles[-count:][j - 1]))
     return out
 
 
@@ -1148,6 +1152,12 @@ def load_save(index=0, timeout=90.0, name=None):
         time.sleep(1.5)
         lv = host_level()
         if lv is not None:
+            # the [ForceUpdate] box can still come up after the host exists, and it blocks the console: clear it
+            for _ in range(6):
+                time.sleep(1.0)
+                if not dialog_info():
+                    break
+                dismiss_dialog()
             return round(time.time() - t0, 1), lv
     return None, f"no host after {timeout:.0f}s"
 
