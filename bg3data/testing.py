@@ -1698,6 +1698,12 @@ def lint_progressions(store, active, layer):
     by_table = {}
     for r in merged.values():
         by_table.setdefault(r[3], {}).setdefault(r[2], []).append(r)
+    sub_tables = {}
+    _cds = {u: json.loads(at) for u, at in store.db.execute(f"SELECT uuid, attrs FROM staticdata WHERE kind='ClassDescription' AND {w}", p)}
+    for u, at in _cds.items():
+        par = _cds.get(at.get("ParentGuid") or "")
+        if par and par.get("ProgressionTableUUID") and at.get("ProgressionTableUUID"):
+            sub_tables.setdefault(par["ProgressionTableUUID"], set()).add(at["ProgressionTableUUID"])
     noslotspells = []
     for t, levels in by_table.items():
         seen_max, new_levels = 0, []
@@ -1706,7 +1712,10 @@ def lint_progressions(store, active, layer):
                                                                       json.loads(n[5]).get("Boosts") or "")] or [0])
             if mx > seen_max:
                 if seen_max:
-                    has = any(re.search(r"(Add|Select)Spells\(", json.loads(n[5]).get("Selectors") or "") for n in levels[L])
+                    # the class's subclass tables count too: dnd55e's Bard learns its 7th-9th level spells through the College
+                    # tables (Magical Secrets design, bg3dnd #219; verified in game 2026-10-04)
+                    pool = levels[L] + [n for st in sub_tables.get(t, ()) for n in by_table.get(st, {}).get(L, [])]
+                    has = any(re.search(r"(Add|Select)Spells\(", json.loads(n[5]).get("Selectors") or "") for n in pool)
                     new_levels.append((L, mx, has, any(n[0] == layer for n in levels[L])))
                 seen_max = mx
         with_spells = sum(1 for x in new_levels if x[2])
@@ -1761,7 +1770,7 @@ def lint_progressions(store, active, layer):
             if picks:
                 pick_level[t], pick_owner[t] = L, {n[0] for n in picks}
                 break
-    early = []
+    early, dismissed = [], []
     for t, levels in by_table.items():
         me = table_cd.get(t)
         if not me or not me[2].get("ParentGuid"):
@@ -1791,17 +1800,31 @@ def lint_progressions(store, active, layer):
                     continue
                 ps, sp = feats([n])
                 lost = sorted(ps - later_p) + sorted(sp - later_s)
+                gone = [x for x in lost if f"{me[1]}:{x}" in UPSTREAM_ANSWERED]
+                for x in gone:
+                    dismissed.append(f"  {me[1]} L{L}: {x} - {UPSTREAM_ANSWERED[me[1] + ':' + x]}")
+                lost = [x for x in lost if x not in gone]
                 if lost:   # features granted again at or above the pick level were moved, not lost
                     early.append(f"  {me[1]} L{L} [{n[0]}] (subclass chosen at L{pl}): never applied, not granted later - {', '.join(lost)[:160]}")
     if early:
         out.append(f"SUBCLASS NODES BELOW THE SUBCLASS LEVEL ({len(early)}) - the game never applies them:")
         out += early
+    if dismissed:
+        out.append(f"(already answered upstream, not counted: {len(dismissed)})")
+        out += dismissed
     if dup:
         out.append(f"STACKED choices ({len(dup)}): several nodes for one table+level each grant choices/feats - all load, so they're offered twice:")
         for (t, l), v in sorted(dup, key=lambda d: (d[1][0][1], d[0][1])):
             out.append(f"  {v[0][1]} L{l}: " + "; ".join(f"{x[0]} {x[4]}" + (" [AllowImprovement]" if json.loads(x[5]).get("AllowImprovement") == "true" else "")
                                                       + (" [Selectors]" if json.loads(x[5]).get("Selectors") else "") for x in v))
     return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources, {len(noslotspells)} slot levels without spells, {len(early)} early subclass nodes, {len(unpickable)} unpickable spell choices")] + out)
+
+
+# Lint findings the dnd55e author already answered as intended, so they aren't reported as problems again:
+# "<table>:<lost feature>" -> reason with the issue.
+UPSTREAM_ANSWERED = {
+    "Oathbreaker:Target_SpitefulSuffering": "by design: the owner removed every Paladin subclass level-1 feature (bg3dnd #307)",
+}
 
 
 # ------------------------------------------------------------------ build plans
