@@ -1542,6 +1542,25 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
             if ec["in_combat"]:
                 out.append("    host is still in combat after the tests - stopping (a level-up can't open in combat)")
                 break
+    # final_cases: case-id patterns (fnmatch) run once the build has reached its top level - script-mode suites that grant
+    # their feature to any host (Gunslinger / Illrigger 13-20), run on a real character of the class
+    if b.get("final_cases") and (gameui.host_level() or 0) >= hi:
+        import fnmatch
+        ids = [c["id"] for c in load_cases(layer) if any(fnmatch.fnmatch(c["id"], pat) for pat in b["final_cases"])]
+        passed, failed = 0, []
+        for cid in ids:
+            rep = run(store, active, layer, cid, wait)
+            if rep.splitlines() and ": PASS" in rep.splitlines()[0]:
+                passed += 1
+            else:
+                failed.append(rep.splitlines()[0] if rep.splitlines() else cid)
+            try:
+                cleanup()
+            except Exception:
+                pass
+            end_combat()
+        out.append(f"    final cases: {passed}/{len(ids)} passed")
+        out += [f"      {x}" for x in failed]
     out.append(f"done in {time.time() - t_all:.0f}s")
     return "\n".join(out)
 

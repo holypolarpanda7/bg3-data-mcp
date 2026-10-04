@@ -530,7 +530,9 @@ def _asi_order():
     return order
 
 
-_VM = 'local d = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0).DataContext '
+# the level-up screen and the respec screen (character creation for an existing character) share these view-model pieces
+_VM = ('local _w = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0) or find(Ext.UI.GetRoot(), "CharacterRespec", 0) '
+       'local d = _w.DataContext ')
 
 
 def _fill_passive_selectors(log, limit=24):
@@ -1195,6 +1197,10 @@ def save_game(name, timeout=40.0):
 
 RESPEC_CLASS_TILES = {n: (294 + 124 * (i % 4), 176 + 124 * (i // 4)) for i, n in enumerate(
     ["Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk", "Paladin", "Ranger", "Rogue", "Sorcerer", "Warlock", "Wizard"])}
+# Classes from mods sit in a fourth row, below the visible grid: drag the class list's scrollbar down first, then the row is at
+# y ~432 (verified 2026-10-04 with dnd55e's Artificer, Gunslinger, Illrigger, Monster Hunter)
+RESPEC_MORE_TILES = {n: (294 + 124 * i, 432) for i, n in enumerate(["Artificer", "Gunslinger", "Illrigger", "MonsterHunter"])}
+RESPEC_SCROLL = (732, 200, 732, 470)
 RESPEC_CONFIRM = (1196, 1032)
 
 
@@ -1202,7 +1208,7 @@ def respec(cls, timeout=20.0):
     """Turn the host into a level 1 `cls` through the game's respec (Osi.StartRespec - what Withers does): pick the class tile;
     the game pre-fills that class's choices (abilities rearranged for it, cantrips, spells, weapon mastery); CONFIRM. Race,
     background, name and XP stay. Verified afterwards: the host is exactly {cls: 1}. Returns (ok, message)."""
-    if cls not in RESPEC_CLASS_TILES:
+    if cls not in RESPEC_CLASS_TILES and cls not in RESPEC_MORE_TILES:
         return False, f"unknown class {cls!r}"
     _close_menus()
     r = se.eval_lua("local ok, e = pcall(function() Osi.StartRespec(Osi.GetHostCharacter()) end) return ok", "server", timeout=10)
@@ -1214,10 +1220,24 @@ def respec(cls, timeout=20.0):
     if "CharacterRespec" not in (screen() or []):
         return False, "the respec screen didn't open"
     time.sleep(1.0)
-    _rclick(*RESPEC_CLASS_TILES[cls])
+    if cls in RESPEC_MORE_TILES:
+        _fast("drag %d %d %d %d" % RESPEC_SCROLL, 15)
+        time.sleep(0.8)
+        _rclick(*RESPEC_MORE_TILES[cls])
+    else:
+        _rclick(*RESPEC_CLASS_TILES[cls])
     time.sleep(1.5)
+    # most classes come pre-filled; some don't (Artificer cantrips, Monster Hunter weapon mastery) - fill them like a level-up
+    log = []
+    _fill_passive_selectors(log)
+    _fill_skill_selectors(log)
+    for _ in range(6):
+        rows = pending_rows() or []
+        if not rows:
+            break
+        _fill_row(rows[0], log)
     if pending_rows():
-        return False, f"{cls}'s first-level choices weren't all pre-filled (rows {pending_rows()}) - not confirmed"
+        return False, f"{cls}'s first-level choices couldn't all be filled (rows {pending_rows()}; {log}) - not confirmed"
     _rclick(*RESPEC_CONFIRM)
     t = time.time()
     while time.time() - t < timeout and "CharacterRespec" in (screen() or ["CharacterRespec"]):
