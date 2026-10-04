@@ -313,6 +313,13 @@ def level_check(store, active):
                 continue
             for sp in spells:
                 ok = sp in have_s
+                if not ok:   # a container can sit in the spellbook as its children (Target_TruePolymorph_Sheep, ...)
+                    r_ = store.resolve(sp, active)
+                    kids = [x for x in ((r_ or {}).get("fields", {}).get("ContainerSpells", ("",))[0] or "").split(";") if x]
+                    hit = next((k for k in kids if k in have_s), None)
+                    if hit:
+                        ok = True
+                        have_s[sp] = have_s[hit] + f" (as {hit})"
                 fails += not ok
                 if not ok or lvl == c["level"]:
                     lines.append(f"  {'PASS' if ok else 'FAIL'} spell {sp} (L{lvl} AddSpells, {src})" + (f" source={have_s[sp]}" if ok else ""))

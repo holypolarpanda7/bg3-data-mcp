@@ -165,6 +165,12 @@ def lint_stats(store, active, layer, limit=200):
             if len(kids) > 42 or len(cs) > 1900:  # 44 spells / ~2080 chars hung the game at LoadModule (2026-10-02)
                 add("SIZE", name, file, f"ContainerSpells has {len(kids)} spells / {len(cs)} chars: 44 / ~2080 hung the game "
                                         "at load (43 / 2030 loaded; shipped max 42 / ~1000) - split the container")
+        # an explicit TARGET in a context passive's StatsFunctors doesn't reach the event's target (Frozen Haunt's
+        # ApplyStatus(TARGET,CHILLED,..) never landed; ApplyStatus(CHILLED,..) does - verified in game 2026-10-04). None of the
+        # ~400 base/dnd55e OnDamage/OnAttack/OnDamaged/OnCast passives use it.
+        if f.get("StatsFunctorContext") and "(TARGET," in (f.get("StatsFunctors") or "").replace(" ", ""):
+            add("TARGET", name, file, "StatsFunctors use an explicit TARGET in a context passive - it doesn't reach the event's target "
+                                      "(drop it: ApplyStatus(STATUS,100,N) applies to the target)")
         for k, v in f.items():
             if typ in known_fields and k not in known_fields[typ]:
                 add("FIELD", name, file, f"'{k}' isn't a field any other layer uses on {typ} (the engine ignores unknown fields)")
