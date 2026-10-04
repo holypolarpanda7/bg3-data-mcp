@@ -261,56 +261,95 @@ def quit_game(processes, tasklist, wait=45):
 # ---------------------------------------------------------------- level-up screen
 LEVELUP_BAR = (0.34375, 0.1574)  # the LEVEL UP bar on the character sheet, as fractions of the client area (16:9 layout)
 
+# Level-up screen geometry, measured at 1920x1080 and sent as fractions of the client area, so it holds at any 16:9 resolution
+# (not with a non-default UI scale). Pickers put their icons in one of three places; which one is in use is found by brightness.
+REF_W, REF_H = 1920, 1080
+CHECKLIST_X = 70                  # the left checklist: click a row here to open its page
+MARKER_STRIP = (10, 70, 32, 430)  # x, y, w, h where the rows' red "!" markers are
+ICON_ORIGINS = {"grid": (324, 476), "ritual": (370, 454), "savant": (324, 582)}
+# Where to look for each picker's icons: (x, y, w, h), a thin band across its first slots at a height where ONLY that layout has
+# art (ritual icons span y ~436-474, grid row 1 ~458-496, savant ~562-602), so the bands of neighbouring layouts never overlap.
+ICON_PROBES = {"ritual": (356, 438, 112, 12), "grid": (310, 482, 112, 12), "savant": (310, 576, 112, 12)}
+ICON_STEP, ICON_ROW = 46, 44
+ROW_TOL = 14                      # rows are >= 22 px apart: a marker within this of y is the same row
+# Feats tried in order until the Feat row clears: (name, list position, extra clicks). A taken feat can't be picked again, and
+# some need an ability point or a passive ticked, hence the chain. The details panel fades in ~1 s after the click.
+FEATS = [("Actor", (380, 220), []), ("Alert", (394, 246), [(1080, 316), (870, 452)]),
+         ("Athlete", (394, 272), [(1080, 316)]), ("Charger", (394, 298), [])]
+DARK, BRIGHT = 60, 130            # sky-area brightness: the intro is ~0-25, the interface ~180
+
+
+def _rclick(x, y):
+    """Click at reference (1920x1080) client pixels, scaled to the real window."""
+    return click_frac(x / REF_W, y / REF_H)
+
 
 def levelup_state():
-    """{sheet_open, levelup_open, complete} read from the UI tree (no screenshot needed)."""
+    """{known, sheet_open, levelup_open, complete, step, can_feat} read from the UI tree (no screenshot needed). known=False means the
+    Script Extender didn't answer, so the other fields are guesses (all False) - don't act on them."""
     res, _ = _client(FIND + """
 local root = Ext.UI.GetRoot()
 local out = {sheet_open = find(root, "CharacterPanel", 0) ~= nil}
 local w = find(root, "CharacterLevelUp", 0)
 out.levelup_open = w ~= nil
 if w then
-  local ok, v = pcall(function() return w.DataContext.IsLevelUpComplete end)
+  local d = w.DataContext
+  local ok, v = pcall(function() return d.IsLevelUpComplete end)
   out.complete = ok and v == true
-  local ok2, st = pcall(function() return tostring(w.DataContext.LevelUpStep) end)
+  local ok2, st = pcall(function() return tostring(d.LevelUpStep) end)
   out.step = ok2 and st or nil
+  local ok3, f = pcall(function() return d.CanSelectFeat end)
+  out.can_feat = ok3 and f == true
 end
 return out""")
-    return res if isinstance(res, dict) else {"sheet_open": False, "levelup_open": False}
+    if isinstance(res, dict):
+        res["known"] = True
+        return res
+    return {"known": False, "sheet_open": False, "levelup_open": False}
 
 
-def levelup_open(sheet_scan=0x17, wait=8.0, skip_intro=True):
-    """Open the level-up screen: the character sheet key (I in a default profile), then the LEVEL UP bar; then Enter skips the
-    intro animation straight to the interface (it only fires while choices are pending, so it can't accept a level-up).
-    Returns the state."""
-    st = levelup_state()
+def _state(tries=3):
+    """levelup_state, retried while the Script Extender doesn't answer."""
+    for _ in range(tries):
+        st = levelup_state()
+        if st.get("known"):
+            return st
+        time.sleep(0.5)
+    return st
+
+
+def levelup_open(sheet_scan=0x17, wait=12.0):
+    """Open the level-up screen: the character sheet key (I in a default profile), then the LEVEL UP bar, then wait for the
+    interface. The intro (~5-6 s of animation) can't be cut short, but afterwards it may wait for input, so Enter is pressed while
+    - and only while - the screen is dark: a stray Enter on the interface itself is never sent. Returns the state."""
+    st = _state()
+    if not st.get("known"):
+        return st
     if st.get("levelup_open"):
         return st
     if not st.get("sheet_open"):
-        send_key(sheet_scan)
-        for _ in range(10):
+        send_key(sheet_scan)          # a toggle: only pressed when the sheet is known to be closed
+        for _ in range(12):
             time.sleep(0.25)
             if levelup_state().get("sheet_open"):
                 break
     click_frac(*LEVELUP_BAR)
-    # The intro is dark (brightness ~0 in the sky area) and the interface bright (~180); Enter skips the intro, so press it
-    # every half second until the picture is bright (it only acts while choices are pending, so it can't accept a level-up).
     t0 = time.time()
     seen_dark = False
     last_key = 0.0
-    while time.time() - t0 < wait + 4:
+    while time.time() - t0 < wait:
         lum = _lum()
-        if lum is not None and lum < 60:
+        if lum is not None and lum < DARK:
             seen_dark = True
-        if seen_dark and lum is not None and lum > 130:
+        if seen_dark and lum is not None and lum > BRIGHT:
             break
-        if time.time() - t0 > 6 and not seen_dark and not levelup_state().get("levelup_open"):
+        if not seen_dark and time.time() - t0 > 5 and not levelup_state().get("levelup_open"):
             break                     # the bar click opened nothing: no level-up is ready
-        if skip_intro and time.time() - last_key >= 0.5 and time.time() - t0 > 0.8:
+        if seen_dark and lum is not None and lum < DARK and time.time() - last_key >= 0.5:
             send_key(0x1C, hold_ms=100)
             last_key = time.time()
         time.sleep(0.05)
-    return levelup_state()
+    return _state()
 
 
 def _lum():
@@ -322,123 +361,136 @@ def _lum():
         return None
 
 
-# ---------------------------------------------------------------- automatic level-up
-# Geometry in client pixels (1920x1080). Pickers put their icons in one of three places; which one is in use is found by
-# brightness (icons are bright on a dark panel), so no screenshot is needed.
-ICON_ORIGINS = {"grid": (324, 476), "ritual": (370, 454), "savant": (324, 582)}
-ICON_STEP = 46
-# Feats tried in order until the Feat row clears: (name, list position, extra clicks). A taken feat can't be picked again, and
-# some need an ability point or a passive ticked, hence the chain. The details panel fades in ~1 s after the click.
-FEATS = [("Actor", (380, 220), []), ("Alert", (394, 246), [(1080, 316), (870, 452)]),
-         ("Athlete", (394, 272), [(1080, 316)]), ("Charger", (394, 298), [])]
-ACCEPT = (1174, 1004)
-
-
-def pending_rows():
-    """Client-pixel y of every checklist row still showing the red "!" marker (top to bottom)."""
-    ok, r = _fast("redrows", 8)
-    if not ok or not r.startswith("ok"):
-        return None
-    ys = [int(v) for v in r[2:].replace(",", " ").split()]
+def _merge_rows(ys, gap=30):
+    """The ring and the "!" of one marker come back as separate clusters: merge those closer than `gap`."""
     out = []
-    for y in ys:                      # the ring and the "!" come back as separate clusters: merge those within 30 px
-        if out and y - out[-1][-1] < 30:
+    for y in sorted(ys):
+        if out and y - out[-1][-1] < gap:
             out[-1].append(y)
         else:
             out.append([y])
     return [int(sum(g) / len(g)) for g in out]
 
 
-def stable_pending_rows(timeout=4.0):
-    """pending_rows once two reads 0.4 s apart agree (the checklist is still fading in right after the screen opens)."""
-    prev = None
+def pending_rows():
+    """Reference-pixel y of every checklist row still showing the red "!" marker (top to bottom); None if unreadable."""
+    x, y, w, h = MARKER_STRIP
+    ok, r = _fast("redrows %.5f %.5f %.5f %.5f" % (x / REF_W, y / REF_H, w / REF_W, h / REF_H), 8)
+    if not ok or not r.startswith("ok"):
+        return None
+    parts = r[2:].split()
+    try:
+        height = int(parts[0])
+        ys = [int(v) * REF_H / height for v in (parts[1].split(",") if len(parts) > 1 else [])]
+    except (IndexError, ValueError, ZeroDivisionError):
+        return None
+    return _merge_rows(ys)
+
+
+def stable_pending_rows(timeout=4.0, poll=0.35):
+    """pending_rows once the checklist has settled (it fades in right after the screen opens, markers appearing one by one):
+    two equal non-empty reads, or three equal empty ones (a level with no choices)."""
+    hist = []
     end = time.time() + timeout
     while time.time() < end:
         cur = pending_rows()
-        if cur is not None and cur == prev and cur:
-            return cur
-        prev = cur
-        time.sleep(0.4)
-    return pending_rows() or []
+        if cur is not None:
+            hist.append(cur)
+            if cur and len(hist) >= 2 and hist[-2] == cur:
+                return cur
+            if not cur and len(hist) >= 3 and hist[-2] == hist[-3] == []:
+                return []
+        time.sleep(poll)
+    return hist[-1] if hist else []
 
 
 def _row_pending(y):
-    """Is a checklist row near y still marked? (an unreadable helper counts as still pending; an empty list as cleared)"""
+    """Is the checklist row at y still marked? (an unreadable helper counts as still pending; an empty list as cleared)"""
     rows = pending_rows()
-    return rows is None or any(abs(v - y) < 14 for v in rows)
+    return rows is None or any(abs(v - y) < ROW_TOL for v in rows)
 
 
-def _icons_at(origin):
-    """True when bright icon art sits at a picker's first slot (a dark panel reads ~20, an icon 45+)."""
-    x, y = origin
-    ok, r = _fast("lum %.4f %.4f 0.014 0.022" % ((x - 13) / 1920, (y - 12) / 1080), 5)
-    try:
-        return ok and int(r.split()[1]) >= 40
-    except (IndexError, ValueError):
-        return False
+def _picker_kind():
+    """Which icon picker the open page shows ("ritual", "grid", "savant"), or None for a page without icons (feat list, subclass...).
+    A band reads ~20 on the dark panel and 45+ across icon art; the brightest band above the threshold wins."""
+    best, best_lum = None, 40
+    for kind, (x, y, w, h) in ICON_PROBES.items():
+        ok, r = _fast("lum %.5f %.5f %.5f %.5f" % (x / REF_W, y / REF_H, w / REF_W, h / REF_H), 5)
+        try:
+            v = int(r.split()[1]) if ok else 0
+        except (IndexError, ValueError):
+            v = 0
+        if v >= best_lum:
+            best, best_lum = kind, v
+    return best
 
 
 def _fill_row(y, log, max_clicks=10):
-    """Open the checklist row at y and pick icons until its marker clears. Returns True when the row cleared."""
-    click(70, y, shot=False)
+    """Open the checklist row at y and fill its page until the row's marker clears. Returns True when it cleared."""
+    _rclick(CHECKLIST_X, y)
     time.sleep(0.5)
-    kind = next((k for k, o in ICON_ORIGINS.items() if _icons_at(o)), None)
-    if kind is None:                  # a text list (feat): try the chain until the row clears
+    kind = _picker_kind()
+    if kind is None:
+        if not levelup_state().get("can_feat"):
+            log.append(f"row y={y}: page without icons and not a feat page (subclass/race/ability?) - not handled")
+            return False
         for name, pos, extra in FEATS:
-            click(*pos, shot=False)
-            time.sleep(1.1)
+            _rclick(*pos)
+            time.sleep(1.1)           # the details panel fades in
             for e in extra:
-                click(*e, shot=False)
+                _rclick(*e)
                 time.sleep(0.5)
             time.sleep(0.4)
             if not _row_pending(y):
-                log.append(f"row y={y}: list page, feat {name}")
+                log.append(f"row y={y}: feat {name}")
                 return True
-        log.append(f"row y={y}: list page, no feat in the chain cleared it")
+        log.append(f"row y={y}: feat page, no feat in the chain cleared it")
         return False
     ox, oy = ICON_ORIGINS[kind]
-    clicked = 0
     for i in range(max_clicks):
-        click(ox + ICON_STEP * (i % 8), oy + 44 * (i // 8), shot=False)
-        clicked += 1
+        _rclick(ox + ICON_STEP * (i % 8), oy + ICON_ROW * (i // 8))
         time.sleep(0.35)
         if not _row_pending(y):
-            log.append(f"row y={y}: {kind} picker, {clicked} icon(s)")
+            log.append(f"row y={y}: {kind} picker, {i + 1} icon(s)")
             return True
-    log.append(f"row y={y}: {kind} picker, still pending after {clicked} icons (markers now {pending_rows()})")
+    log.append(f"row y={y}: {kind} picker, still pending after {max_clicks} icons (markers now {pending_rows()})")
     return False
 
 
-def levelup_auto(feats=True, finish=True):
+def levelup_auto(finish=True):
     """Level the host up completely: open the screen, fill every pending checklist row (spells, cantrips, rituals, savant, feat),
-    then accept and wait for the level to apply. Validates as it goes: the pending markers must clear, IsLevelUpComplete must be
-    true before Accept, the host level must rise by one afterwards. Returns a dict {ok, log, level_before, level_after, error}."""
+    then accept and wait for the level to apply. Validates as it goes: each row's marker must clear, IsLevelUpComplete must be
+    true before Accept, the host level must rise by exactly one. Returns {ok, log, level_before, level_after, open_s, choices_s,
+    total_s, error}."""
     out = {"ok": False, "log": []}
     log = out["log"]
     t0 = time.time()
     out["level_before"] = host_level()
-    st = levelup_state()
-    if not st.get("levelup_open"):
-        st = levelup_open()
+    if out["level_before"] is None:
+        out["error"] = "no host level from the Script Extender (is a game loaded?)"
+        return out
+    st = levelup_open()
+    if not st.get("known"):
+        out["error"] = "the Script Extender didn't answer while opening the level-up screen"
+        return out
     if not st.get("levelup_open"):
         out["error"] = "the level-up screen did not open (is a level-up ready? bg3_level_up grants the XP)"
         return out
     out["open_s"] = round(time.time() - t0, 1)
-    stuck = set()
-    stable_pending_rows()
+    stuck = []
+    rows = stable_pending_rows()
     for _ in range(14):
-        rows = [y for y in (stable_pending_rows(1.6) if not stuck else pending_rows() or []) if all(abs(y - z) > 15 for z in stuck)]
+        rows = [y for y in rows if all(abs(y - z) > ROW_TOL for z in stuck)]
         if not rows:
             break
-        y = rows[0]
-        if not _fill_row(y, log):
-            stuck.add(y)
+        if not _fill_row(rows[0], log):
+            stuck.append(rows[0])
             if len(stuck) > 2:
                 break
+        rows = pending_rows() or []
     out["choices_s"] = round(time.time() - t0 - out["open_s"], 1)
-    st = levelup_state()
-    if not st.get("complete"):
-        out["error"] = "choices still pending after the driver ran (a page type it doesn't know): " + "; ".join(log[-3:])
+    if not _state().get("complete"):
+        out["error"] = "choices still pending after the driver ran: " + "; ".join(log[-3:] or ["no pending rows were found"])
         return out
     if not finish:
         out["ok"] = True
@@ -446,9 +498,9 @@ def levelup_auto(feats=True, finish=True):
     ok, msg = levelup_finish()
     out["total_s"] = round(time.time() - t0, 1)
     out["level_after"] = host_level()
-    out["log"].append(msg)
+    log.append(msg)
     lb, la = out["level_before"], out["level_after"]
-    out["ok"] = bool(ok and lb is not None and la == lb + 1)
+    out["ok"] = bool(ok and la == lb + 1)
     if not out["ok"]:
         out["error"] = f"level did not rise by one ({lb} -> {la}): {msg}"
     return out
@@ -467,7 +519,7 @@ def host_level():
 def levelup_finish(wait=30.0):
     """Accept a completed level-up through the screen's own FinishLevelUp command, then (wait>0) block until the level has
     really been applied (the screen goes black for several seconds first). Returns (ok, message)."""
-    st = levelup_state()
+    st = _state()
     if not st.get("levelup_open"):
         return False, "the level-up screen isn't open"
     if not st.get("complete"):
@@ -479,43 +531,47 @@ local ok, err = pcall(function() w.DataContext.FinishLevelUp:Execute(nil) end)
 return {ok = ok, err = ok and "" or tostring(err)}""")
     if not (res and res.get("ok")):
         return False, (res or {}).get("err", "") if res else "no answer from the client"
-    if not wait or before is None:
+    if not wait:
         return True, ""
+    if before is None:
+        return False, "accepted, but the level before was unreadable, so the apply can't be confirmed"
     t0 = time.time()
     while time.time() - t0 < wait:
         time.sleep(0.5)
         lv = host_level()
         if lv is not None and lv > before:
             return True, f"level {before} -> {lv} after {time.time() - t0:.1f}s"
-    return True, f"accepted, but the level hadn't risen after {wait:.0f}s"
+    return False, f"accepted, but the level hadn't risen after {wait:.0f}s"
 
 
 def load_save(index=0, timeout=90.0):
-    """Load a save from the pause menu of the RUNNING game (no restart): Esc, Load Game, row `index` of the list (0 = the first
-    row, 34 px apart; the list is the game's own order, newest first), Load Game. Waits until a host exists in the new session
-    and clears message boxes with Enter. Returns the elapsed seconds, or None on timeout."""
+    """Load a save from the pause menu of the RUNNING game (no restart): Esc until the pause menu (GameMenu) is confirmed open,
+    Load Game, row `index` of the list (0 = first row = the game's newest), Load Game. Waits until a host exists in the new
+    session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason)."""
     t0 = time.time()
-    for _ in range(3):
-        if "MainMenu" in (screen() or []) or "GameMenu" in (screen() or []):
+    for _ in range(4):
+        names = screen()
+        if names is None:
+            return None, "the Script Extender didn't answer, so the menu state is unknown (nothing was clicked)"
+        if "GameMenu" in names:
             break
-        send_key(0x01, hold_ms=100)
+        send_key(0x01, hold_ms=100)   # closes whatever is open (level-up, sheet), then opens the pause menu
         time.sleep(1.0)
-    click(960, 568)                      # Load Game on the pause menu
-    time.sleep(3.0)                      # the list fills in after a spinner
-    click(320, 210 + 34 * index)
+    else:
+        return None, "the pause menu didn't open (nothing was clicked)"
+    _rclick(960, 568)                 # Load Game
+    time.sleep(3.0)                   # the list fills in after a spinner
+    _rclick(320, 210 + 34 * index)
     time.sleep(0.4)
-    click(1068, 1005)                    # Load Game button
+    _rclick(1068, 1005)               # Load Game button
     time.sleep(6.0)
     while time.time() - t0 < timeout:
-        send_key(0x1C, hold_ms=60)       # the [ForceUpdate] box appears as the save starts loading
+        send_key(0x1C, hold_ms=60)    # the [ForceUpdate] box appears as the save starts loading
         time.sleep(1.5)
-        try:
-            r = se.eval_lua("return Osi.GetHostCharacter() ~= nil", "server", timeout=5)
-            if r.get("ok") and r.get("result") is True:
-                return round(time.time() - t0, 1)
-        except (RuntimeError, TimeoutError):
-            pass
-    return None
+        lv = host_level()
+        if lv is not None:
+            return round(time.time() - t0, 1), lv
+    return None, f"no host after {timeout:.0f}s"
 
 
 # ---------------------------------------------------------------- fast input: one long-lived PowerShell helper
@@ -528,11 +584,21 @@ import threading
 class _InputDaemon:
     """ps/inputd.ps1 as a subprocess: compiles the Win32 glue once, then answers one-line commands (~tens of ms each)."""
 
+    SCRIPT = os.path.join(os.path.dirname(__file__), "ps", "inputd.ps1")
+
     def __init__(self):
-        self.p, self.q, self.lock = None, None, threading.Lock()
+        self.p, self.q, self.lock, self.mtime = None, None, threading.Lock(), None
+
+    def _stale(self):
+        """The script changed since this helper started (an edit + hot reload): its commands may differ, so restart it."""
+        try:
+            return self.mtime is not None and os.path.getmtime(self.SCRIPT) != self.mtime
+        except OSError:
+            return False
 
     def _start(self):
-        ps = os.path.join(os.path.dirname(__file__), "ps", "inputd.ps1")
+        ps = self.SCRIPT
+        self.mtime = os.path.getmtime(ps)
         kw = {"cwd": "/mnt/c"} if platform.IS_WSL and os.path.isdir("/mnt/c") else {}
         self.p = subprocess.Popen(["powershell.exe" if platform.IS_WSL else "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                                    "-File", platform.to_win(ps)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -551,6 +617,8 @@ class _InputDaemon:
     def send(self, cmd, timeout=15):
         with self.lock:
             try:
+                if self.p is not None and self._stale():
+                    self.close()
                 if self.p is None or self.p.poll() is not None:
                     self._start()
                 r = self._io(cmd, timeout)
@@ -570,7 +638,12 @@ class _InputDaemon:
                 pass
 
 
-_daemon = globals().get("_daemon") or _InputDaemon()  # a hot reload keeps the running helper
+# A hot reload keeps the running helper (it restarts by itself when inputd.ps1 changed); an instance of the old class is replaced.
+_daemon = globals().get("_daemon")
+if not hasattr(_daemon, "_stale"):
+    if _daemon is not None:
+        _daemon.close()
+    _daemon = _InputDaemon()
 atexit.register(lambda: _daemon.close())
 
 

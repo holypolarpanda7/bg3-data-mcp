@@ -857,7 +857,9 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17) -> str:
             chk = testing.level_check(st, active)
             r["level_check"] = chk.splitlines()[0]
             r["level_check_fails"] = [l.strip() for l in chk.splitlines() if l.strip().startswith("FAIL")]
-            r["ok"] = not r["level_check_fails"]
+            if r["level_check_fails"]:
+                r["ok"] = False
+                r["error"] = f"level applied, but level_check found {len(r['level_check_fails'])} FAIL(s)"
         return json.dumps(r)
     return "action must be state, open, finish or auto"
 
@@ -866,11 +868,12 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17) -> str:
 @guarded
 def bg3_load_save(index: int = 0) -> str:
     """Load a save in the RUNNING game from the pause menu (no restart, ~15-40 s): Esc, Load Game, the save in row `index` of the
-    list (0 = first row = the game's newest), Load Game; clears the [ForceUpdate] box and waits for a host. Take a bg3_screenshot of
+    list (0 = first row = the game's newest), Load Game; clears the [ForceUpdate] box and waits for a host. Clicks nothing unless
+    the pause menu is confirmed open. Returns the host level, so a wrong row shows up immediately. Take a bg3_screenshot of
     the Load list first if unsure which row is which."""
     from . import gameui
-    t = gameui.load_save(index)
-    return f"loaded in {t}s" if t is not None else "timed out waiting for a host (check bg3_screenshot)"
+    t, info = gameui.load_save(index)
+    return f"loaded in {t}s, host level {info}" if t is not None else "not loaded: " + info
 
 
 @mcp.tool()

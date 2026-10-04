@@ -75,3 +75,30 @@ Verified 2026-10-03: Wizard 3 -> 6 (cantrip, spells, ritual spell, Savant spell,
 - Known gaps: subclass/race/multiclass/ability-score pages aren't handled (the driver reports the row it couldn't clear and
   stops); the ArcaneWard / SpellSlot WARNs in level_check read +INT mod and an extra level-1/2 slot - the check ignores ability
   modifiers, not investigated further.
+
+## Review pass (2026-10-03)
+Fixed after a code review of rounds 1-3:
+- Enter is only pressed while the screen is dark (the intro). Before, it was pressed on a timer and could land on the sheet or on
+  the interface itself - unverified whether Enter accepts a level-up with no choices left.
+- A level with no choices no longer waits ~5.6 s: `stable_pending_rows` accepts three equal empty reads.
+- Pages without icons only get the feat chain when the view model says `CanSelectFeat`; a subclass/race/ability page is reported
+  ("not handled") instead of being clicked like a feat list.
+- Picker type: thin probe bands at heights where only that layout has art (`ICON_PROBES`). A wider probe (tried in round 3's
+  review) overlapped the ritual icons and read the ritual page as the spell grid - it passed by luck.
+- Unknown state is never treated as "closed": `levelup_state` has `known`; with the Script Extender silent nothing is pressed
+  (the sheet key is a toggle). `load_save` clicks nothing unless the pause menu (GameMenu) is confirmed open, and returns the
+  loaded host level so a wrong row shows immediately.
+- Resolution: every level-up coordinate is 1920x1080 reference pixels sent as fractions; `redrows` takes its strip as fractions
+  and returns client height + y, scaled back. Holds at any 16:9 size (not a non-default UI scale). Only tested at 1920x1080.
+- The input helper restarts itself when inputd.ps1 changes (a hot reload kept the old helper, whose `redrows` reply format
+  differs).
+- `finish` reports failure when the level can't be confirmed (before: "accepted" without waiting). `auto` sets `error` when
+  level_check finds FAILs.
+
+Tests (`tests/levelup_selftest.py`, 30 offline checks, no game needed): pure logic, the fade-in/empty checklist, Enter-only-when-dark,
+`levelup_auto` against a simulated screen (exact click counts, taken-feat fallthrough, unknown page not clicked, no level-up
+ready, level not rising, no-choice level, no host), helper restart. Mutation-checked: reverting each fixed bug makes its tests
+fail. `--live` levels the running host once and also fails if any picker needed more than 2 clicks (= picker misread).
+
+Live, Wizard 2 -> 7 from the L2 save (2026-10-03): 20.9 s, 22.4 s (feat), 17.7 s, 16.6 s, 19.3 s (ritual + grid + savant); every row
+cleared in its exact count; level_check ALL PASS at 7.

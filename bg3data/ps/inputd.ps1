@@ -7,7 +7,7 @@
 #   shot PATH                   PNG of the game window, half size (game focused first); replies "ok WxH SWxSH"
 #   lum FX FY FW FH             mean brightness (0-255) of a region (fractions of the client area), no focus change
 #   rgb FX FY FW FH             mean R G B of a region (fractions of the client area)
-#   redrows                     y (client px) of red "!" markers in the level-up checklist strip (x 10-42, y 70-500), comma separated
+#   redrows FX FY FW FH         client height, then the y (client px) of red "!" markers inside that strip, comma separated
 #   ping
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -119,17 +119,20 @@ while ($true) {
                       $sm = New-Object System.Drawing.Bitmap $bmp, 4, 4; $cr = 0; $cg = 0; $cb = 0
                       for ($y = 0; $y -lt 4; $y++) { for ($x = 0; $x -lt 4; $x++) { $c = $sm.GetPixel($x, $y); $cr += $c.R; $cg += $c.G; $cb += $c.B } }
                       $g.Dispose(); $bmp.Dispose(); $sm.Dispose(); $r = "ok " + [int]($cr / 16) + " " + [int]($cg / 16) + " " + [int]($cb / 16) }
-            "redrows" { $h = Get-Game; $s = Client-Size
+            "redrows" { # redrows FX FY FW FH: a strip given in fractions of the client area; replies "ok H y,y,..." (client px)
+                      $h = Get-Game; $s = Client-Size
                       $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
-                      $bmp = New-Object System.Drawing.Bitmap 32, 430
+                      $x0 = [int]($s[0] * [double]$a[1]); $y0 = [int]($s[1] * [double]$a[2])
+                      $w = [Math]::Max(4, [int]($s[0] * [double]$a[3])); $hh = [Math]::Max(4, [int]($s[1] * [double]$a[4]))
+                      $bmp = New-Object System.Drawing.Bitmap $w, $hh
                       $g = [System.Drawing.Graphics]::FromImage($bmp)
-                      $g.CopyFromScreen($pt.X + 10, $pt.Y + 70, 0, 0, (New-Object System.Drawing.Size 32, 430))
-                      $hits = @(); for ($y = 0; $y -lt 430; $y++) { $n = 0
-                        for ($x = 0; $x -lt 32; $x++) { $c = $bmp.GetPixel($x, $y); if ($c.R -gt 150 -and $c.G -lt 90 -and $c.B -lt 100) { $n++ } }
-                        $hits += $n }
+                      $g.CopyFromScreen($pt.X + $x0, $pt.Y + $y0, 0, 0, (New-Object System.Drawing.Size $w, $hh))
+                      $minh = [Math]::Max(2, [int]($s[1] / 270))
                       $rows = @(); $in = $false; $start = 0
-                      for ($y = 0; $y -lt 430; $y++) { if ($hits[$y] -gt 0) { if (-not $in) { $in = $true; $start = $y } } elseif ($in) { $in = $false; if ($y - $start -ge 4) { $rows += [int](70 + ($start + $y) / 2) } } }
-                      $g.Dispose(); $bmp.Dispose(); $r = "ok " + ($rows -join ",") }
+                      for ($y = 0; $y -le $hh; $y++) { $hit = $false
+                        if ($y -lt $hh) { for ($x = 0; $x -lt $w; $x++) { $c = $bmp.GetPixel($x, $y); if ($c.R -gt 150 -and $c.G -lt 90 -and $c.B -lt 100) { $hit = $true; break } } }
+                        if ($hit) { if (-not $in) { $in = $true; $start = $y } } elseif ($in) { $in = $false; if ($y - $start -ge $minh) { $rows += [int]($y0 + ($start + $y) / 2) } } }
+                      $g.Dispose(); $bmp.Dispose(); $r = "ok " + $s[1] + " " + ($rows -join ",") }
             default { $r = "err unknown command" }
         }
     } catch { $r = "err " + $_.Exception.Message }
