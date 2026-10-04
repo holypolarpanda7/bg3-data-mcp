@@ -46,7 +46,7 @@ def loaded_modules():
     return res
 
 
-def focus_game():
+def _focus_game_script():
     """Bring the game window to the foreground (Alt tap + SetForegroundWindow). True when it is in front."""
     ps = os.path.join(os.path.dirname(__file__), "ps", "focus_game.ps1")
     r = platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -62,7 +62,7 @@ def press_key(vk=0x0D):
     return r.returncode == 0
 
 
-def send_key(scan=0x2E, hold_ms=120, focus=True):
+def _send_key_script(scan=0x2E, hold_ms=120, focus=True):
     """An OS-level key press (SendInput, hardware scan code; default 0x2E = C) with the game focused: what gameplay hotkeys
     read, unlike press_key (PostMessage) and Ext.Input (UI layer only). Types into whatever has focus - run it while
     nobody is typing."""
@@ -76,7 +76,7 @@ def send_key(scan=0x2E, hold_ms=120, focus=True):
 _last_shot = (960, 540)  # size of the last screenshot (half the client area)
 
 
-def click(x, y, right=False, count=1, shot=False):
+def _click_script(x, y, right=False, count=1, shot=False):
     """An OS-level mouse click in the game's client area. (x, y) are client pixels, or with shot=True pixels of the
     last bg3_screenshot (sent as fractions of the window, so it holds at any resolution of the same aspect ratio).
     Brings the game to the front, so don't run it while someone is typing."""
@@ -91,7 +91,7 @@ def click(x, y, right=False, count=1, shot=False):
     return r.returncode == 0 and "clicked" in (r.stdout or "")
 
 
-def screenshot(out=None):
+def _screenshot_script(out=None):
     """Capture the game window to a PNG (half size, ~1.5 MB) and return its path (Read it to see the screen)."""
     import tempfile
     out = out or os.path.join(tempfile.gettempdir(), "bg3_screenshot.png")
@@ -277,24 +277,31 @@ return out""")
     return res if isinstance(res, dict) else {"sheet_open": False, "levelup_open": False}
 
 
-def levelup_open(sheet_scan=0x17, wait=6.0):
-    """Open the level-up screen: the character sheet key (I in a default profile), then the LEVEL UP bar. Returns the state."""
+def levelup_open(sheet_scan=0x17, wait=8.0, skip_intro=True):
+    """Open the level-up screen: the character sheet key (I in a default profile), then the LEVEL UP bar; then Enter skips the
+    intro animation straight to the interface (it only fires while choices are pending, so it can't accept a level-up).
+    Returns the state."""
     st = levelup_state()
     if st.get("levelup_open"):
         return st
     if not st.get("sheet_open"):
         send_key(sheet_scan)
-        time.sleep(1.5)
-    focus_game()
-    ps = os.path.join(os.path.dirname(__file__), "ps", "click.ps1")
-    platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-ExecutionPolicy", "Bypass", "-File",
-                      platform.to_win(ps), "-Fx", str(LEVELUP_BAR[0]), "-Fy", str(LEVELUP_BAR[1])], timeout=30)
+        for _ in range(10):
+            time.sleep(0.25)
+            if levelup_state().get("sheet_open"):
+                break
+    click_frac(*LEVELUP_BAR)
     end = time.time() + wait
     while time.time() < end:
-        time.sleep(0.5)
+        time.sleep(0.25)
         st = levelup_state()
         if st.get("levelup_open"):
             break
+    if st.get("levelup_open") and skip_intro and not st.get("complete"):
+        for _ in range(3):  # the intro plays for a few seconds: Enter skips it to the interface
+            send_key(0x1C, hold_ms=40)
+            time.sleep(0.35)
+        st = levelup_state()
     return st
 
 
@@ -310,3 +317,123 @@ local w = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0)
 local ok, err = pcall(function() w.DataContext.FinishLevelUp:Execute(nil) end)
 return {ok = ok, err = ok and "" or tostring(err)}""")
     return bool(res and res.get("ok")), (res or {}).get("err", "") if res else "no answer from the client"
+
+
+# ---------------------------------------------------------------- fast input: one long-lived PowerShell helper
+import atexit
+import queue
+import subprocess
+import threading
+
+
+class _InputDaemon:
+    """ps/inputd.ps1 as a subprocess: compiles the Win32 glue once, then answers one-line commands (~tens of ms each)."""
+
+    def __init__(self):
+        self.p, self.q, self.lock = None, None, threading.Lock()
+
+    def _start(self):
+        ps = os.path.join(os.path.dirname(__file__), "ps", "inputd.ps1")
+        kw = {"cwd": "/mnt/c"} if platform.IS_WSL and os.path.isdir("/mnt/c") else {}
+        self.p = subprocess.Popen(["powershell.exe" if platform.IS_WSL else "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                   "-File", platform.to_win(ps)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True, bufsize=1, **kw)
+        self.q = queue.Queue()
+        threading.Thread(target=lambda p, q: [q.put(l.strip()) for l in p.stdout], args=(self.p, self.q), daemon=True).start()
+        r = self._io("ping", 40)  # the first reply waits for the one-time compile
+        if r != "ok":
+            raise RuntimeError("input helper didn't start: " + r)
+
+    def _io(self, cmd, timeout):
+        self.p.stdin.write(cmd + "\n")
+        self.p.stdin.flush()
+        return self.q.get(timeout=timeout)
+
+    def send(self, cmd, timeout=15):
+        with self.lock:
+            try:
+                if self.p is None or self.p.poll() is not None:
+                    self._start()
+                r = self._io(cmd, timeout)
+            except (OSError, queue.Empty, RuntimeError, ValueError):
+                self.close()
+                raise
+        if r.startswith("err"):
+            raise RuntimeError(r)
+        return r
+
+    def close(self):
+        p, self.p = self.p, None
+        if p and p.poll() is None:
+            try:
+                p.kill()
+            except OSError:
+                pass
+
+
+_daemon = globals().get("_daemon") or _InputDaemon()  # a hot reload keeps the running helper
+atexit.register(lambda: _daemon.close())
+
+
+def _fast(cmd, timeout=15):
+    """Send a command to the helper; (True, reply) or (False, error) - callers fall back to the one-shot scripts."""
+    try:
+        return True, _daemon.send(cmd, timeout)
+    except (OSError, queue.Empty, RuntimeError, ValueError) as e:
+        return False, str(e)
+
+
+def focus_game():
+    ok, _ = _fast("focus")
+    return ok or _focus_game_script()
+
+
+def send_key(scan=0x2E, hold_ms=120, focus=True):
+    """An OS-level key press (SendInput, hardware scan code; 0x2E = C, 0x17 = I, 0x1C = Enter, 0x01 = Esc) with the game in
+    front: what gameplay hotkeys read, unlike press_key (PostMessage) and Ext.Input (UI layer only)."""
+    ok, _ = _fast(f"key {int(scan)} {int(hold_ms)}")
+    return ok or _send_key_script(scan, max(hold_ms, 120), focus)
+
+
+def click_frac(fx, fy, right=False, count=1):
+    """Click at fractions (0..1) of the game's client area."""
+    ok, _ = _fast(f"click {fx:.5f} {fy:.5f} {'R' if right else 'L'} {int(count)}")
+    return ok
+
+
+def click(x, y, right=False, count=1, shot=False):
+    """An OS-level mouse click in the game's client area. (x, y) are client pixels, or with shot=True pixels of the last
+    bg3_screenshot (sent as fractions of the window: holds at any resolution of the same aspect ratio)."""
+    if shot:
+        if click_frac(x / _last_shot[0], y / _last_shot[1], right, count):
+            return True
+    else:
+        ok, _ = _fast(f"clickpx {int(x)} {int(y)} {'R' if right else 'L'} {int(count)}")
+        if ok:
+            return True
+    return _click_script(x, y, right, count, shot)
+
+
+def click_many(points, shot=True, gap=0.15, right=False):
+    """Several clicks in one go (e.g. a row of spell tiles); returns how many were sent."""
+    sent = 0
+    for x, y in points:
+        if click(x, y, right, 1, shot):
+            sent += 1
+        time.sleep(gap)
+    return sent
+
+
+def screenshot(out=None):
+    """Capture the game window to a PNG (half size, ~1.5 MB) and return its path (Read it to see the screen)."""
+    import tempfile
+    path = os.path.join(platform.windows_temp(), "bg3_screenshot.png") if platform.IS_WSL else \
+        (out or os.path.join(tempfile.gettempdir(), "bg3_screenshot.png"))
+    ok, r = _fast(f"shot {platform.to_win(path)}", 20)
+    if ok and os.path.exists(path):
+        m = re.search(r"(\d+)x(\d+) (\d+)x(\d+)", r)
+        if m:
+            global _last_shot
+            _last_shot = (int(m.group(3)), int(m.group(4)))
+        return path
+    return _screenshot_script(out)

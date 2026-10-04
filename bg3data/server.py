@@ -815,12 +815,22 @@ def bg3_press_key(scan: int = 0x2E, hold_ms: int = 120, focus: bool = True) -> s
 
 @mcp.tool()
 @guarded
-def bg3_click(x: int, y: int, right: bool = False, count: int = 1, shot: bool = True) -> str:
-    """An OS-level mouse click. By default (shot=True) x, y are pixels of the LAST bg3_screenshot, so you can click what
-    you see; they are sent as fractions of the window and hold at any resolution of the same aspect ratio. shot=False:
-    game client pixels (1920x1080 at full size). Brings the game to the front, so use it while nobody is typing."""
+def bg3_click(x: int = 0, y: int = 0, right: bool = False, count: int = 1, shot: bool = True,
+              points: list[list[int]] | None = None, screenshot: bool = False) -> str:
+    """OS-level mouse click(s). By default (shot=True) coordinates are pixels of the LAST bg3_screenshot, so you can click
+    what you see; they are sent as fractions of the window and hold at any resolution of the same aspect ratio
+    (shot=False: game client pixels, 1920x1080 at full size). points=[[x, y], ...] clicks several in one call (e.g. a
+    checklist row then the tiles you want); screenshot=True returns a fresh bg3_screenshot path afterwards, so a whole
+    step is one call. Brings the game to the front, so use it while nobody is typing."""
     from . import gameui
-    return "clicked" if gameui.click(x, y, right, count, shot) else "failed (is the game running?)"
+    pts = points or [[x, y]]
+    n = gameui.click_many(pts, shot=shot, right=right) if len(pts) > 1 else (1 if gameui.click(pts[0][0], pts[0][1], right, count, shot) else 0)
+    if n == 0:
+        return "failed (is the game running?)"
+    msg = f"clicked {n}" + (f"/{len(pts)}" if n != len(pts) else "")
+    if screenshot:
+        msg += "; screenshot: " + gameui.screenshot()
+    return msg
 
 
 @mcp.tool()

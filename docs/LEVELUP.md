@@ -27,3 +27,11 @@ Verified 2026-10-03: Wizard 3 -> 6 (cantrip, spells, ritual spell, Savant spell,
 - Windows only (SendInput, PowerShell). Not for controllers. A game patch that redesigns the screen can break the clicks.
 - Naming a spell: the spell entries expose only `Selected`/`NotAvailable`, so choices are made by looking and clicking, not by
   spell name. Subclass-granted "always prepared" spells need no choice.
+
+## Speed (2026-10-03)
+- Input goes through one long-lived helper (`bg3data/ps/inputd.ps1`, started on first use by `gameui._InputDaemon`): a click
+  is ~0.17 s, a screenshot ~0.22 s, instead of ~1.7 s per script launch. The old per-call scripts remain as fallbacks.
+- `levelup_open` presses Enter (up to 3x) after clicking the LEVEL UP bar: Enter/Space skips the level-up intro animation
+  straight to the interface. Open from a fresh level-up now takes ~6 s end to end.
+- `bg3_click(points=[[x,y],...], screenshot=True)` batches several clicks and returns a fresh screenshot in one call.
+- Remaining cost: each `bg3_se_eval` spawns PowerShell for console injection (~0.6 s after warm-up).
