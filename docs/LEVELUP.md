@@ -31,8 +31,9 @@ Verified 2026-10-03: Wizard 3 -> 6 (cantrip, spells, ritual spell, Savant spell,
 ## Speed (2026-10-03)
 - Input goes through one long-lived helper (`bg3data/ps/inputd.ps1`, started on first use by `gameui._InputDaemon`): a click
   is ~0.17 s, a screenshot ~0.22 s, instead of ~1.7 s per script launch. The old per-call scripts remain as fallbacks.
-- `levelup_open` clicks the LEVEL UP bar, waits ~2.5 s, then presses Enter once a second (4x): the intro ignores Enter until it has
-  faded in, so earlier presses are swallowed. Open to interface is ~9 s and verified (L7 and L8 level-ups, 2026-10-03).
+- `levelup_open` clicks the LEVEL UP bar, then watches screen brightness (`lum` command of the helper: dark intro ~0-23, interface
+  ~180) and returns the moment the interface shows. Correction: Enter/Space/click do NOT reliably skip the intro earlier - timelines
+  show it ending by itself 6-9 s after the click whatever is pressed (Enter is still sent every 0.5 s, harmless).
 - Click targets: the checklist rows on the left are narrow (click near their icon/label, ~x=35 of the half-size shot), and the
   "+" tiles on the overview page are NOT clickable - open a choice by its checklist row, pick icons, then Accept.
 - `bg3_click(points=[[x,y],...], screenshot=True)` batches several clicks and returns a fresh screenshot in one call.
@@ -46,3 +47,10 @@ Verified 2026-10-03: Wizard 3 -> 6 (cantrip, spells, ritual spell, Savant spell,
   passive checkbox (870,452).
 - `bg3_level_check` passes at each level (2 recurring WARNs: ArcaneWard and SpellSlot maxes read higher than the progression
   - probably the Origin feat/Alert and cumulative XP, not investigated).
+
+## Round 2 (2026-10-03)
+- `bg3_levelup finish` now blocks until the level has really been applied (server `Osi.GetLevel` rises; ~1-4 s) instead of returning
+  during the black screen, so `bg3_level_check` right after it is safe.
+- `bg3_load_save(index)` loads a save from the pause menu of the running game (no restart): ~34 s, clears [ForceUpdate].
+- Measured, Wizard 2 -> 5 from the L2 save: L3 open 13.5 s + choices 1.9 s + finish 3.6 s = 19 s; L4 open 10.1 + choices 3.5 +
+  finish 4.1 = 17.7 s (feat included); L5 choices+finish 7.7 s. Open is the floor: ~3 s for the sheet + the 6-9 s intro.

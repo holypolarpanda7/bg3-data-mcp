@@ -838,7 +838,7 @@ def bg3_click(x: int = 0, y: int = 0, right: bool = False, count: int = 1, shot:
 def bg3_levelup(action: str = "state", sheet_scan: int = 0x17) -> str:
     """Level-up screen helper (needs the character level-up ready: bg3_level_up grants the XP). action: 'state' (sheet /
     level-up screen open? is every choice made = IsLevelUpComplete), 'open' (character sheet key, then the LEVEL UP bar;
-    sheet_scan is the scan code of the sheet key, 0x17 = I), 'finish' (accept via FinishLevelUp once complete).
+    sheet_scan is the scan code of the sheet key, 0x17 = I), 'finish' (accept via FinishLevelUp once complete, then waits until the new level is really applied).
     The choices in between (class, subclass, spells, feat, ability points) are clicked with bg3_screenshot + bg3_click;
     after 'open' take a screenshot, click through the checklist on the left, and call 'state' until complete is true."""
     from . import gameui
@@ -848,8 +848,19 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17) -> str:
         return json.dumps(gameui.levelup_open(sheet_scan))
     if action == "finish":
         ok, msg = gameui.levelup_finish()
-        return "accepted" if ok else "not accepted: " + msg
+        return ("accepted " + msg).strip() if ok else "not accepted: " + msg
     return "action must be state, open or finish"
+
+
+@mcp.tool()
+@guarded
+def bg3_load_save(index: int = 0) -> str:
+    """Load a save in the RUNNING game from the pause menu (no restart, ~15-40 s): Esc, Load Game, the save in row `index` of the
+    list (0 = first row = the game's newest), Load Game; clears the [ForceUpdate] box and waits for a host. Take a bg3_screenshot of
+    the Load list first if unsure which row is which."""
+    from . import gameui
+    t = gameui.load_save(index)
+    return f"loaded in {t}s" if t is not None else "timed out waiting for a host (check bg3_screenshot)"
 
 
 @mcp.tool()

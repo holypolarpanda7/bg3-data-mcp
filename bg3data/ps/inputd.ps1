@@ -5,6 +5,7 @@
 #   click FX FY [L|R] [COUNT]   mouse click at fractions (0..1) of the client area
 #   clickpx X Y [L|R] [COUNT]   mouse click at client pixels
 #   shot PATH                   PNG of the game window, half size (game focused first); replies "ok WxH SWxSH"
+#   lum FX FY FW FH             mean brightness (0-255) of a region (fractions of the client area), no focus change
 #   ping
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -97,6 +98,15 @@ while ($true) {
                       $small.Save($line.Substring(5).Trim(), [System.Drawing.Imaging.ImageFormat]::Png)
                       $g.Dispose(); $bmp.Dispose(); $small.Dispose()
                       $r = "ok $($s[0])x$($s[1]) ${sw}x${sh}" }
+            "lum"   { $h = Get-Game; $s = Client-Size
+                      $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
+                      $w = [int]($s[0] * [double]$a[3]); $hh = [int]($s[1] * [double]$a[4])
+                      $bmp = New-Object System.Drawing.Bitmap $w, $hh
+                      $g = [System.Drawing.Graphics]::FromImage($bmp)
+                      $g.CopyFromScreen($pt.X + [int]($s[0] * [double]$a[1]), $pt.Y + [int]($s[1] * [double]$a[2]), 0, 0, (New-Object System.Drawing.Size $w, $hh))
+                      $sm = New-Object System.Drawing.Bitmap $bmp, 8, 8; $t = 0
+                      for ($y = 0; $y -lt 8; $y++) { for ($x = 0; $x -lt 8; $x++) { $c = $sm.GetPixel($x, $y); $t += 0.299 * $c.R + 0.587 * $c.G + 0.114 * $c.B } }
+                      $g.Dispose(); $bmp.Dispose(); $sm.Dispose(); $r = "ok " + [int]($t / 64) }
             default { $r = "err unknown command" }
         }
     } catch { $r = "err " + $_.Exception.Message }

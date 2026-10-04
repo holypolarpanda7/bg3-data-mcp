@@ -291,34 +291,95 @@ def levelup_open(sheet_scan=0x17, wait=8.0, skip_intro=True):
             if levelup_state().get("sheet_open"):
                 break
     click_frac(*LEVELUP_BAR)
-    end = time.time() + wait
-    while time.time() < end:
-        time.sleep(0.25)
-        st = levelup_state()
-        if st.get("levelup_open"):
+    # The intro is dark (brightness ~0 in the sky area) and the interface bright (~180); Enter skips the intro, so press it
+    # every half second until the picture is bright (it only acts while choices are pending, so it can't accept a level-up).
+    t0 = time.time()
+    seen_dark = False
+    last_key = 0.0
+    while time.time() - t0 < wait + 4:
+        lum = _lum()
+        if lum is not None and lum < 60:
+            seen_dark = True
+        if seen_dark and lum is not None and lum > 130:
             break
-    if st.get("levelup_open") and skip_intro and not st.get("complete"):
-        # the intro ignores Enter until it has faded in (~4 s after the bar click): start late, then press once a second
-        time.sleep(2.5)
-        for _ in range(4):
-            send_key(0x1C, hold_ms=120)
-            time.sleep(0.9)
-        st = levelup_state()
-    return st
+        if skip_intro and time.time() - last_key >= 0.5 and time.time() - t0 > 0.8:
+            send_key(0x1C, hold_ms=100)
+            last_key = time.time()
+        time.sleep(0.05)
+    return levelup_state()
 
 
-def levelup_finish():
-    """Accept a completed level-up through the screen's own FinishLevelUp command. Returns (ok, message)."""
+def _lum():
+    """Mean brightness (0-255) of the sky area at the top centre of the game window (the level-up intro is dark there)."""
+    ok, r = _fast("lum 0.55 0.08 0.2 0.2", 5)
+    try:
+        return int(r.split()[1]) if ok and r.startswith("ok") else None
+    except (IndexError, ValueError):
+        return None
+
+
+def host_level():
+    """The host character's level (server side), or None."""
+    try:
+        r = se.eval_lua("return Osi.GetLevel(Osi.GetHostCharacter())", "server", timeout=8)
+    except (RuntimeError, TimeoutError):
+        return None
+    v = r.get("result") if r.get("ok") else None
+    return int(v) if isinstance(v, (int, float)) else None
+
+
+def levelup_finish(wait=30.0):
+    """Accept a completed level-up through the screen's own FinishLevelUp command, then (wait>0) block until the level has
+    really been applied (the screen goes black for several seconds first). Returns (ok, message)."""
     st = levelup_state()
     if not st.get("levelup_open"):
         return False, "the level-up screen isn't open"
     if not st.get("complete"):
         return False, "choices are still pending (IsLevelUpComplete is false): finish them first"
+    before = host_level() if wait else None
     res, raw = _client(FIND + """
 local w = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0)
 local ok, err = pcall(function() w.DataContext.FinishLevelUp:Execute(nil) end)
 return {ok = ok, err = ok and "" or tostring(err)}""")
-    return bool(res and res.get("ok")), (res or {}).get("err", "") if res else "no answer from the client"
+    if not (res and res.get("ok")):
+        return False, (res or {}).get("err", "") if res else "no answer from the client"
+    if not wait or before is None:
+        return True, ""
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        time.sleep(0.5)
+        lv = host_level()
+        if lv is not None and lv > before:
+            return True, f"level {before} -> {lv} after {time.time() - t0:.1f}s"
+    return True, f"accepted, but the level hadn't risen after {wait:.0f}s"
+
+
+def load_save(index=0, timeout=90.0):
+    """Load a save from the pause menu of the RUNNING game (no restart): Esc, Load Game, row `index` of the list (0 = the first
+    row, 34 px apart; the list is the game's own order, newest first), Load Game. Waits until a host exists in the new session
+    and clears message boxes with Enter. Returns the elapsed seconds, or None on timeout."""
+    t0 = time.time()
+    for _ in range(3):
+        if "MainMenu" in (screen() or []) or "GameMenu" in (screen() or []):
+            break
+        send_key(0x01, hold_ms=100)
+        time.sleep(1.0)
+    click(960, 568)                      # Load Game on the pause menu
+    time.sleep(3.0)                      # the list fills in after a spinner
+    click(320, 210 + 34 * index)
+    time.sleep(0.4)
+    click(1068, 1005)                    # Load Game button
+    time.sleep(6.0)
+    while time.time() - t0 < timeout:
+        send_key(0x1C, hold_ms=60)       # the [ForceUpdate] box appears as the save starts loading
+        time.sleep(1.5)
+        try:
+            r = se.eval_lua("return Osi.GetHostCharacter() ~= nil", "server", timeout=5)
+            if r.get("ok") and r.get("result") is True:
+                return round(time.time() - t0, 1)
+        except (RuntimeError, TimeoutError):
+            pass
+    return None
 
 
 # ---------------------------------------------------------------- fast input: one long-lived PowerShell helper
