@@ -720,7 +720,8 @@ def _icon_candidates(kind, j, count):
     # an unmapped layout (e.g. Savant at 13+): the available icons are a centred row (44 px apart, around x 480) at y ~584 -
     # live 2026-10-03: 2 icons at 458/502 - or, failing that, the last `count` icons the scan finds in reading order
     if count and count <= 8:
-        for ry in (584, 582, 586):
+        # Savant rows sit at ~584; Mystic Arcanum and other short lists put theirs right under "Available" at ~476 (or ~454)
+        for ry in (584, 476, 454):
             out.append(("", round(480 + 44 * (j - (count + 1) / 2)), ry))
     tiles = _stable_tiles()
     if len(tiles) >= count >= j and ("", *tiles[-count:][j - 1]) not in out:
