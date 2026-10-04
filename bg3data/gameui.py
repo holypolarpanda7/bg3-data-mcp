@@ -1016,7 +1016,21 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
             return out
         log.append("wanted spells selected: " + ", ".join(spells))
     if not _state().get("complete"):
-        out["error"] = "choices still pending after the driver ran: " + "; ".join(log[-3:] or ["no pending rows were found"])
+        dead, _ = _client(FIND + _VM + """
+local out = {}
+local det = d.ClassProgressionDetails
+for _, key in ipairs({"NotSubSpellSelectors", "SubSpellSelectors"}) do
+  local c = det[key]
+  for i = 1, (c and #c or 0) do
+    local sel, open = c[i], 0
+    for j = 1, #sel.Available do if not sel.Available[j].NotAvailable then open = open + 1 end end
+    if #sel.Available > 0 and open == 0 and sel.AddedCount == 0 then out[#out + 1] = key .. i .. " (" .. #sel.Available .. " spells)" end
+  end
+end
+return out""")
+        why = ("; a spell choice offers no selectable spell - every option is unavailable (e.g. spells above the character's slot "
+               "levels without the slot-free selector form), so the game can't finish this level-up: " + ", ".join(dead)) if dead else ""
+        out["error"] = "choices still pending after the driver ran: " + "; ".join(log[-3:] or ["no pending rows were found"]) + why
         return out
     if not finish:
         out["ok"] = True

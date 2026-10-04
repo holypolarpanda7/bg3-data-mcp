@@ -1696,6 +1696,39 @@ def lint_progressions(store, active, layer):
             if not has and ours and with_spells >= 2:
                 noslotspells.append(f"  {levels[L][0][1]} L{L}: first level-{mx} slot, but no AddSpells/SelectSpells at that level "
                                     f"({with_spells} other new slot levels have one)")
+    # a SelectSpells offering only spells above every slot level the class has at that point, without the slot-free form
+    # (...,None,AlwaysPrepared,UntilRest like dnd55e's Mystic Arcanum): every option is unavailable and the level-up can't be
+    # finished (Apotheosis' Warlock 13/15/17 Mystic Arcanum blocked every Warlock at 12; found in game 2026-10-04)
+    unpickable = []
+    for t, levels in by_table.items():
+        top = 0
+        for L in sorted(levels):
+            for n in levels[L]:
+                at = json.loads(n[5])
+                for x in re.findall(r"ActionResource\((?:SpellSlot|WarlockSpellSlot)\s*,\s*[\d.]+\s*,\s*(\d+)\)", at.get("Boosts") or ""):
+                    top = max(top, int(x))
+            for n in levels[L]:
+                if n[0] != layer:
+                    continue
+                for args in re.findall(r"SelectSpells\(([^)]*)\)", json.loads(n[5]).get("Selectors") or ""):
+                    a = [x.strip() for x in args.split(",")]
+                    if len(a) > 5 and a[5] == "None":
+                        continue          # slot-free (its own resource / once per rest)
+                    spells = _list_spells(store, active, a[0]) or []
+                    lv = []
+                    for sp in spells:
+                        r_ = store.resolve(sp, active)
+                        try:
+                            lv.append(int((r_ or {}).get("fields", {}).get("Level", ("0",))[0]))
+                        except ValueError:
+                            pass
+                    if top and lv and min(lv) > top:
+                        unpickable.append(f"  {n[1]} L{L}: SelectSpells({a[0][:8]}..) offers level {min(lv)}-{max(lv)} spells, but the class's "
+                                          f"highest slot is level {top} - every option is unavailable and the level-up can't be finished "
+                                          "(slot-free form: ...,None,AlwaysPrepared,UntilRest)")
+    if unpickable:
+        out.append(f"UNPICKABLE SPELL CHOICES ({len(unpickable)}):")
+        out += unpickable
     if noslotspells:
         out.append(f"NEW SLOT LEVEL WITHOUT SPELLS ({len(noslotspells)}) - that level's spells can't be learned or prepared:")
         out += noslotspells
@@ -1750,7 +1783,7 @@ def lint_progressions(store, active, layer):
         for (t, l), v in sorted(dup, key=lambda d: (d[1][0][1], d[0][1])):
             out.append(f"  {v[0][1]} L{l}: " + "; ".join(f"{x[0]} {x[4]}" + (" [AllowImprovement]" if json.loads(x[5]).get("AllowImprovement") == "true" else "")
                                                       + (" [Selectors]" if json.loads(x[5]).get("Selectors") else "") for x in v))
-    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources, {len(noslotspells)} slot levels without spells, {len(early)} early subclass nodes")] + out)
+    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources, {len(noslotspells)} slot levels without spells, {len(early)} early subclass nodes, {len(unpickable)} unpickable spell choices")] + out)
 
 
 # ------------------------------------------------------------------ build plans
