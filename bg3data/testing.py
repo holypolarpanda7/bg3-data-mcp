@@ -1689,6 +1689,16 @@ def lint_progressions(store, active, layer):
     if wrong:
         out.append(f"WRONG TABLE ({len(wrong)}) - the node's Name belongs to a different table:")
         out += wrong
+    # spell list entries that don't exist in any layer show up in game as blank, unusable entries (Apotheosis' Arcana Mastery
+    # list named Platinum Shield and Tenser's Transformation, which nothing implements; 2026-10-04)
+    ghost = []
+    for u, n, at in store.db.execute("SELECT uuid, name, attrs FROM lists WHERE layer=?", (layer,)):
+        for sp in [x for x in (json.loads(at).get("Spells") or "").split(";") if x]:
+            if not store.resolve(sp, active):
+                ghost.append(f"  list {n} ({u}): '{sp}' doesn't exist in any layer")
+    if ghost:
+        out.append(f"MISSING LIST ENTRIES ({len(ghost)}) - shown in game as blank entries:")
+        out += ghost
     # a table reaching a new spell-slot level with no spell grant at that level, while its other new slot levels have one: the
     # spells of that level can never be learned/prepared (Apotheosis' Druid 17 had the 9th-level slot and no list, 2026-10-04)
     # merged like the game: one node per UUID, the highest layer wins (rows are in rank order)
@@ -1817,7 +1827,7 @@ def lint_progressions(store, active, layer):
         for (t, l), v in sorted(dup, key=lambda d: (d[1][0][1], d[0][1])):
             out.append(f"  {v[0][1]} L{l}: " + "; ".join(f"{x[0]} {x[4]}" + (" [AllowImprovement]" if json.loads(x[5]).get("AllowImprovement") == "true" else "")
                                                       + (" [Selectors]" if json.loads(x[5]).get("Selectors") else "") for x in v))
-    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources, {len(noslotspells)} slot levels without spells, {len(early)} early subclass nodes, {len(unpickable)} unpickable spell choices")] + out)
+    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources, {len(noslotspells)} slot levels without spells, {len(early)} early subclass nodes, {len(unpickable)} unpickable spell choices, {len(ghost)} missing list entries")] + out)
 
 
 # Lint findings the dnd55e author already answered as intended, so they aren't reported as problems again:
