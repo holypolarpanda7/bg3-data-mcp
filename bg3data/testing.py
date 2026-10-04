@@ -1575,7 +1575,15 @@ local h = Osi.GetHostCharacter()
 local n = 0
 for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("ServerCharacter")) do
   local ok, u = pcall(function() return e.Uuid.EntityUuid end)
-  if ok and u and u ~= h and Osi.IsDead(u) == 0 and Osi.IsInCombat(u) == 1 and Osi.IsEnemy(u, h) == 1 and Osi.IsPartyMember(u, 1) == 0 then
+  -- in combat with us, or a hostile a test left standing right next to the host (a 300 HP feature-test wolf that hasn't
+  -- started a fight yet will start one at the next level-up)
+  local near = false
+  pcall(function()
+    local hx, hy, hz = Osi.GetPosition(h)
+    local x, y, z = Osi.GetPosition(u)
+    near = math.abs(x - hx) < 12 and math.abs(z - hz) < 12
+  end)
+  if ok and u and u ~= h and Osi.IsDead(u) == 0 and (Osi.IsInCombat(u) == 1 or near) and Osi.IsEnemy(u, h) == 1 and Osi.IsPartyMember(u, 1) == 0 then
     Osi.Die(u, 0, "NULL_00000000-0000-0000-0000-000000000000", 0, 0)
     n = n + 1
   end
