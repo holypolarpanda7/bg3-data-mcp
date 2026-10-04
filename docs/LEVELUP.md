@@ -170,3 +170,18 @@ Picking a SPECIFIC spell (no view-model route: `SelectSpell` and `Selected` don'
   spells only - never filler clicks there (one run toggled prepared spells that way).
 - Lesson: iterate on a CLEAN level-up. Several partial attempts on one screen leave picks behind (Esc keeps them) and every
   later run starts from that mess - reload the save and rebuild (`bg3_load_save` + `bg3_test_build`, ~6 min to level 14).
+
+## All nine Wizard builds, 2 -> 20 (2026-10-04)
+`bg3_test_build` passes every level (level_check ALL PASS) of wiz-abjurer, -bladesinger, -conjurer, -diviner, -enchanter, -evoker,
+-illusionist, -necromancer, -transmuter, and every automated case of their 13+ levels passes in game (Antimagic Field, Mind Blank,
+Etherealness, Delayed Blast Fireball, Finger of Death, Simulacrum, Sequester, Clone, Maze, Telepathy, Befuddlement, Weird, Greater
+Portent, Alter Memories ...). Fixes found on the way:
+- Bladesinger 3 asks for a skill: `ClassSkills`/`AllSkills` (Selected/MaxSelectedSkillCount) + `ToggleSkill:Execute(item)`.
+- The class spell grid hides a few items no flag explains (5 of 168 for a Bladesinger at 13; selected spells stay in place, framed),
+  so a wanted spell's place is searched (raw index, up to 10 earlier, 2 later), each click verified and undone - confirmed by
+  hovering: the tooltip at the computed place named the right spell once the hidden count was right.
+- Savant at 13+ centres its icons (44 px apart around x 480, y ~584).
+- A mod console test (`!apofeature Enchanter_14_AlterMemories`) spawned two hostiles and left them: the host stayed in combat and
+  the next level-up couldn't open. run_build now runs the harness cleanup plus `end_combat()` (kills hostile non-party characters in
+  combat) after each level's tests, and won't start a level-up in combat.
+- level_check applies passive adds/removes in level order (Apotheosis removes SongVictory at 12 and re-adds it at 14).

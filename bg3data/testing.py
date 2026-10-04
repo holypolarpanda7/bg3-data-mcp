@@ -1459,6 +1459,9 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
             out.append(f"L{L}: already reached")
             continue
         time.sleep(3)
+        if lua("return Osi.IsInCombat(Osi.GetHostCharacter())") == 1 and end_combat()["in_combat"]:
+            out.append(f"L{L}: host is in combat - a level-up can't open; stopping")
+            break
         want = ch.get(L, {})
         spells = {sp: spell_handle(store, active, sp) for sp in want.get("spells", [])}
         r = gameui.levelup_auto(subclass=want.get("subclass") if b.get("subclass") else None, spells=spells or None)
@@ -1478,6 +1481,17 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
             rep = run_level(store, active, layer, None, L, wait, build_id)
             out.append("    tests: " + rep.splitlines()[0])
             out += [f"      {x}" for x in rep.splitlines()[1:] if x.strip() and ("FAIL" in x or "NOT RUN" in x or "ERROR" in x)]
+            # leave no test behind: harness spawns, and any combat a mod-side test started (a level-up can't open in combat)
+            try:
+                cleanup()
+            except Exception:
+                pass
+            ec = end_combat()
+            if ec["killed"]:
+                out.append(f"    ended a combat the tests left behind ({ec['killed']} hostiles)")
+            if ec["in_combat"]:
+                out.append("    host is still in combat after the tests - stopping (a level-up can't open in combat)")
+                break
     out.append(f"done in {time.time() - t_all:.0f}s")
     return "\n".join(out)
 
@@ -1507,6 +1521,33 @@ def run_level(store, active, layer, cls, level, wait=4.0, build=None):
     passed = sum(1 for o in out if o.split("\n")[0].endswith("]") and ": PASS" in o.split("\n")[0])
     head = f"{cls} level {level}: {passed}/{len(out)} automated cases passed" + (f"; player-mode (run by hand): {', '.join(manual)}" if manual else "")
     return head + "\n\n" + "\n\n".join(out)
+
+
+END_COMBAT = """
+local h = Osi.GetHostCharacter()
+local n = 0
+for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("ServerCharacter")) do
+  local ok, u = pcall(function() return e.Uuid.EntityUuid end)
+  if ok and u and u ~= h and Osi.IsDead(u) == 0 and Osi.IsInCombat(u) == 1 and Osi.IsEnemy(u, h) == 1 and Osi.IsPartyMember(u, 1) == 0 then
+    Osi.Die(u, 0, "NULL_00000000-0000-0000-0000-000000000000", 0, 0)
+    n = n + 1
+  end
+end
+return {killed = n, host_in_combat = Osi.IsInCombat(h)}
+"""
+
+
+def end_combat(wait=8.0):
+    """End a combat a test left behind (e.g. a mod console test that spawned hostiles and didn't remove them): kills the hostile,
+    non-party characters in combat, then waits for the host to leave combat. A level-up can't open during combat."""
+    r = lua(END_COMBAT) or {}
+    t = time.time()
+    while time.time() - t < wait:
+        st = lua("return Osi.IsInCombat(Osi.GetHostCharacter())")
+        if st == 0:
+            break
+        time.sleep(1.0)
+    return {"killed": r.get("killed", 0), "in_combat": lua("return Osi.IsInCombat(Osi.GetHostCharacter())") == 1}
 
 
 def cleanup():
