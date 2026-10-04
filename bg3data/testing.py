@@ -192,6 +192,28 @@ def _list_spells(store, active, uuid):
     return [s for s in re.split(r"[;,]", attrs.get("Spells", "")) if s]
 
 
+_COND_BOOST = re.compile(r"(?:IF\((.*?)\):)?ActionResource\(\s*(\w+)\s*,\s*([\d.]+)\s*,\s*(\d+)\s*\)")
+_ABILITY_GT = re.compile(r"^\s*AbilityGreaterThan\(\s*'?(\w+)'?\s*,\s*(\d+)\s*(?:,\s*context\.Source\s*)?\)\s*$")
+
+
+def _resource_boosts(boosts, abilities):
+    """'ActionResource(...);IF(cond):ActionResource(...)' -> [(name, level, amount, active)]: active is True for an unconditional
+    boost or a condition evaluated true, False when evaluated false, None when the condition can't be evaluated offline
+    (only AbilityGreaterThan('X',N) is - against the host's real scores)."""
+    out = []
+    for part in (boosts or "").split(";"):
+        m = _COND_BOOST.search(part.strip())
+        if not m:
+            continue
+        cond, name, amt, lvl = m.groups()
+        state = True
+        if cond:
+            g = _ABILITY_GT.match(cond)
+            state = (abilities.get(g.group(1), 0) > int(g.group(2))) if (g and abilities) else None
+        out.append((name, int(lvl), float(amt), state))
+    return out
+
+
 def level_check(store, active):
     """Compare the host with what its class/subclass progressions grant up to its current level."""
     st = host_state()
@@ -204,7 +226,7 @@ def level_check(store, active):
     for c in st["classes"]:
         tables = [(c["class"], c["class_table"])] + ([(c["subclass"], c["subclass_table"])] if c.get("subclass") else [])
         lines.append(f"{c['class']} {c['level']}" + (f" / {c['subclass']}" if c.get("subclass") else " (no subclass yet)"))
-        added, removed, res, spell_lists, choices = {}, set(), {}, [], []
+        added, removed, res, spell_lists, choices, race_res = {}, set(), {}, [], [], {}
         for name, table in tables:
             for lvl, pname, _, src, a in store.progression(table, active):
                 if lvl > c["level"] or str(a.get("IsMulticlass", "")).lower() == "true":
@@ -221,6 +243,21 @@ def level_check(store, active):
                         spell_lists.append((lvl, args[0], src))
                     elif kind.startswith("Select") and lvl == c["level"]:
                         choices.append(f"{kind}({', '.join(args[:2])}) [{src}]")
+        if c is st["classes"][0]:     # race / subrace progressions go by character level; counted once, with the first class
+            for race in st.get("races") or []:
+                for lvl, pname, _, src, a in store.progression(race["table"], active):
+                    if lvl > st["level"]:
+                        continue
+                    for p in filter(None, (a.get("PassivesAdded") or "").split(";")):
+                        added[p] = (lvl, f"{src}, {race['name']}")
+                    for p in filter(None, (a.get("PassivesRemoved") or "").split(";")):
+                        removed.add(p)
+                    for rname, rlvl, amt in _boost_resources(a.get("Boosts")):
+                        res[(rname, rlvl)] = res.get((rname, rlvl), 0) + amt
+                        race_res.setdefault((rname, rlvl), []).append((f"{race['name']} L{lvl}", amt))
+                    for sel in re.findall(r"AddSpells\(([^),]*)", a.get("Selectors") or ""):
+                        if sel.strip():
+                            spell_lists.append((lvl, sel.strip(), f"{src}, {race['name']}"))
         for p, (lvl, src) in sorted(added.items(), key=lambda t: t[1][0]):
             if p in removed:
                 continue
@@ -243,28 +280,46 @@ def level_check(store, active):
                 fails += not ok
                 if not ok or lvl == c["level"]:
                     lines.append(f"  {'PASS' if ok else 'FAIL'} spell {sp} (L{lvl} AddSpells, {src})" + (f" source={have_s[sp]}" if ok else ""))
-        # resource boosts from the host's other passives (origin feats, race, background...) also count
-        other = {}
-        for p in have_p - set(added):
+        # resource boosts from the host's passives (class-granted ones like ArcaneWard_Resource too, origin feats, race,
+        # background...); conditional ones are evaluated when they test an ability score, otherwise they widen the range
+        other, maybe = {}, {}
+        for p in have_p:
             r = store.resolve(p, active)
-            for rname, rlvl, amt in _boost_resources((r or {}).get("fields", {}).get("Boosts", ("", ""))[0]):
-                other.setdefault((rname, rlvl), []).append((p, amt))
+            for rname, rlvl, amt, on in _resource_boosts((r or {}).get("fields", {}).get("Boosts", ("", ""))[0], st.get("abilities") or {}):
+                if on is True:
+                    other.setdefault((rname, rlvl), []).append((p, amt))
+                elif on is None:
+                    maybe.setdefault((rname, rlvl), []).append((p, amt))
         for (rname, rlvl), amt in sorted(res.items()):
             got = (st["resources"].get(rname) or {}).get(str(rlvl))
             mx = got[1] if got else 0
             extra = other.get((rname, rlvl), [])
+            unsure = maybe.get((rname, rlvl), [])
             total = amt + sum(a for _, a in extra)
-            why = ", ".join(f"+{a:g} {p}" for p, a in extra)
-            if mx == total and extra:
-                lines.append(f"  PASS resource {rname}[{rlvl}] max {mx:g} = progression {amt:g} {why}")
-            elif mx != total:
+            hi = total + sum(a for _, a in unsure)
+            parts = [f"+{a:g} {n}" for n, a in race_res.get((rname, rlvl), [])] + [f"+{a:g} {p}" for p, a in _group(extra)]
+            why = ", ".join(parts)
+            if unsure:
+                why += (", " if why else "") + f"up to +{hi - total:g} conditional ({', '.join(sorted({p for p, _ in unsure}))})"
+            if total <= mx <= hi:
+                if parts or unsure:
+                    lines.append(f"  PASS resource {rname}[{rlvl}] max {mx:g} = class progression {amt - sum(a for _, a in race_res.get((rname, rlvl), [])):g} {why}")
+            else:
                 warns += 1
-                lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, expected {total:g} (progression {amt:g}"
-                             + (f" {why}" if why else "") + ")")
+                lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, expected {total:g}" + (f"-{hi:g}" if hi != total else "")
+                             + f" (class progression {amt - sum(a for _, a in race_res.get((rname, rlvl), [])):g}" + (f" {why}" if why else "") + ")")
         for ch in choices:
             lines.append(f"  info this level's choice: {ch}")
     lines.insert(0, f"LEVEL CHECK: {'ALL PASS' if not fails else f'{fails} FAIL'}" + (f", {warns} warning(s)" if warns else ""))
     return "\n".join(lines)
+
+
+def _group(pairs):
+    """[(name, amt), ...] -> summed per name, first-seen order (a passive with several active boosts reads +3, not +1 +1 +1)."""
+    out = {}
+    for n, a in pairs:
+        out[n] = out.get(n, 0) + a
+    return list(out.items())
 
 
 # ------------------------------------------------------------------ suites

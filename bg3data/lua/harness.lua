@@ -100,6 +100,18 @@ function T.classes(g)
     return t
 end
 
+function T.races(g)  -- race and subrace with their progression tables (they grant passives, spells and resources by character level)
+    local t = {}
+    pcall(function()
+        local ccs = Ext.Entity.Get(g).CharacterCreationStats
+        for _, k in ipairs({ "Race", "SubRace" }) do
+            local r = ccs[k] and Ext.StaticData.Get(ccs[k], "Race")
+            if r and r.ProgressionTableUUID then t[#t + 1] = { name = r.Name, table = tostring(r.ProgressionTableUUID) } end
+        end
+    end)
+    return t
+end
+
 function T.snapshot(g, full)
     g = uuid(g)
     local s = {
@@ -125,6 +137,7 @@ function T.snapshot(g, full)
         local e = Ext.Entity.Get(g)
         s.level = Osi.GetLevel(g)
         s.classes = T.classes(g)
+        s.races = T.races(g)
         s.passives = T.passives(g)
         s.spells = T.spells(g)
         s.region = Osi.GetRegion(g)
