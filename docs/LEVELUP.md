@@ -37,3 +37,12 @@ Verified 2026-10-03: Wizard 3 -> 6 (cantrip, spells, ritual spell, Savant spell,
   "+" tiles on the overview page are NOT clickable - open a choice by its checklist row, pick icons, then Accept.
 - `bg3_click(points=[[x,y],...], screenshot=True)` batches several clicks and returns a fresh screenshot in one call.
 - Remaining cost: each `bg3_se_eval` spawns PowerShell for console injection (~0.6 s after warm-up).
+
+## Benchmark (2026-10-03, Wizard 2 -> 5 from the "L2 Base" save, loaded from the pause menu without a restart)
+- Each level: open to interface 11.7-13 s; choices by one batched `bg3_click(points=[...])` (4-7 clicks, ~1-2 s); Accept then ~6-8 s
+  of black screen while it applies. L5 ran with zero screenshots (rows and icon positions repeat): click batch -> `state`
+  complete -> `finish`. Layout facts (1920x1080 px): checklist rows x=70, y=166/210/254/(...) down the list; picker icons
+  first row y=476 (x=324, 370), Savant/ritual pickers y=454-582; feat page: list x~394, then ability "+" at (1080,316),
+  passive checkbox (870,452).
+- `bg3_level_check` passes at each level (2 recurring WARNs: ArcaneWard and SpellSlot maxes read higher than the progression
+  - probably the Origin feat/Alert and cumulative XP, not investigated).
