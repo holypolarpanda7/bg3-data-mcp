@@ -1463,7 +1463,9 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
         return "no host level (is a game loaded?)"
     parent = find_build(layer, b["from"]) if b.get("from") else None
     cl = gameui.class_levels() or {}
-    if parent and parent.get("save_as") and (lv < lo - 1 or set(cl) != {b["class"]}):
+    # reload the start save unless the host is exactly where this build starts (same class, level lo - 1): a previous build of
+    # the same class leaves a level 20 character behind (that skipped whole builds once)
+    if parent and parent.get("save_as") and (lv != lo - 1 or cl != {b["class"]: lo - 1}):
         # not this build's character: load its start save by name (made with bg3_new_character)
         t, info = gameui.load_save(name=parent["save_as"])
         if t is None:
