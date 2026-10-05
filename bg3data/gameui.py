@@ -437,12 +437,17 @@ def _row_pending(y):
 def _picker_kind():
     """Which icon picker the open page shows ("ritual", "grid", "savant"), or None for a page without icons (feat list, subclass...).
     Bands are checked in a fixed precedence - ritual, grid, savant - and the first lit one wins: a long spell grid also lights the
-    savant band further down (its later rows), but no grid lights the ritual band and no savant page lights the grid band."""
+    savant band further down (its later rows), and no savant page lights the grid band; a page lighting the ritual band with
+    many icons is a grid under a taller header."""
     for kind in ("ritual", "grid", "savant"):
         x, y, w, h = ICON_PROBES[kind]
         ok, r = _fast("lum %.5f %.5f %.5f %.5f" % (x / REF_W, y / REF_H, w / REF_W, h / REF_H), 5)
         try:
             if ok and int(r.split()[1]) >= 40:
+                # Magical Secrets' header text lights the ritual band over a 317-spell grid (2026-10-05): a ritual page shows
+                # a handful of icons, a grid dozens
+                if kind == "ritual" and len(_tiles() or []) > 16:
+                    return "grid"
                 return kind
         except (IndexError, ValueError):
             pass
@@ -942,7 +947,9 @@ for _, key in ipairs({"NotSubSpellSelectors", "SubSpellSelectors"}) do
   local col = det[key]
   for i = 1, (col and #col or 0) do
     local av, lv = col[i].Available, {}
-    for j = 1, #av do local L = tostring(av[j].Spell.Level) lv[L] = (lv[L] or 0) + 1 end
+    for j = 1, #av do  -- greyed-out spells (NotAvailable: above the character's slots, or known) can't be picked
+      if not av[j].NotAvailable then local L = tostring(av[j].Spell.Level) lv[L] = (lv[L] or 0) + 1 end
+    end
     out[#out + 1] = {key = key, i = i, total = #av, levels = lv}
   end
 end
@@ -1160,27 +1167,46 @@ def _close_menus():
         time.sleep(0.8)
 
 
+def _lua_str(s):
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def load_save(index=0, timeout=90.0, name=None):
     """Load a save from the pause menu of the RUNNING game (no restart): Esc until the pause menu (GameMenu) is confirmed open,
-    Load Game, the save's row, Load Game. `name` (a substring of the save's folder name, e.g. "Barbarian L1 Base") is looked up in
-    the game's own list order (newest SaveTime first); else row `index` (0 = first). Waits until a host exists in the new
+    Load Game, the save, Load Game. `name`: the save's title (exact, else a unique substring, e.g. "Barbarian L1 Base"), selected
+    through the Load screen's view model; else row `index` (0 = first, the newest). Waits until a host exists in the new
     session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason)."""
     t0 = time.time()
-    if name:
-        from . import saves, sources
-        order = saves.game_order(sources.load_config())
-        hits = [i for i, (d, *_rest) in enumerate(order) if name.lower() in d.lower()]
-        if len(hits) != 1:
-            return None, f"{len(hits)} saves match {name!r}: " + ", ".join(order[i][0] for i in hits[:6])
-        if len({o[3] for o in order}) > 1:
-            return None, "saves of several characters: the Load list groups them, row positions aren't known - use index"
-        index = hits[0]
     if not _pause_menu():
         return None, "the pause menu didn't open (nothing was clicked)"
     _rclick(960, 568)                 # Load Game
     time.sleep(3.0)                   # the list fills in after a spinner
-    _rclick(320, 210 + 34 * index)
-    time.sleep(0.4)
+    if name:
+        # select it in the Load screen's view model (gui::DCSavegames.SelectedSave via SetProperty): the list shows ~22 rows, so
+        # a row click missed any older save once checkpoints pushed it down and the NEWEST save loaded instead (2026-10-05)
+        res, _ = _client(FIND + """
+local d = find(Ext.UI.GetRoot(), "LoadGame", 0).DataContext
+local want, exact, part = string.lower(%s), {}, {}
+local saves = d.ExistingSaves
+for i = 1, #saves do
+  local t = string.lower(tostring(saves[i].Title))
+  if t == want then exact[#exact + 1] = saves[i] elseif string.find(t, want, 1, true) then part[#part + 1] = saves[i] end
+end
+local hits = #exact > 0 and exact or part
+if #hits ~= 1 then
+  local names = {}
+  for _, s in ipairs(hits) do names[#names + 1] = tostring(s.Title) end
+  return {n = #hits, names = names}
+end
+d:SetProperty("SelectedSave", hits[1])
+return {n = 1, selected = tostring(d.SelectedSave.Title)}""" % _lua_str(name))
+        if not isinstance(res, dict) or res.get("n") != 1:
+            send_key(0x01, hold_ms=60)
+            return None, f"{(res or {}).get('n', '?')} saves match {name!r}: {', '.join((res or {}).get('names') or [])}"
+        time.sleep(0.4)
+    else:
+        _rclick(320, 210 + 34 * index)
+        time.sleep(0.4)
     _rclick(1068, 1005)               # Load Game button
     time.sleep(6.0)
     while time.time() - t0 < timeout:

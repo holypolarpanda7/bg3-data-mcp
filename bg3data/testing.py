@@ -1533,6 +1533,8 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
             tt, info = gameui.load_save(name=checkpoint_name(build_id, k))
             if tt is not None:
                 lv, cl = info, gameui.class_levels() or {}
+                if lv != k or cl.get(b["class"]) != k:
+                    return f"loaded checkpoint {checkpoint_name(build_id, k)!r} but the host is {cl} level {lv}"
                 resumed = f"loaded checkpoint {checkpoint_name(build_id, k)!r}"
                 break
     # reload the start save unless the host is exactly where this build starts (same class, level lo - 1): a previous build of
@@ -1544,7 +1546,9 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
         t, info = gameui.load_save(name=parent["save_as"])
         if t is None:
             return f"host is {cl} level {lv}; couldn't load the start save {parent['save_as']!r}: {info}"
-        lv = info
+        lv, cl = info, gameui.class_levels() or {}
+        if lv != lo - 1 or cl != {b["class"]: lo - 1}:  # a wrong save once passed as "level 20 -> 20" (2026-10-05)
+            return f"loaded the start save {parent['save_as']!r} but the host is {cl} level {lv}, not {b['class']} {lo - 1}"
     if lv < lo - 1:
         return f"host is level {lv}; build {build_id} starts at level {lo} - load its start save first"
     cases_by_level = {}
@@ -2084,7 +2088,17 @@ def plan(store, active, layer, build_id, write=True, _picked_only=False, choices
                     continue
                 if kind == "SelectSpells":
                     n = int(float(args[1])) if len(args) > 1 and args[1] else 1
-                    pool = [x for x in (_list_spells(store, active, args[0]) or []) if x not in picked and x not in granted]
+                    def castable(x):
+                        r_ = store.resolve(x, active)
+                        try:
+                            return int(r_["fields"].get("Level", ("0",))[0]) <= max_slot if r_ else False
+                        except ValueError:
+                            return True
+                    # the screen offers only spells the character has slots for (a slot-free choice, ...,None,..., offers its
+                    # own level): with MergedInto resolved, Lore College 6's Magical Secrets list holds level 7-9 spells too
+                    slot_free = len(args) > 5 and args[5] == "None"
+                    pool = [x for x in (_list_spells(store, active, args[0]) or [])
+                            if x not in picked and x not in granted and (slot_free or castable(x))]
                     if _list_spells(store, active, args[0]) is None:
                         body.append(f"- Spells ({args[3] if len(args) > 3 else 'list'}, pick {args[1]}): **list {args[0]} doesn't exist in any layer** - the screen will offer nothing")
                         warnings.append(f"L{L}: SelectSpells list {args[0]} is not defined anywhere")
@@ -2094,12 +2108,6 @@ def plan(store, active, layer, build_id, write=True, _picked_only=False, choices
                     spell_lvl = lvls[0] if len(lvls) == 1 else (f"{lvls[0]}-{lvls[-1]}" if lvls else "?")
                     req = [x for x in sorted(need, key=need.get) if x in pool][:n]
                     later = set(need)
-                    def castable(x):
-                        r_ = store.resolve(x, active)
-                        try:
-                            return int(r_["fields"].get("Level", ("0",))[0]) <= max_slot if r_ else False
-                        except ValueError:
-                            return True
                     filler = [x for x in sorted(pool, key=lambda x: lvl_names[x]) if x not in req and x not in later and castable(x)][: n - len(req)]
                     for x in req + filler:
                         picked[x] = L
