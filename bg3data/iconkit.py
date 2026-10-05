@@ -87,6 +87,46 @@ def dds_info(path):
     return {"w": w, "h": h, "mips": struct.unpack_from("<I", b, 28)[0] or 1, "fourcc": b[84:88].decode("latin1")}
 
 
+# ---------------------------------------------------------------- generated art in
+def key_green(img, low=12, high=90):
+    """Green screen -> transparency (the BG3 icon LoRAs paint on green on purpose). A pixel's greenness is
+    g - max(r, b): up to `low` it stays opaque, from `high` it is fully transparent, between it fades. Every pixel
+    keeps g <= max(r, b) afterwards (despill), so glows don't keep a green halo."""
+    img = img.convert("RGBA")
+    px = img.load()
+    w, h = img.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            m = max(r, b)
+            k = g - m
+            if k <= 0:
+                continue
+            alpha = a if k <= low else (0 if k >= high else int(a * (high - k) / (high - low)))
+            px[x, y] = (r, m, b, alpha)
+    return img
+
+
+def import_art(paths, src_dir, names=None, key="green", size=512):
+    """Copy generated images into a mod's icon sources as <IconName>.png: green keyed out, square, `size` px.
+    names: one per path (default: the file name without ComfyUI's _00001_ counter)."""
+    Image = _pil()
+    os.makedirs(src_dir, exist_ok=True)
+    out = []
+    for i, p in enumerate(paths):
+        name = (names[i] if names else re.sub(r"_\d+_?$", "", os.path.splitext(os.path.basename(p))[0]))
+        if not re.fullmatch(r"[A-Za-z0-9_]+", name):
+            raise ValueError(f"bad icon name {name!r}")
+        img = _square(Image.open(p).convert("RGBA"))
+        if key == "green":
+            img = key_green(img)
+        img = img.resize((size, size), Image.LANCZOS)
+        dst = os.path.join(src_dir, f"{name}.png")
+        img.save(dst)
+        out.append(dst)
+    return out
+
+
 # ---------------------------------------------------------------- sources
 def _square(img):
     w, h = img.size

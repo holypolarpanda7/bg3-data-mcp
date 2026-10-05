@@ -634,6 +634,20 @@ def bg3_icon_build(layer: str, src_dir: str | None = None, atlas: str = "Icons")
 
 @mcp.tool()
 @guarded
+def bg3_icon_import(paths: list[str], layer: str, names: list[str] | None = None, key: str = "green") -> str:
+    """Take generated images (e.g. ComfyUI outputs) into a mod's icon sources (<mod root>/Icons/src) as
+    <IconName>.png: the green screen the BG3 icon LoRAs paint on is keyed out (key="none" to skip), centre-cropped,
+    512 px. names: one icon name per path (default: the file name without ComfyUI's _00001_ counter). Then
+    bg3_icon_build."""
+    from . import iconkit
+    s = store()
+    root, _ = iconkit.mod_dirs(s, layer)
+    out = iconkit.import_art([_native(p) for p in paths], os.path.join(root, "Icons", "src"), names, key)
+    return "\n".join([f"{len(out)} icon source(s):"] + out)
+
+
+@mcp.tool()
+@guarded
 def bg3_icon_preview(src_dir: str, size: int = 128) -> str:
     """Contact sheet (PNG) of <src_dir>/*.png with names, to review a batch of icons; returns its path (open it
     with an image-capable Read)."""
