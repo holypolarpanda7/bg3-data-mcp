@@ -522,3 +522,55 @@ def preview(src_dir, out_png=None, size=128, cols=8):
     out_png = out_png or os.path.join(src_dir, "_preview.png")
     sheet.save(out_png)
     return out_png, len(icons)
+
+
+# ---------------------------------------------------------------- action resource icons (2026-10-05)
+# A resource with no icon shows a red dot in the resource bar. Layout (dnd55e's release): GUI/Assets/Shared/Resources/
+# {,Highlight/,Missing/,Used/}<Name>.DDS 48 px (AssetsLowRes 24) + GUI/Assets/ActionResources_c/Icons/<Name>.DDS 80 px
+# (low 40), all listed in GUI/metadata. The four pip states are derived from one symbol, as dnd55e's are.
+RES_SIZES = (("Shared/Resources", 48, 24), ("Shared/Resources/Highlight", 48, 24), ("Shared/Resources/Missing", 48, 24),
+             ("Shared/Resources/Used", 48, 24), ("ActionResources_c/Icons", 80, 40))
+
+
+def resource_states(symbol):
+    """normal / highlight / missing / used versions of a transparent glow symbol."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    sym = autocrop(symbol.convert("RGBA"), pad=0.12).resize((192, 192), Image.LANCZOS)
+    a = np.asarray(sym, dtype=float) / 255
+    rgb, al = a[..., :3], a[..., 3:]
+    lum = rgb.max(-1, keepdims=True)
+    mk = lambda c, aa: Image.fromarray((np.dstack([np.clip(c, 0, 1), np.clip(aa, 0, 1)]) * 255).astype(np.uint8), "RGBA")
+    normal = mk(rgb, al)
+    halo = np.asarray(sym.split()[3].filter(ImageFilter.GaussianBlur(18)), dtype=float)[..., None] / 255
+    hl = mk(rgb * 0.45 + 0.55 * lum, al)
+    under = mk(np.zeros_like(rgb), np.minimum(1, halo * 1.6 + 0.25))
+    under.alpha_composite(hl)
+    red = np.array([1.0, 0.33, 0.30])
+    missing = mk(red * (0.55 + 0.45 * lum), al)
+    used = mk(np.repeat(lum * 0.85, 3, -1), al * 0.9)
+    return {"Shared/Resources": normal, "Shared/Resources/Highlight": under, "Shared/Resources/Missing": missing,
+            "Shared/Resources/Used": used, "ActionResources_c/Icons": normal}
+
+
+def build_resources(store, layer, mapping):
+    """mapping: {resource name: transparent symbol PNG}. Writes every state and size and adds them to GUI/metadata."""
+    from PIL import Image
+    root, folder = mod_dirs(store, layer)
+    gui = os.path.join(root, "Mods", folder, "GUI")
+    meta_lsx = os.path.join(root, "Icons", "metadata.lsx")
+    entries = {}
+    if os.path.exists(meta_lsx):
+        for key, px in re.findall(r'value="(Assets/[^"]+)" />.*?id="h" type="int16" value="(\d+)"', open(meta_lsx, encoding="utf-8").read(), re.S):
+            entries[key] = int(px)
+    for res, png in mapping.items():
+        states = resource_states(Image.open(png))
+        for sub, hi, lo in RES_SIZES:
+            im = states[sub]
+            write_dds(im.resize((hi, hi), Image.LANCZOS), os.path.join(gui, "Assets", *sub.split("/"), f"{res}.DDS"))
+            write_dds(im.resize((lo, lo), Image.LANCZOS), os.path.join(gui, "AssetsLowRes", *sub.split("/"), f"{res}.DDS"))
+            entries[f"Assets/{sub}/{res}.png"] = hi
+    open(meta_lsx, "w", encoding="utf-8").write(_metadata_lsx(entries))
+    sources.divine(store.cfg, "-a", "convert-resource", "-s", platform.to_win(meta_lsx),
+                   "-d", platform.to_win(os.path.join(gui, "metadata.lsf")), "-i", "lsx", "-o", "lsf")
+    return f"{layer}: {len(mapping)} resource icons (4 pip states + controller, hi/low res); metadata {len(entries)} entries"

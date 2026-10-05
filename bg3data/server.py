@@ -665,6 +665,30 @@ def bg3_icon_plate(layer: str) -> str:
 
 @mcp.tool()
 @guarded
+def bg3_icon_resources(layer: str, mapping: dict[str, str] | None = None) -> str:
+    """Action resource icons (a resource without one shows a red dot in the resource bar): {resource name: icon} where icon
+    is an Icons/src name (Apo_...) or a base-game icon name; default: <mod root>/Icons/resource_icons.json. Writes the four
+    48 px pip states (normal, highlight, missing, used), the 80 px controller icon and low-res copies, and the metadata."""
+    from . import iconkit
+    import json as _json, tempfile
+    s = store()
+    root, _ = iconkit.mod_dirs(s, layer)
+    mapping = mapping or _json.load(open(os.path.join(root, "Icons", "resource_icons.json"), encoding="utf-8"))
+    tmp = tempfile.mkdtemp()
+    base = sorted({v for v in mapping.values() if not os.path.exists(os.path.join(root, "Icons", "src", f"{v}.png"))})
+    iconkit.extract(s, base, tmp) if base else None
+    paths = {}
+    for res, ic in mapping.items():
+        for p in (os.path.join(root, "Icons", "src", f"{ic}.png"), os.path.join(tmp, f"{ic}.png")):
+            if os.path.exists(p):
+                paths[res] = p
+                break
+    missing = sorted(set(mapping) - set(paths))
+    return iconkit.build_resources(s, layer, paths) + (f"\n  no symbol for: {', '.join(missing)}" if missing else "")
+
+
+@mcp.tool()
+@guarded
 def bg3_icon_preview(src_dir: str, size: int = 128) -> str:
     """Contact sheet (PNG) of <src_dir>/*.png with names, to review a batch of icons; returns its path (open it
     with an image-capable Read)."""
