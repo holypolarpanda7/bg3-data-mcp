@@ -136,7 +136,7 @@ PALETTE = {
     "thunder": ["#9961bb", "#dfbbf5"], "acid": ["#bcc311", "#ecef74"], "poison": ["#698e0b", "#a9c22a"],
     "necrotic": ["#3ad077", "#92f5c5"], "radiant": ["#caac2d", "#efe084"], "psychic": ["#c467bc", "#efadeb"],
     "force": ["#e13c3f", "#fa878a"], "healing": ["#20bab1", "#66efe9"],
-    "arcane": ["#6a3bc4", "#b48cf2"], "earth": ["#8a5a2b", "#e0b070"],  # no damage type: deeper violet (user 2026-10-05); brown for stone
+    "arcane": ["#4f22a8", "#9466e0"], "earth": ["#8a5a2b", "#e0b070"],  # no damage type: deeper violet (user 2026-10-05); brown for stone
 }
 
 
