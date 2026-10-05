@@ -1081,6 +1081,18 @@ def bg3_deps_update(layer: str, apply: bool = False) -> str:
 
 @mcp.tool()
 @guarded
+def bg3_lint_rules(layer: str, lo: int = 13, hi: int = 20, layers: list[str] | None = None) -> str:
+    """Check a mod's class and subclass levels against the RULES (not its own data): <suite>/rules/classes.toml (class tables:
+    features, cantrips, prepared, slots...) and rules/local/subclasses.toml (subclass features by level, with confidence:
+    verified / oracle / reference / memory / none). Reports MISSING and EXTRA features per level, CHOICE counts (feat, Epic
+    Boon, Metamagic, invocations, cantrips, Mystic Arcanum), SLOTS, subclasses with no SOURCE, and NOSRC (the mod's own design)."""
+    from . import rulescheck
+    s, active = _testing_store(layers)
+    return rulescheck.lint_rules(s, active, layer, lo, hi)
+
+
+@mcp.tool()
+@guarded
 def bg3_lint_progressions(layer: str, layers: list[str] | None = None) -> str:
     """Static progression checks for a mod layer: invalid node UUIDs (the game silently drops those
     nodes), selectors referencing lists no layer defines, and same table+level nodes from different
