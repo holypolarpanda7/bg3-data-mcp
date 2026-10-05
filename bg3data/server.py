@@ -32,7 +32,7 @@ MAX_OUTPUT = 24_000  # characters; keeps a single answer from flooding the calle
 # Hot reload: tool modules are re-imported when their source changes, so MCP code edits apply on the next call
 # without a client reconnect. Not reloaded: the stores and connections that hold live state (query, index,
 # sources, se) and this module itself - those still need a reconnect.
-HOT = ("format", "lint", "icons", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex")
+HOT = ("format", "lint", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex")
 _mtimes = {}
 
 
@@ -600,6 +600,46 @@ def bg3_icon_check(layer: str, layers: list[str] | None = None) -> str:
     from . import icons
     s = store()
     return icons.check(s, layer, s.active(layers))
+
+
+def _native(path):
+    from . import platform
+    return platform.to_native(path)
+
+
+@mcp.tool()
+@guarded
+def bg3_icon_extract(names: list[str], out_dir: str) -> str:
+    """Base-game icons as PNG (their 380 px tooltip versions) into out_dir (a Linux or Windows path), to use as
+    reference or as source art. A name may be an exact icon name or a substring (up to 12 matches each)."""
+    from . import iconkit
+    out, missing, n = iconkit.extract(store(), names, _native(out_dir))
+    return "\n".join([f"{len(out)} PNG(s) from {n} base-game tooltip icons:"] + out + ([f"not found: {', '.join(missing)}"] if missing else []))
+
+
+@mcp.tool()
+@guarded
+def bg3_icon_build(layer: str, src_dir: str | None = None, atlas: str = "Icons") -> str:
+    """Build a mod's own icons from <src_dir>/<IconName>.png (default <mod root>/Icons/src): the hotbar atlas (.dds
+    with mips + GUI/<Atlas>.lsx + its TextureBank resource), 380/192 px tooltip and 144/72 px controller DDS per
+    icon, and GUI/metadata.lsf. <IconName> is the stats `Icon` value. Then redeploy (bg3_game_restart) and
+    bg3_icon_check. Files starting with _ are skipped."""
+    from . import iconkit
+    s = store()
+    if not src_dir:
+        root, _ = iconkit.mod_dirs(s, layer)
+        src_dir = os.path.join(root, "Icons", "src")
+    return iconkit.build(s, layer, _native(src_dir), atlas)
+
+
+@mcp.tool()
+@guarded
+def bg3_icon_preview(src_dir: str, size: int = 128) -> str:
+    """Contact sheet (PNG) of <src_dir>/*.png with names, to review a batch of icons; returns its path (open it
+    with an image-capable Read)."""
+    from . import iconkit
+    path, n = iconkit.preview(_native(src_dir), size=size)
+    return f"{n} icons -> {path}"
 
 
 @mcp.tool()
