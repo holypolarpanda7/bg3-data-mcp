@@ -129,9 +129,66 @@ def unmix_green(img, dark=(0.06, 0.30)):
     return Image.fromarray(out, "RGBA")
 
 
-def import_art(paths, src_dir, names=None, key="unmix", size=512):
-    """Copy generated images into a mod's icon sources as <IconName>.png: green unmixed (key="unmix", default; "green" =
-    the older hard key, "none"), square, `size` px.
+# Colour per damage type, sampled from base-game icons (2026-10-05): the haze/edge colour, then the core colour(s).
+# Base icons are one hue with a brighter core; IP-Adapter output mixes the references' colours, so it is recoloured.
+PALETTE = {
+    "fire": ["#c1440e", "#e98a2c", "#ffd47a"], "cold": ["#1a93c5", "#4ecbf0"], "lightning": ["#3c79e4", "#8ebcfe"],
+    "thunder": ["#9961bb", "#dfbbf5"], "acid": ["#bcc311", "#ecef74"], "poison": ["#698e0b", "#a9c22a"],
+    "necrotic": ["#3ad077", "#92f5c5"], "radiant": ["#caac2d", "#efe084"], "psychic": ["#c467bc", "#efadeb"],
+    "force": ["#e13c3f", "#fa878a"], "healing": ["#20bab1", "#66efe9"],
+    "arcane": ["#9961bb", "#dfbbf5"], "earth": ["#8a5a2b", "#e0b070"],  # no damage type: thunder's lilac; brown for stone
+}
+
+
+def luma_key(img, lo=0.05, hi=0.55):
+    """Black background -> transparency the way base icons work: alpha from brightness, colour un-darkened."""
+    import numpy as np
+    from PIL import Image
+    a = np.asarray(img.convert("RGB"), dtype=float) / 255
+    v = a.max(-1)
+    al = np.clip((v - lo) / (hi - lo), 0, 1)
+    col = np.clip(a / np.maximum(v, 1e-3)[..., None], 0, 1)
+    return Image.fromarray((np.dstack([col, al]) * 255).round().astype(np.uint8), "RGBA")
+
+
+def tint(img, kind, lo=0.05):
+    """Recolour a black-background image to one PALETTE gradient: dim haze takes the first stop, the bright core the
+    last; alpha from brightness (as luma_key)."""
+    import numpy as np
+    from PIL import Image
+    stops = [np.array([int(h[i:i + 2], 16) for i in (1, 3, 5)]) / 255 for h in PALETTE[kind]]
+    a = np.asarray(img.convert("RGB"), dtype=float) / 255
+    v = a.max(-1)
+    al = np.clip((v - lo) / (0.55 - lo), 0, 1)
+    t = np.clip((v - lo) / (0.9 - lo), 0, 1) ** 1.3 * (len(stops) - 1)
+    i = np.minimum(t.astype(int), len(stops) - 2)
+    f = (t - i)[..., None]
+    S = np.stack(stops)
+    col = S[i] * (1 - f) + S[i + 1] * f
+    return Image.fromarray((np.dstack([np.clip(col, 0, 1), al]) * 255).round().astype(np.uint8), "RGBA")
+
+
+def autocrop(im, pad=0.08, threshold=20):
+    """Square crop around the visible artwork plus `pad` margin, so icons fill the tile like base ones."""
+    import numpy as np
+    from PIL import Image
+    a = np.asarray(im.convert("RGBA"))[..., 3]
+    ys, xs = np.where(a > threshold)
+    if not len(xs):
+        return im
+    x0, x1, y0, y1 = xs.min(), xs.max(), ys.min(), ys.max()
+    s = int(max(x1 - x0, y1 - y0) * (1 + 2 * pad)) + 1
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    out = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    out.paste(im.crop((cx - s // 2, cy - s // 2, cx - s // 2 + s, cy - s // 2 + s)), (0, 0))
+    return out
+
+
+def import_art(paths, src_dir, names=None, key="unmix", size=512, tints=None, crop=False):
+    """Copy generated images into a mod's icon sources as <IconName>.png, `size` px. Green-screen art (the SD 1.5 BG3
+    LoRA): key="unmix" (default) or "green" (hard key). Black-background art (SDXL + IP-Adapter, 2026-10-05): key="black"
+    (alpha from brightness), or tints=[PALETTE name per path] to also recolour to one damage-type gradient (base icons
+    are one hue). crop=True: fill the tile with the artwork (autocrop).
     names: one per path (default: the file name without ComfyUI's _00001_ counter)."""
     Image = _pil()
     os.makedirs(src_dir, exist_ok=True)
@@ -140,11 +197,17 @@ def import_art(paths, src_dir, names=None, key="unmix", size=512):
         name = (names[i] if names else re.sub(r"_\d+_?$", "", os.path.splitext(os.path.basename(p))[0]))
         if not re.fullmatch(r"[A-Za-z0-9_]+", name):
             raise ValueError(f"bad icon name {name!r}")
-        img = _square(Image.open(p).convert("RGBA"))
-        if key == "unmix":
-            img = unmix_green(img)
+        img = Image.open(p)
+        kind = tints[i] if tints else None
+        if kind:  # black-background art recoloured to one damage-type gradient (alpha from brightness)
+            img = tint(img, kind)
+        elif key == "black":
+            img = luma_key(img)
+        elif key == "unmix":
+            img = unmix_green(_square(img.convert("RGBA")))
         elif key == "green":
-            img = key_green(img)
+            img = key_green(_square(img.convert("RGBA")))
+        img = autocrop(img) if crop else _square(img.convert("RGBA"))
         img = img.resize((size, size), Image.LANCZOS)
         dst = os.path.join(src_dir, f"{name}.png")
         img.save(dst)
@@ -246,7 +309,93 @@ def _metadata_lsx(entries):
             + objs + '\t\t\t\t\t</children>\n\t\t\t\t</node>\n\t\t\t</children>\n\t\t</node>\n\t</region>\n</save>\n')
 
 
-def build(store, layer, src_dir, atlas="Icons"):
+def thicken(icon, k=7, keep=0.85):
+    """Slightly bolder strokes: grey-dilate alpha and premultiplied colour at 380 px (k px), base hotbar icons read heavier
+    than raw generations (user, 2026-10-05)."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    ic = icon.convert("RGBA").resize((380, 380), Image.LANCZOS)
+    a = np.asarray(ic, dtype=float) / 255
+    rgb, al = a[..., :3], a[..., 3]
+    d = lambda ch: np.asarray(Image.fromarray((ch * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(k)), dtype=float) / 255
+    alt = d(al)
+    rgbd = np.stack([d(rgb[..., c] * al) for c in range(3)], -1) / np.maximum(alt[..., None], 1e-3)
+    out = np.dstack([np.clip(rgbd, 0, 1), np.maximum(al, alt * keep)])
+    return Image.fromarray((out * 255).astype(np.uint8), "RGBA")
+
+
+def make_plate(store, out_png, ref=(60, 49, 52)):
+    """The brushed stone plate base hotbar spell tiles are painted on (2026-10-05), rebuilt from the game's own skill
+    atlas: the frame from the per-pixel median of the brown-stone spell tiles, the inside from a low percentile (symbols
+    only add light) plus grain from symbol-free corner patches."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    import tempfile
+    D = store.cfg["base"]["game_data"]
+    with tempfile.TemporaryDirectory() as tmp:
+        sources.divine(store.cfg, "-a", "extract-single-file", "-s", platform.to_win(os.path.join(D, "Icons.pak")),
+                       "-d", platform.to_win(os.path.join(tmp, "a.dds")), "-f", "Public/Shared/Assets/Textures/Icons/Icons_Skills.dds")
+        sources.divine(store.cfg, "-a", "extract-single-file", "-s", platform.to_win(os.path.join(D, "Shared.pak")),
+                       "-d", platform.to_win(os.path.join(tmp, "a.lsx")), "-f", "Public/Shared/GUI/Icons_Skills.lsx")
+        atl = np.asarray(Image.open(os.path.join(tmp, "a.dds")).convert("RGB"), dtype=float)
+        t = open(os.path.join(tmp, "a.lsx"), encoding="utf-8").read()
+    W = atl.shape[0]
+    pat = re.compile(r'value="(Spell_[A-Za-z0-9_]+)"\s*/>\s*<attribute id="U1" type="float" value="([^"]+)"/>\s*'
+                     r'<attribute id="U2" type="float" value="([^"]+)"/>\s*<attribute id="V1" type="float" value="([^"]+)"/>')
+    st, patches = [], []
+    for m in pat.finditer(t):
+        u1, _, v1 = map(float, m.groups()[1:])
+        x, y = round(u1 * W), round(v1 * W)
+        tl = atl[y:y + 64, x:x + 64]
+        if tl.shape != (64, 64, 3):
+            continue
+        corner = np.concatenate([tl[:6, :6], tl[:6, -6:], tl[-6:, :6], tl[-6:, -6:]]).reshape(-1, 3).mean(0)
+        if np.abs(corner - np.array(ref)).max() > 14:
+            continue
+        st.append(tl)
+        for yy, xx in ((5, 5), (5, 43), (43, 5), (43, 43)):
+            p = tl[yy:yy + 16, xx:xx + 16]
+            if p.max() < 110 and (p.max(-1) - p.min(-1)).max() < 45:
+                patches.append(p)
+    st = np.stack(st)
+    blur = lambda a, r: np.asarray(Image.fromarray(np.clip(a, 0, 255).round().astype(np.uint8)).filter(ImageFilter.GaussianBlur(r)), dtype=float)
+    inner = blur(np.percentile(st, 25, axis=0), 1.2)
+    rng = np.random.default_rng(3)
+    grain = np.zeros((64, 64, 3))
+    for gy in range(0, 64, 16):
+        for gx in range(0, 64, 16):
+            p = patches[rng.integers(len(patches))]
+            p = p[:, ::-1] if rng.random() < 0.5 else p
+            grain[gy:gy + 16, gx:gx + 16] = p - p.mean((0, 1))
+    plate = inner + blur(grain + 128, 0.7) - 128
+    yy, xx = np.mgrid[0:64, 0:64]
+    w = np.clip((7 - np.minimum(np.minimum(yy, 63 - yy), np.minimum(xx, 63 - xx))) / 3, 0, 1)[..., None]
+    plate = plate * (1 - w) + np.median(st, 0) * w
+    os.makedirs(os.path.dirname(out_png), exist_ok=True)
+    Image.fromarray(np.clip(plate, 0, 255).round().astype(np.uint8)).save(out_png)
+    return out_png, len(st)
+
+
+def hotbar_tile(icon, plate, glow=(255, 196, 90)):
+    """A 64 px hotbar tile like the base game's: the symbol on the stone plate, a dark shadow hugging its strokes, a warm
+    yellow halo and a slightly warmer core. Only the atlas gets this; tooltips stay a bare glow (user, 2026-10-05)."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    sym = icon.convert("RGBA").resize((TILE, TILE), Image.LANCZOS)
+    s = np.asarray(sym, dtype=float) / 255
+    sal, srgb = s[..., 3:], s[..., :3]
+    A = sym.split()[3]
+    gl = np.asarray(A.filter(ImageFilter.GaussianBlur(3.0)), dtype=float)[..., None] / 255
+    sh = np.asarray(A.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.GaussianBlur(1.2)), dtype=float)[..., None] / 255
+    G = np.array(glow) / 255
+    P = np.asarray(plate.convert("RGB").resize((TILE, TILE)), dtype=float) / 255 * (1 - 0.55 * sh)
+    out = P + G * gl * 0.45
+    core = np.clip(srgb * 1.1 + 0.25 * sal * G, 0, 1)
+    out = out * (1 - sal) + core * sal
+    return Image.fromarray((np.clip(out, 0, 1) * 255).astype(np.uint8), "RGB").convert("RGBA")
+
+
+def build(store, layer, src_dir, atlas="Icons", thick=7):
     """Write a layer's icon set from <src_dir>/*.png (see the module doc). Replaces the files this pipeline owns:
     the named atlas, and the tooltip/controller DDS + metadata entries of every icon in src_dir."""
     Image = _pil()
@@ -255,6 +404,10 @@ def build(store, layer, src_dir, atlas="Icons"):
         raise RuntimeError(f"no <IconName>.png files in {src_dir}")
     root, folder = mod_dirs(store, layer)
     atlas = re.sub(r"[^A-Za-z0-9_]", "", f"{layer.capitalize()}_{atlas}")
+    if thick:
+        icons = {n: thicken(im, thick) for n, im in icons.items()}
+    plate_png = os.path.join(root, "Icons", "hotbar_plate.png")
+    plate = Image.open(plate_png) if os.path.exists(plate_png) else None
     names = sorted(icons)
     size = 512
     while (size // TILE) ** 2 < len(names):
@@ -262,7 +415,8 @@ def build(store, layer, src_dir, atlas="Icons"):
     sheet = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     per_row = size // TILE
     for i, n in enumerate(names):
-        sheet.paste(icons[n].resize((TILE, TILE), Image.LANCZOS), ((i % per_row) * TILE, (i // per_row) * TILE))
+        sheet.paste(hotbar_tile(icons[n], plate) if plate else icons[n].resize((TILE, TILE), Image.LANCZOS),
+                    ((i % per_row) * TILE, (i // per_row) * TILE))
     rel_dds = f"Assets/Textures/Icons/{atlas}.dds"
     mips = write_dds(sheet, os.path.join(root, "Public", folder, *rel_dds.split("/")), mips=True)
     atlas_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"bg3data-icon-atlas:{layer}:{atlas}"))
@@ -296,7 +450,7 @@ def build(store, layer, src_dir, atlas="Icons"):
     meta_lsf = os.path.join(gui, "metadata.lsf")
     sources.divine(store.cfg, "-a", "convert-resource", "-s", platform.to_win(meta_lsx), "-d", platform.to_win(meta_lsf),
                    "-i", "lsx", "-o", "lsf")
-    return (f"{layer}: {len(names)} icons -> atlas {rel_dds} ({size}x{size}, {mips} mips, uuid {atlas_uuid}), "
+    return (f"{layer}: {len(names)} icons{' (hotbar tiles on ' + os.path.basename(plate_png) + ')' if plate else ''} -> atlas {rel_dds} ({size}x{size}, {mips} mips, uuid {atlas_uuid}), "
             f"GUI/{atlas}.lsx, tooltip 380/192 + controller 144/72 DDS each, metadata.lsf ({len(entries)} entries)\n"
             f"  icons: {', '.join(names[:20])}{' ...' if len(names) > 20 else ''}\n"
             "  Use the names as stats `Icon` values; repack/deploy, then bg3_icon_check to confirm the game draws them.")

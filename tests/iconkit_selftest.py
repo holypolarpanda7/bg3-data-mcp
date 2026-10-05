@@ -45,6 +45,18 @@ check(u.getpixel((0, 0))[3] == 0, f"pure background unmixes to alpha 0 ({u.getpi
 r, gg, b, a = u.getpixel((32, 32))
 check(50 <= a <= 110 and r > 150 and b < 60, f"faint glow keeps its colour at low alpha ({(r, gg, b, a)})")
 
+# black-background art: brightness -> alpha, tint to one gradient, autocrop to the artwork
+blk = Image.new("RGB", (100, 100), (0, 0, 0))
+for x in range(40, 60):
+    for y in range(40, 60):
+        blk.putpixel((x, y), (255, 255, 255))
+lk = iconkit.luma_key(blk)
+check(lk.getpixel((0, 0))[3] == 0 and lk.getpixel((50, 50))[3] == 255, "luma_key: black transparent, bright opaque")
+tf = iconkit.tint(blk, "fire")
+check(tf.getpixel((50, 50))[:3] == (255, 212, 122) and tf.getpixel((0, 0))[3] == 0, f"tint: bright core takes fire's last stop ({tf.getpixel((50, 50))})")
+ac = iconkit.autocrop(lk)
+check(abs(ac.size[0] - 22) <= 2, f"autocrop to the 20 px artwork + 8% margin each side ({ac.size})")
+
 lsx = iconkit._atlas_lsx(["A", "B", "C"], 512, "Assets/Textures/Icons/X.dds", "u-1")
 uv = re.findall(r'id="U1" type="float" value="([^"]+)"', lsx)
 check(abs(float(uv[0]) - 0.5 / 512) < 1e-7 and abs(float(uv[1]) - 64.5 / 512) < 1e-7, f"tile UVs inset half a pixel ({uv[:2]})")

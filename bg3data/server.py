@@ -619,7 +619,7 @@ def bg3_icon_extract(names: list[str], out_dir: str) -> str:
 
 @mcp.tool()
 @guarded
-def bg3_icon_build(layer: str, src_dir: str | None = None, atlas: str = "Icons") -> str:
+def bg3_icon_build(layer: str, src_dir: str | None = None, atlas: str = "Icons", thick: int = 7) -> str:
     """Build a mod's own icons from <src_dir>/<IconName>.png (default <mod root>/Icons/src): the hotbar atlas (.dds
     with mips + GUI/<Atlas>.lsx + its TextureBank resource), 380/192 px tooltip and 144/72 px controller DDS per
     icon, and GUI/metadata.lsf. <IconName> is the stats `Icon` value. Then redeploy (bg3_game_restart) and
@@ -629,22 +629,38 @@ def bg3_icon_build(layer: str, src_dir: str | None = None, atlas: str = "Icons")
     if not src_dir:
         root, _ = iconkit.mod_dirs(s, layer)
         src_dir = os.path.join(root, "Icons", "src")
-    return iconkit.build(s, layer, _native(src_dir), atlas)
+    return iconkit.build(s, layer, _native(src_dir), atlas, thick)
 
 
 @mcp.tool()
 @guarded
-def bg3_icon_import(paths: list[str], layer: str, names: list[str] | None = None, key: str = "unmix") -> str:
+def bg3_icon_import(paths: list[str], layer: str, names: list[str] | None = None, key: str = "unmix",
+                    tints: list[str] | None = None, crop: bool = False) -> str:
     """Take generated images (e.g. ComfyUI outputs) into a mod's icon sources (<mod root>/Icons/src) as
     <IconName>.png: the green screen the BG3 icon LoRAs paint on is unmixed (key="unmix": the soft glow over it survives
     as semi-transparent haze, like base-game icons; "green" = hard key; "none" to skip), centre-cropped,
-    512 px. names: one icon name per path (default: the file name without ComfyUI's _00001_ counter). Then
-    bg3_icon_build."""
+    512 px. Black-background art (SDXL + IP-Adapter): key="black", or tints=[fire|cold|lightning|thunder|acid|poison|
+    necrotic|radiant|psychic|force|healing|arcane|earth per path] to recolour to that damage type's base-game gradient;
+    crop=True fills the tile. names: one icon name per path (default: the file name without ComfyUI's _00001_ counter).
+    Then bg3_icon_build."""
     from . import iconkit
     s = store()
     root, _ = iconkit.mod_dirs(s, layer)
-    out = iconkit.import_art([_native(p) for p in paths], os.path.join(root, "Icons", "src"), names, key)
+    out = iconkit.import_art([_native(p) for p in paths], os.path.join(root, "Icons", "src"), names, key, tints=tints, crop=crop)
     return "\n".join([f"{len(out)} icon source(s):"] + out)
+
+
+@mcp.tool()
+@guarded
+def bg3_icon_plate(layer: str) -> str:
+    """Rebuild the stone plate base-game hotbar spell tiles are painted on (from the game's own skill atlas) into
+    <mod root>/Icons/hotbar_plate.png. With it, bg3_icon_build makes base-game-style hotbar tiles (plate, stroke shadow,
+    warm yellow halo); the tooltip icons stay a bare glow."""
+    from . import iconkit
+    s = store()
+    root, _ = iconkit.mod_dirs(s, layer)
+    path, n = iconkit.make_plate(s, os.path.join(root, "Icons", "hotbar_plate.png"))
+    return f"plate from {n} base hotbar spell tiles -> {path}"
 
 
 @mcp.tool()
