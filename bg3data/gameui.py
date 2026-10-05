@@ -931,6 +931,39 @@ def subclasses():
     return r.get("result") if r.get("ok") and isinstance(r.get("result"), dict) else None
 
 
+def spell_offers():
+    """What the open level-up screen offers in each spell choice: [{key, i, total, levels: {spell level: n}}] - the ground truth
+    a static check can only predict (lists change at load through MergedInto: dnd55e's one-level lists offer every level so far,
+    verified 2026-10-05)."""
+    res, _ = _client(FIND + _VM + """
+local out = {}
+local det = d.ClassProgressionDetails
+for _, key in ipairs({"NotSubSpellSelectors", "SubSpellSelectors"}) do
+  local col = det[key]
+  for i = 1, (col and #col or 0) do
+    local av, lv = col[i].Available, {}
+    for j = 1, #av do local L = tostring(av[j].Spell.Level) lv[L] = (lv[L] or 0) + 1 end
+    out[#out + 1] = {key = key, i = i, total = #av, levels = lv}
+  end
+end
+return out""")
+    return res if isinstance(res, list) else []
+
+
+def offer_gaps(offers, top_slot):
+    """Spell choices that skip spell levels: leveled spells offered, but not every level from 1 to the highest offered. A choice
+    entirely above the character's highest slot (slot-free, e.g. Mystic Arcanum) or of cantrips only is exempt."""
+    bad = []
+    for o in offers or []:
+        lv = sorted(int(k) for k in (o.get("levels") or {}) if str(k).lstrip("-").isdigit() and int(k) > 0)
+        if not lv or (top_slot and min(lv) > top_slot):
+            continue
+        missing = [x for x in range(1, max(lv) + 1) if x not in lv]
+        if missing:
+            bad.append(f"{o['key']}[{o['i']}] offers spell levels {lv}: no level {', '.join(map(str, missing))} spells")
+    return bad
+
+
 def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
     """Level the host up completely: open the screen, (add_class: take the level in that class instead - a multiclass, or another
     level of a second class), fill every pending checklist row (spells, cantrips, rituals, savant, feat / ability improvement),
@@ -987,6 +1020,7 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
         if not ok:
             out["error"] = f"couldn't choose subclass {subclass}: {msg}"
             return out
+    out["offers"] = spell_offers()  # before any pick changes the lists
     _fill_passive_selectors(log)
     _fill_skill_selectors(log)
     wanted = dict(spells or {})

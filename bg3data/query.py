@@ -219,6 +219,34 @@ class Store:
         row = self.db.execute(f"SELECT node, uuid, name, source, attrs FROM lists WHERE (uuid=? OR name=?) AND {w} ORDER BY rank DESC LIMIT 1", [key, key] + p).fetchone()
         return row
 
+    def merged_into(self, uuid, active):
+        """Lists the game merges into `uuid` when it loads: every list (its highest-layer version) whose MergedInto names it,
+        followed transitively. dnd55e makes its one-level learn lists cumulative this way ("5.5 Sorcerer SLevel 1 List to 3"
+        -> the level 3 list) - the file shows 21 spells, the game 82 (verified 2026-10-05). [(uuid, name, spells)]"""
+        w, p = self._where(active)
+        latest = {}
+        for u, n, at in self.db.execute(f"SELECT uuid, name, attrs FROM lists WHERE {w} ORDER BY rank", p):
+            latest[u] = (n, json.loads(at))
+        out, todo, seen = [], [uuid], {uuid}
+        while todo:
+            tgt = todo.pop()
+            for u, (n, at) in latest.items():
+                if at.get("MergedInto") == tgt and u not in seen:
+                    seen.add(u)
+                    todo.append(u)
+                    out.append((u, n, [s for s in re.split(r"[;,]", at.get("Spells", "")) if s]))
+        return out
+
+    def runtime_list_spells(self, key, active):
+        """A spell list's spells as the game has them: its own plus everything merged into it (MergedInto). None if unknown."""
+        row = self.spell_list(key, active)
+        if not row:
+            return None
+        spells = [s for s in re.split(r"[;,]", json.loads(row[4]).get("Spells", "")) if s]
+        for _u, _n, more in self.merged_into(row[1], active):
+            spells += [s for s in more if s not in spells]
+        return spells
+
     # ------------------------------------------------------------ spells
     def visual_kit(self, fields):
         return {k: v for k, (v, _) in fields.items() if VISUAL_KEYS.search(k) and v}

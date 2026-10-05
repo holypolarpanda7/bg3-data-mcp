@@ -292,14 +292,22 @@ def bg3_static(kind: str, key: str, layers: list[str] | None = None) -> str:
 @mcp.tool()
 @guarded
 def bg3_spell_list(key: str, layers: list[str] | None = None) -> str:
-    """A spell/passive/skill list by UUID or Name (highest layer wins)."""
+    """A spell/passive/skill list by UUID or Name (highest layer wins), plus the lists the game merges into it at load
+    (MergedInto) - what a level-up actually offers from it."""
     s = store()
-    r = s.spell_list(key, s.active(layers))
+    act = s.active(layers)
+    r = s.spell_list(key, act)
     if not r:
         return "list not found"
     node, uuid, name, src, attrs = r
     a = json.loads(attrs)
-    return f"{node} {name} {uuid} [{src}]\n" + "\n".join(f"  {k} = {v}" for k, v in a.items() if k not in ("UUID", "Name"))
+    out = f"{node} {name} {uuid} [{src}]\n" + "\n".join(f"  {k} = {v}" for k, v in a.items() if k not in ("UUID", "Name"))
+    merged = s.merged_into(uuid, act)
+    if merged:
+        full = s.runtime_list_spells(uuid, act) or []
+        out += (f"\n  in game: {len(full)} spells - merged in at load (MergedInto): "
+                + ", ".join(f"{n} ({u[:8]}, {len(sp)})" for u, n, sp in merged))
+    return out
 
 
 @mcp.tool()
@@ -833,24 +841,27 @@ def bg3_new_character(cls: str, save_as: str | None = None) -> str:
 @mcp.tool()
 @se_guarded
 def bg3_test_build(layer: str, build: str, to_level: int | None = None, wait: float = 4.0, layers: list[str] | None = None,
-                   background: bool = False) -> str:
+                   background: bool = False, start_level: int | None = None) -> str:
     """Run a test build ([[build]] in the suite TOML) hands-free from the host's current level: every level is granted and taken with
     the automatic level-up driver using the build's plan (bg3_test_plan) - its subclass and the spells its tests need, learned
     through the level-up screen so they're class-sourced - then validated (level +1, subclass, wanted spells, level_check) and that
     level's automated tests are run. A build with `from` loads its start save by name when the host isn't that character. to_level
     stops early (~20-25 s per level plus tests). Stops at the first failure. background=True: `build` may be several ids
     separated by commas; they run one after another in a detached process (a full build is ~10 min) - read progress with
-    bg3_test_build_status."""
+    bg3_test_build_status (lines appear as they happen). Every 5th level is saved as "<build id> L<n>"; start_level (the first
+    level to re-take) loads the newest such checkpoint below it instead of levelling from the start save - use it only when
+    nothing at or below that checkpoint level changed since the checkpoint was made."""
     from . import testing
     if background:
         import subprocess, sys
         log = os.path.join(sources.CACHE, "test_builds.log")
         ids = [x.strip() for x in build.split(",") if x.strip()]
-        subprocess.Popen([sys.executable, "-m", "bg3data.runbuilds", log, layer] + ids, cwd=os.path.dirname(os.path.dirname(__file__)),
+        opts = (["--to", str(to_level)] if to_level else []) + (["--start", str(start_level)] if start_level else [])
+        subprocess.Popen([sys.executable, "-m", "bg3data.runbuilds", log, layer] + opts + ids, cwd=os.path.dirname(os.path.dirname(__file__)),
                          stdout=subprocess.DEVNULL, stderr=open(log + ".err", "a"), start_new_session=True)
         return f"started {len(ids)} build(s) in the background; progress: bg3_test_build_status (log {log})"
     s, active = _testing_store(layers)
-    return testing.run_build(s, active, layer, build, to_level, wait)
+    return testing.run_build(s, active, layer, build, to_level, wait, start_level=start_level)
 
 
 @mcp.tool()

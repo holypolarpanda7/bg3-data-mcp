@@ -185,11 +185,8 @@ def _boost_resources(boosts):
 
 
 def _list_spells(store, active, uuid):
-    row = store.spell_list(uuid, active)
-    if not row:
-        return None
-    attrs = json.loads(row[4])
-    return [s for s in re.split(r"[;,]", attrs.get("Spells", "")) if s]
+    """The list's spells as the game loads them, merged lists (MergedInto) included."""
+    return store.runtime_list_spells(uuid, active)
 
 
 _COND_BOOST = re.compile(r"(?:IF\((.*?)\):)?ActionResource\(\s*(\w+)\s*,\s*([\d.]+)\s*,\s*(\d+)\s*\)")
@@ -429,6 +426,17 @@ def load_cases(layer):
                 c["_suite"] = suite.get("name") or os.path.splitext(os.path.basename(f))[0]
                 cases.append(c)
     return cases
+
+
+def load_class_tables(layer):
+    """[[class_table]] entries of a layer's suite TOMLs: class name -> {prepared: [per level 1..20], replace: bool}."""
+    out = {}
+    for d in suite_dirs(layer):
+        for f in sorted(glob.glob(os.path.join(d, "*.toml"))):
+            with open(f, "rb") as fh:
+                for e in tomllib.load(fh).get("class_table", []):
+                    out[e["class"]] = e
+    return out
 
 
 def load_builds(layer):
@@ -766,7 +774,9 @@ Osi.LeaveCombat(h) return true""")
     for i, s in enumerate(spawns):
         tpl = TEMPLATES.get(s["template"], (s["template"], None))[0]
         dist = float(s.get("distance", 8))
-        ang = (i - (len(spawns) - 1) / 2) * 0.6
+        # fanned out around the host's facing, 0.6 rad (~34 deg) apart; `spread` (degrees) packs them tighter, e.g. a
+        # group inside an area spell's cone or radius
+        ang = (i - (len(spawns) - 1) / 2) * math.radians(float(c.get("spread", math.degrees(0.6))))
         dx, dz = dist * math.cos(ang), dist * math.sin(ang)
         a_ = se._lua_string(s["as"])
         code.append(f"r[{a_}]=BG3T.spawn({a_},{se._lua_string(tpl)},{se._lua_string(FACTIONS['neutral'])},{dx:.2f},{dz:.2f})")
@@ -1469,10 +1479,38 @@ def subclass_ui_name(store, active, cls, sub):
     return hits[0] if hits else sub
 
 
-def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
+CHECKPOINT_EVERY = 5  # a build saves "<build id> L<n>" at every 5th level, so a re-test can start near the level it needs
+
+
+class _Log(list):
+    """The report lines, also handed to `progress` as they come (the background log shows a build while it runs)."""
+    def __init__(self, progress=None):
+        super().__init__()
+        self.progress = progress
+
+    def append(self, x):
+        super().append(x)
+        if self.progress:
+            self.progress(x)
+
+    def extend(self, xs):
+        for x in xs:
+            self.append(x)
+        return self
+
+    __iadd__ = extend
+
+
+def checkpoint_name(build_id, level):
+    return f"{build_id} L{level}"
+
+
+def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_level=None, progress=None):
     """Level the host through a build's plan with the automatic level-up driver - its subclass and the spells its tests need -
     validating every level (level +1, subclass, wanted spells, level_check) and running that level's automated tests. Starts at
-    the host's current level (load the build's start save first). Stops at the first failure. Returns the report text."""
+    the host's current level (load the build's start save first). Stops at the first failure. Returns the report text.
+    Every CHECKPOINT_EVERY-th level is saved as "<build id> L<n>". start_level: the first level to (re)take - the newest checkpoint
+    below it is loaded instead of the start save (only valid if nothing at or below that checkpoint changed since it was made)."""
     from . import gameui
     b = find_build(layer, build_id)
     lo, hi = b["levels"]
@@ -1484,9 +1522,24 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
         return "no host level (is a game loaded?)"
     parent = find_build(layer, b["from"]) if b.get("from") else None
     cl = gameui.class_levels() or {}
+    resumed = None
+    if start_level:
+        for k in range((start_level - 1) // CHECKPOINT_EVERY * CHECKPOINT_EVERY, lo - 1, -CHECKPOINT_EVERY):
+            if k < lo or k < 1:
+                break
+            if lv == k and cl == {b["class"]: k}:
+                resumed = f"host already at checkpoint level {k}"
+                break
+            tt, info = gameui.load_save(name=checkpoint_name(build_id, k))
+            if tt is not None:
+                lv, cl = info, gameui.class_levels() or {}
+                resumed = f"loaded checkpoint {checkpoint_name(build_id, k)!r}"
+                break
     # reload the start save unless the host is exactly where this build starts (same class, level lo - 1): a previous build of
     # the same class leaves a level 20 character behind (that skipped whole builds once)
-    if parent and parent.get("save_as") and (lv != lo - 1 or cl != {b["class"]: lo - 1}):
+    if resumed:
+        pass
+    elif parent and parent.get("save_as") and (lv != lo - 1 or cl != {b["class"]: lo - 1}):
         # not this build's character: load its start save by name (made with bg3_new_character)
         t, info = gameui.load_save(name=parent["save_as"])
         if t is None:
@@ -1497,7 +1550,8 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
     cases_by_level = {}
     for c in assign_cases(load_cases(layer), load_builds(layer)).get(build_id, []):
         cases_by_level.setdefault(c.get("level"), []).append(c)
-    out = [f"build {build_id}: level {lv} -> {hi}"]
+    out = _Log(progress)
+    out.append(f"build {build_id}: level {lv} -> {hi}" + (f" ({resumed})" if resumed else ""))
     t_all = time.time()
     for L in range(lv + 1, hi + 1):
         g = grant_levels(store, active, 1)
@@ -1517,6 +1571,12 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
             break
         chk = level_check(store, active)
         bad = [l.strip() for l in chk.splitlines() if l.strip().startswith(("FAIL", "WARN"))]
+        # what the level-up screen offered: a spell choice that skips levels the character can cast (Apotheosis Sorcerer 13
+        # offered only level 7 - found by the user in game 2026-10-05, no check caught it)
+        top = lua("local m = 0 for u, es in pairs(Ext.Entity.Get(Osi.GetHostCharacter()).ActionResources.Resources) do "
+                  "local def = Ext.StaticData.Get(u, 'ActionResource') if def and (def.Name == 'SpellSlot' or def.Name == 'WarlockSpellSlot') "
+                  "then for _, e in ipairs(es) do if e.MaxAmount > 0 and e.ResourceId > m then m = e.ResourceId end end end end return m")
+        bad += [f"FAIL level-up {x}" for x in gameui.offer_gaps(r.get("offers"), int(top) if isinstance(top, (int, float)) else 0)]
         # a build's known_fails (e.g. an upstream bug already reported) are shown but don't stop the run
         known = [k for k in (b.get("known_fails") or [])]
         bad = [("KNOWN " + l[5:] if l.startswith("FAIL") and any(k in l for k in known) else l) for l in bad]
@@ -1542,6 +1602,12 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0):
             if ec["in_combat"]:
                 out.append("    host is still in combat after the tests - stopping (a level-up can't open in combat)")
                 break
+        if L % CHECKPOINT_EVERY == 0:   # a checkpoint for later re-tests (start_level)
+            try:
+                ok_, info_ = gameui.save_game(checkpoint_name(build_id, L))
+                out.append(f"    checkpoint {checkpoint_name(build_id, L)!r} " + ("saved" if ok_ else f"NOT saved: {info_}"))
+            except Exception as e:
+                out.append(f"    checkpoint {checkpoint_name(build_id, L)!r} not saved: {e}")
     # final_cases: case-id patterns (fnmatch) run once the build has reached its top level - script-mode suites that grant
     # their feature to any host (Gunslinger / Illrigger 13-20), run on a real character of the class
     if b.get("final_cases") and (gameui.host_level() or 0) >= hi:
@@ -1782,6 +1848,75 @@ def lint_progressions(store, active, layer):
                         unpickable.append(f"  {n[1]} L{L}: SelectSpells({a[0][:8]}..) offers level {min(lv)}-{max(lv)} spells, but the class's "
                                           f"highest slot is level {top} - every option is unavailable and the level-up can't be finished "
                                           "(slot-free form: ...,None,AlwaysPrepared,UntilRest)")
+    # a spell choice on a slot-based class that offers only some of the spell levels the class can cast. The level-up screen
+    # offers the selector's list as loaded - its own spells plus every list MergedInto it (dnd55e's cumulative lists) - so a
+    # level-7-only list means no level 1-6 spells (Apotheosis' Sorcerer 13-17, seen by the user in game 2026-10-05). Feature
+    # lists (AlwaysPrepared, slot-free, cantrips) are exempt.
+    def _lv_of(sp):
+        r_ = store.resolve(sp, active)
+        try:
+            return int((r_ or {}).get("fields", {}).get("Level", ("0",))[0])
+        except ValueError:
+            return 0
+    narrow = []
+    for t_, levels in by_table.items():
+        top = 0
+        for L in sorted(levels):
+            for n in levels[L]:
+                for x in re.findall(r"ActionResource\((?:SpellSlot|WarlockSpellSlot)\s*,\s*[\d.]+\s*,\s*(\d+)\)", json.loads(n[5]).get("Boosts") or ""):
+                    top = max(top, int(x))
+            for n in levels[L]:
+                if n[0] != layer or not top:
+                    continue
+                for args in re.findall(r"SelectSpells\(([^)]*)\)", json.loads(n[5]).get("Selectors") or ""):
+                    a = [x.strip() for x in args.split(",")]
+                    if "AlwaysPrepared" in a[3:] or (len(a) > 5 and a[5] == "None") or any("Cantrip" in x for x in a[3:]):
+                        continue
+                    lv = {_lv_of(sp) for sp in (_list_spells(store, active, a[0]) or [])} - {0}
+                    if lv and min(lv) <= top and not set(range(1, top + 1)) <= lv:
+                        missing = sorted(set(range(1, top + 1)) - lv)
+                        narrow.append(f"  {n[1]} L{L}: SelectSpells({a[0][:8]}..) offers spell levels {sorted(lv)}, the class casts 1-{top}: "
+                                      f"level {', '.join(map(str, missing))} spells can't be learned here")
+    if narrow:
+        out.append(f"NARROW SPELL CHOICES ({len(narrow)}) - lists as the game loads them (MergedInto included):")
+        out += narrow
+    # spells learned per level against the class table (layer suite TOML [[class_table]]: class, prepared = [20 numbers],
+    # replace = true when PHB lets you swap one spell every level). Counted on the class table only, at the levels this layer
+    # has nodes for (Apotheosis' Sorcerer 14 gave a spell the PHB doesn't and 18-20 none; Warlock 13-19 none - 2026-10-05)
+    tables = load_class_tables(layer)
+    if tables:
+        cls_table = {at.get("ProgressionTableUUID"): nm for nm, at in
+                     ((nm, json.loads(at)) for nm, at in store.db.execute(f"SELECT name, attrs FROM staticdata WHERE kind='ClassDescription' AND {w}", p))
+                     if not at.get("ParentGuid")}
+        counts = []
+        for t_, nm in cls_table.items():
+            spec = tables.get(nm)
+            if not spec or t_ not in by_table:
+                continue
+            prep = spec["prepared"]
+            for L in sorted(by_table[t_]):
+                if not any(n[0] == layer for n in by_table[t_][L]) or L < 2 or L > len(prep):
+                    continue
+                learn, swap = 0, 0
+                for n in by_table[t_][L]:
+                    for args in re.findall(r"SelectSpells\(([^)]*)\)", json.loads(n[5]).get("Selectors") or ""):
+                        a = [x.strip() for x in args.split(",")]
+                        if "AlwaysPrepared" in a[3:] or (len(a) > 5 and a[5] == "None") or any("Cantrip" in x for x in a[3:]):
+                            continue
+                        if not ({_lv_of(sp) for sp in (_list_spells(store, active, a[0]) or [])} - {0}):
+                            continue
+                        learn += int(a[1] or 0) if len(a) > 1 else 0
+                        swap += int(a[2] or 0) if len(a) > 2 else 0
+                want = prep[L - 1] - prep[L - 2]
+                if learn != want:
+                    counts.append(f"  {nm} L{L}: learns {learn} spell(s), the class table adds {want} ({prep[L - 2]} -> {prep[L - 1]})")
+                if spec.get("replace") and swap < 1:
+                    counts.append(f"  {nm} L{L}: no spell replacement (the class can replace one spell every level)")
+        for nm in sorted(set(tables) - set(cls_table.values())):
+            counts.append(f"  [[class_table]] {nm}: no class of that name in {'+'.join(active)}")
+        if counts:
+            out.append(f"SPELLS PER LEVEL ({len(counts)}) - against the suite's [[class_table]]:")
+            out += counts
     if unpickable:
         out.append(f"UNPICKABLE SPELL CHOICES ({len(unpickable)}):")
         out += unpickable
