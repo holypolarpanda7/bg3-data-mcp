@@ -260,6 +260,34 @@ def lint_stats(store, active, layer, limit=200):
             continue  # immediate casts skip the animation (verified in game: Shout_SpellMastery resolves)
         if not fl.get("SpellAnimation", ("",))[0]:
             add("SPELL", name, file, "no SpellAnimation (own or inherited): a normal cast never resolves")
+    # pickers: a spell whose ContainerSpells come from its `using` parent opens THAT spell's variant picker when cast from the
+    # hotbar (Storm of Vengeance on the Spirit Guardians chassis offered Radiant/Necrotic Spirit Guardians - seen by the user
+    # 2026-10-04; scripted casts never open a picker, so the cast tests missed it). Base game children blank it
+    # (ContainerSpells ""); a container child (its own SpellContainerID set) is fine. Also: a level-N upcast container listing
+    # the children of another level although level-N children exist casts the wrong level.
+    for name, typ, file, using, data in rows:
+        if typ != "SpellData":
+            continue
+        f = _fields(data)
+        r = store.resolve(name, active)
+        fl = r["fields"] if r else {}
+        cs, cs_src = fl.get("ContainerSpells", ("", None))
+        if not cs:
+            continue
+        kids = [x for x in cs.split(";") if x.strip()]
+        if "ContainerSpells" not in f and not fl.get("SpellContainerID", ("",))[0]:
+            back = [k for k in kids if (store.resolve(k, active) or {"fields": {}})["fields"].get("SpellContainerID", ("",))[0] == name]
+            if not back:
+                add("PICKER", name, file, f"inherits ContainerSpells from its parent ({cs_src}): casting it opens that picker "
+                                          f"({', '.join(kids[:3])}{'...' if len(kids) > 3 else ''}) - set ContainerSpells \"\" (and "
+                                          "SpellContainerID \"\") unless it is meant to be a picker with its own children")
+        m = re.match(r"(.*)_([2-9])$", name)
+        if m and not fl.get("SpellContainerID", ("",))[0]:  # a real picker, not a child carrying an inherited list
+            lvl = m.group(2)
+            wrong = [k for k in kids if not k.endswith("_" + lvl) and f"{re.sub(r'_[2-9]$', '', k)}_{lvl}" in names]
+            if wrong:
+                add("PICKER", name, file, f"level {lvl} container lists {', '.join(wrong[:3])} although _{lvl} versions exist - "
+                                          "the picker casts the wrong level")
     # root templates: what the layer's own templates reference, and templates its stats summon (2026-10-02: a
     # template skill that doesn't exist is silently missing from the creature's hotbar)
     import json as _json
@@ -289,7 +317,7 @@ def lint_stats(store, active, layer, limit=200):
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TEXT = name/description handle with no text; TPL = root template reference that doesn't exist"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TEXT = name/description handle with no text; TPL = root template reference that doesn't exist; PICKER = a spell that opens another spell's variant picker (or a wrong-level one)"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")
