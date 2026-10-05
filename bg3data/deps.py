@@ -376,29 +376,37 @@ def fetch(store, layer, apply=False, wait_s=900, log=print):
             head.append(f"  !! {dep_m['name']}: download failed to start: {r['error']}")
             return "\n".join(head)
         head.append(f"  {dep_m['name']}: download requested (a free Nexus account: click 'Mod manager download' on the page Vortex opened)")
-        t0, dl = time.time(), None
+        # Vortex's update flow downloads, installs and REPLACES the staged mod in place (seen 2026-10-05: the 4.12.18.1 entry
+        # became v4.12.18.3, enabled); only if a finished download sits uninstalled do we install and switch ourselves
+        t0, done = time.time(), None
         while time.time() - t0 < wait_s:
-            for x in vortex.action("downloads").get("downloads") or []:
-                # exactly the new file: an older download of the same mod (4.12.18.1 once) must never match
-                if str(x.get("fileId")) == str(nx.get("newestFileId")) and str(x.get("modId")) == str(nx.get("modId")) \
-                        and x.get("state") == "finished":
-                    dl = x
-            if dl:
+            st = vortex.action("status")
+            hit = [x for x in st.get("mods") or [] if str((x.get("nexus") or {}).get("modId")) == str(nx.get("modId"))
+                   and str((x.get("nexus") or {}).get("fileId")) == str(nx.get("newestFileId"))]
+            if hit:
+                done = hit[0]
                 break
+            dl = next((x for x in vortex.action("downloads").get("downloads") or []
+                       if str(x.get("fileId")) == str(nx.get("newestFileId")) and x.get("state") == "finished"), None)
+            if dl and time.time() - t0 > 60:      # downloaded but Vortex didn't install it: install and switch
+                ins = vortex.action("install", dl["id"])
+                if ins.get("error") or not ins.get("installed"):
+                    head.append(f"  !! install failed: {ins.get('error') or ins}")
+                    return "\n".join(head)
+                vortex.action("disable", src)
+                vortex.action("enable", ins["installed"])
+                continue
             time.sleep(10)
-        if not dl:
-            head.append(f"  !! {dep_m['name']}: no finished download after {wait_s}s - run bg3_deps_fetch(apply=True) again once it's in")
+        if not done:
+            head.append(f"  !! {dep_m['name']}: the new file isn't installed after {wait_s}s - run bg3_deps_fetch(apply=True) again")
             return "\n".join(head)
-        ins = vortex.action("install", dl["id"])
-        if ins.get("error") or not ins.get("installed"):
-            head.append(f"  !! install failed: {ins.get('error') or ins}")
+        if not done.get("enabled"):
+            vortex.action("enable", done["id"])
+        dep = vortex.action("deploy")
+        if dep.get("error"):
+            head.append(f"  !! Vortex deploy: {dep['error']}")
             return "\n".join(head)
-        new_id = ins["installed"]
-        for step in (vortex.action("disable", src), vortex.action("enable", new_id), vortex.action("deploy")):
-            if step.get("error"):
-                head.append(f"  !! Vortex: {step['error']}")
-                return "\n".join(head)
-        head.append(f"  {dep_m['name']}: installed {new_id}, enabled instead of {src}, deployed")
+        head.append(f"  {dep_m['name']}: Vortex has v{done.get('version')} ({done['id']}), enabled and deployed")
     head.append("")
     head.append(update(store, layer, apply=True, log=log))
     return "\n".join(head)
