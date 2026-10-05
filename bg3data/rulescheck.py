@@ -51,7 +51,7 @@ def load_rules(layer):
             for r in doc.get("subclass_feature", []):
                 lv = subs.setdefault((r["class"], r["subclass"]), {})
                 if r.get("level") and r.get("name"):
-                    lv.setdefault(r["level"], []).append(r["name"])
+                    lv.setdefault(r["level"], []).append((r["name"], r.get("group") or r.get("source") or ""))
                     conf[(r["class"], r["subclass"], r["name"])] = r.get("confidence", "")
                 elif r.get("confidence") == "none":
                     nosource[(r["class"], r["subclass"])] = r.get("source", "")
@@ -210,8 +210,9 @@ def lint_rules(store, active, layer, lo=13, hi=20):
             disp = store.loca(sa.get("DisplayName", ""), active) if sa.get("DisplayName") else None
             disp = disp[0] if disp else sname
             key = aliases["subclass"].get(sname)
+            keys = key if isinstance(key, list) else ([key] if key else [])
             # exact names only (after dropping "Path of the", "Domain"...): a substring once matched Twilight to Light Domain
-            cand = [s for (c, s) in subs if c == cname and (s == key or (not key and _sub_norm(s) in (_sub_norm(disp), _sub_norm(sname))))]
+            cand = [s for (c, s) in subs if c == cname and (s in keys or (not keys and _sub_norm(s) in (_sub_norm(disp), _sub_norm(sname))))]
             sgot = _granted(store, active, store.progression(sa["ProgressionTableUUID"], active), layer)
             ours = [L for L in range(lo, hi + 1) if sgot.get(L, {}).get("ours")]
             if not cand:
@@ -225,16 +226,30 @@ def lint_rules(store, active, layer, lo=13, hi=20):
                             out.append(f"  NOSRC   {cname}/{sname} L{L}: {p_} ({d_}) - the subclass has no source past 12 "
                                        f"({nosource[(cname, cand[0])]}): this is the mod's own design")
                 continue
-            sfeat = subs[(cname, cand[0])]
-            for L in range(lo, hi + 1):
-                g = sgot.get(L, EMPTY)
-                n_before = len(out)
-                _check_features(f"{cname}/{sname}", L, sfeat.get(L, []), g, aliases, technical, out)
-                for k in range(n_before, len(out)):   # say how sure the expectation is
-                    m = re.match(r"  MISSING \S+ L\d+: (.+)$", out[k])
-                    c = conf.get((cname, cand[0], m.group(1))) if m else None
-                    if c and c != "verified":
-                        out[k] += f"   [{c}]"
+            # the subclass may exist in several versions (rules names x source groups): check against each, keep the one the mod
+            # follows (fewest findings) and say which (Conjurer: PHB 2014 Durable Summons vs UA Splintered Summons)
+            versions = {}
+            for s_ in cand:
+                for L, fl in subs[(cname, s_)].items():
+                    for fname, grp in fl:
+                        versions.setdefault((s_, grp), {}).setdefault(L, []).append(fname)
+            if not versions:
+                versions = {(cand[0], ""): {}}
+            best = None
+            for (s_, grp), sfeat in versions.items():
+                tmp = []
+                for L in range(lo, hi + 1):
+                    n_before = len(tmp)
+                    _check_features(f"{cname}/{sname}", L, sfeat.get(L, []), sgot.get(L, EMPTY), aliases, technical, tmp)
+                    for k in range(n_before, len(tmp)):   # say how sure the expectation is
+                        m = re.match(r"  MISSING \S+ L\d+: (.+)$", tmp[k])
+                        c = conf.get((cname, s_, m.group(1))) if m else None
+                        if c and c != "verified":
+                            tmp[k] += f"   [{c}]"
+                if best is None or len(tmp) < len(best[0]):
+                    best = (tmp, s_, grp)
+            tag = f"   ({best[1]}: {best[2]})" if best[2] and len(versions) > 1 else (f"   ({best[2]})" if best[2] else "")
+            out += [x + tag for x in best[0]]
         summary.append(f"{cname}: {len(out) - n0}")
     head = f"rules check {layer} L{lo}-{hi}: {len(out)} finding(s) (" + ", ".join(summary) + ")"
     return head + ("\n" + "\n".join(out) if out else " - clean")
