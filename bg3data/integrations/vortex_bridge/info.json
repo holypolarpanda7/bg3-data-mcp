@@ -1,6 +1,6 @@
 {
   "name": "bg3-data-mcp bridge",
   "author": "bg3-data-mcp",
-  "version": "0.1.0",
-  "description": "Lets the bg3-data MCP server (and only it, via a local token) ask Vortex for status, deploy, purge, and enable/disable/remove mods. Listens on 127.0.0.1 only."
+  "version": "0.2.0",
+  "description": "Lets the bg3-data MCP server (and only it, via a local token) ask Vortex for status, deploy, purge, enable/disable/remove mods, and check Nexus for updates / download / install them through Vortex's own Nexus login. Listens on 127.0.0.1 only."
 }

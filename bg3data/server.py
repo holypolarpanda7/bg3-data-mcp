@@ -1072,6 +1072,16 @@ def bg3_deps_lock(layer: str) -> str:
 
 @mcp.tool()
 @guarded
+def bg3_deps_fetch(layer: str, apply: bool = False) -> str:
+    """Newest dependency releases from Nexus, through Vortex's own Nexus login (no API key in the MCP): check each Vortex-
+    deployed dependency for a newer file; apply=True downloads it (Premium: direct; free account: click "Mod manager
+    download" on the page Vortex opens), installs it, switches the profile to it, deploys, then runs bg3_deps_update."""
+    from . import deps
+    return deps.fetch(store(), layer, apply=apply, log=_log)
+
+
+@mcp.tool()
+@guarded
 def bg3_deps_update(layer: str, apply: bool = False) -> str:
     """Follow dependency drift: diff, run the mod's `regen` commands (layers.json), re-index, lint, bump the
     dependency Version64/MD5 in meta.lsx and rewrite the lock. apply=False (default) only shows the plan."""

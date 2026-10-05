@@ -1,6 +1,7 @@
 // bg3-data-mcp bridge for Vortex (optional; installed by the MCP tool bg3_vortex_bridge_install).
-// A tiny HTTP server on 127.0.0.1 that runs Vortex's own actions (deploy, purge, enable/disable, remove) for the
-// active game, so the MCP never touches Vortex's database or deployment files itself.
+// A tiny HTTP server on 127.0.0.1 that runs Vortex's own actions (deploy, purge, enable/disable, remove, and the Nexus
+// update check / download / install through Vortex's own Nexus login) for the active game, so the MCP never touches
+// Vortex's database, deployment files or Nexus credentials itself.
 // Every request must carry the token from bridge.json (written next to this file, readable by your user only).
 const http = require('http');
 const fs = require('fs');
@@ -30,6 +31,20 @@ function main(context) {
       if (hit.length !== 1) throw new Error(hit.length ? `ambiguous mod '${q}': ${hit.join(' | ')}` : `no mod matching '${q}'`);
       return hit[0];
     };
+    const nexusOf = (m) => {
+      const a = m.attributes || {};
+      return { modId: a.modId, fileId: a.fileId, newestVersion: a.newestVersion, newestFileId: a.newestFileId,
+               source: m.attributes && m.attributes.source };
+    };
+    const downloads = () => {
+      const files = (state().persistent.downloads || {}).files || {};
+      return Object.entries(files).map(([id, d]) => ({
+        id, state: d.state, game: d.game, localPath: d.localPath, received: d.received, size: d.size,
+        version: ((d.modInfo || {}).version) || ((((d.modInfo || {}).nexus || {}).fileInfo || {}).version),
+        modId: (((d.modInfo || {}).nexus || {}).ids || {}).modId, fileId: (((d.modInfo || {}).nexus || {}).ids || {}).fileId,
+        started: d.startTime,
+      }));
+    };
     const status = () => {
       const g = gameId();
       const prof = (state().persistent.profiles || {})[profileId()] || {};
@@ -39,7 +54,7 @@ function main(context) {
         gameId: g, profile: prof.name, needToDeploy: !!needDeploy,
         mods: Object.values(modsOf(g)).map(m => ({
           id: m.id, version: (m.attributes || {}).version, name: (m.attributes || {}).name,
-          state: m.state, enabled: !!(enabled[m.id] || {}).enabled, installationPath: m.installationPath,
+          state: m.state, enabled: !!(enabled[m.id] || {}).enabled, installationPath: m.installationPath, nexus: nexusOf(m),
         })),
       };
     };
@@ -58,6 +73,32 @@ function main(context) {
         const g = gameId(); const id = findMod(g, b.mod);
         api.store.dispatch(actions.setModEnabled(profileId(), id, b.enabled !== false));
         return { mod: id, enabled: b.enabled !== false, ...status() };
+      },
+      // Nexus, through Vortex's own Nexus login (no API key in the MCP): ask Nexus for each mod's newest file
+      'POST /check-updates': async (b) => {
+        const g = gameId();
+        const mods = b.mod ? { [findMod(g, b.mod)]: modsOf(g)[findMod(g, b.mod)] } : modsOf(g);
+        if (api.emitAndAwait) await api.emitAndAwait('check-mods-version', g, mods, true);
+        else await new Promise((res) => { api.events.emit('check-mods-version', g, mods, true); setTimeout(res, 8000); });
+        return status();
+      },
+      // download a mod's newest file: Premium downloads directly; otherwise Vortex opens the Nexus files page for one click
+      'POST /update': async (b) => {
+        const g = gameId(); const id = findMod(g, b.mod); const n = nexusOf(modsOf(g)[id]);
+        if (!n.modId) throw new Error(`${id} has no Nexus mod id`);
+        const fileId = b.fileId || n.newestFileId;
+        if (!fileId) throw new Error(`no newer file known for ${id} - run check-updates first`);
+        api.events.emit('mod-update', g, String(n.modId), String(fileId), 'nexus');
+        return { mod: id, modId: n.modId, fileId, note: 'download started (or the Nexus page opened for a free account)' };
+      },
+      'GET /downloads': async () => ({ downloads: downloads() }),
+      // install a finished download as a new staged mod (not enabled: the MCP switches versions explicitly)
+      'POST /install': async (b) => {
+        const modId = await new Promise((res, rej) => {
+          const cb = (err, id) => (err ? rej(err) : res(id));
+          api.events.emit('start-install-download', b.download, { allowAutoEnable: false }, cb);
+        });
+        return { installed: modId, ...status() };
       },
       'POST /remove': async (b) => {
         const g = gameId(); const id = findMod(g, b.mod);

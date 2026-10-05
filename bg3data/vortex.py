@@ -176,28 +176,39 @@ def bridge_call(method, endpoint, body=None, cfg=None, timeout=120):
 
 
 def action(name, mod=None, enabled=True):
-    """deploy | purge | enable | disable | remove | status through the bridge."""
+    """deploy | purge | enable | disable | remove | status | check-updates | update | downloads | install (mod = the download id)
+    through the bridge."""
     routes = {"status": ("GET", "/status", None), "deploy": ("POST", "/deploy", None), "purge": ("POST", "/purge", None),
               "enable": ("POST", "/enable", {"mod": mod, "enabled": True}),
               "disable": ("POST", "/enable", {"mod": mod, "enabled": False}),
-              "remove": ("POST", "/remove", {"mod": mod})}
+              "remove": ("POST", "/remove", {"mod": mod}),
+              "check-updates": ("POST", "/check-updates", {"mod": mod} if mod else {}),
+              "update": ("POST", "/update", {"mod": mod}),
+              "downloads": ("GET", "/downloads", None),
+              "install": ("POST", "/install", {"download": mod})}
     if name not in routes:  # (the token travels on a local PowerShell command line under WSL - local user only)
         return {"error": f"unknown action {name!r}; one of {sorted(routes)}"}
-    if name in ("enable", "disable", "remove") and not mod:
+    if name in ("enable", "disable", "remove", "update", "install") and not mod:
         return {"error": f"{name} needs `mod` (a mod id or a unique part of it)"}
     method, ep, body = routes[name]
-    return bridge_call(method, ep, body, timeout=300 if name in ("deploy", "purge") else 60)
+    return bridge_call(method, ep, body, timeout=300 if name in ("deploy", "purge", "install", "check-updates") else 60)
 
 
 def format_result(r):
     if not isinstance(r, dict) or r.get("error"):
         return f"bridge error: {(r or {}).get('error') if isinstance(r, dict) else r}"
-    out = [f"{k}: {r[k]}" for k in ("removed", "mod", "enabled") if k in r]
+    out = [f"{k}: {r[k]}" for k in ("removed", "mod", "enabled", "installed", "modId", "fileId", "note") if k in r]
+    for d in r.get("downloads") or []:
+        out.append(f"  download {d.get('id')}: {d.get('state')} {d.get('game')} v{d.get('version')} (Nexus mod {d.get('modId')} "
+                   f"file {d.get('fileId')}) {os.path.basename(d.get('localPath') or '')}")
     if "gameId" in r:
         mods = r.get("mods") or []
         on = [m for m in mods if m.get("enabled")]
         out.append(f"Vortex {r['gameId']} profile '{r.get('profile')}': {len(on)}/{len(mods)} mods enabled"
                    + ("; DEPLOY NEEDED" if r.get("needToDeploy") else "; deployed"))
         for m in sorted(mods, key=lambda m: m.get("id") or ""):
-            out.append(f"  [{'x' if m.get('enabled') else ' '}] {m.get('id')}" + (f"  v{m['version']}" if m.get("version") else ""))
+            nx = m.get("nexus") or {}
+            newer = nx.get("newestVersion") and nx.get("newestVersion") != m.get("version")
+            out.append(f"  [{'x' if m.get('enabled') else ' '}] {m.get('id')}" + (f"  v{m['version']}" if m.get("version") else "")
+                       + (f"  -> Nexus has v{nx['newestVersion']} (file {nx.get('newestFileId')})" if newer else ""))
     return "\n".join(out)

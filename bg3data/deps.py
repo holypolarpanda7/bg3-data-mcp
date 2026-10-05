@@ -330,3 +330,75 @@ def update(store, layer, apply=False, log=print):
     write_lock(cfg, layer, lock)
     out.append(f"  {LOCK} rewritten. Next: review the mod's git diff, deploy, and re-run its tests in game.")
     return "\n".join(out)
+
+
+def fetch(store, layer, apply=False, wait_s=900, log=print):
+    """Get each dependency's newest release from Nexus THROUGH VORTEX (its own Nexus login - no API key here), then update.
+
+    For every dependency that is a layer and that Vortex deployed: find its Vortex mod (the deployment manifest names the
+    staged mod a pak came from), ask Vortex to check Nexus for a newer file, and with apply=True: start the download
+    (Nexus Premium: direct; a free account: Vortex opens the Nexus files page - click "Mod manager download" there), wait
+    for it, install it as a new staged mod, switch the profile from the old version to the new one, deploy, and run
+    update(apply=True) - diff, regen, re-index, lint, meta.lsx, lock. Needs the bridge (bg3_vortex_bridge_install)."""
+    from . import vortex
+    cfg = sources.load_config()
+    st = vortex.action("status")
+    if st.get("error"):
+        return f"Vortex bridge: {st['error']}"
+    mods = {m["id"]: m for m in st.get("mods") or []}
+    out, todo = [], []
+    for d, dep_m, dep_info in dependencies(cfg, layer):
+        if not dep_m or not dep_m["path"].lower().endswith(".pak"):
+            continue
+        man = vortex.manifest(os.path.dirname(dep_m["path"])) or {}
+        src = next((f["source"] for f in man.get("files") or [] if f.get("relPath") == os.path.basename(dep_m["path"])), None)
+        if not src or src not in mods:
+            out.append(f"  {dep_m['name']}: not deployed by Vortex ({os.path.basename(dep_m['path'])}) - fetch it yourself")
+            continue
+        chk = vortex.action("check-updates", src)
+        if chk.get("error"):
+            out.append(f"  {dep_m['name']}: Nexus update check failed: {chk['error']}")
+            continue
+        m = next((x for x in chk.get("mods") or [] if x["id"] == src), mods[src])
+        nx = m.get("nexus") or {}
+        have, new = m.get("version"), nx.get("newestVersion")
+        if not new or new == have:
+            out.append(f"  {dep_m['name']}: v{have} is the newest on Nexus (mod {nx.get('modId')})")
+            continue
+        out.append(f"  {dep_m['name']}: v{have} -> Nexus has v{new} (mod {nx.get('modId')}, file {nx.get('newestFileId')})")
+        todo.append((dep_m, src, nx))
+    head = [f"Dependencies of {layer} on Nexus (checked through Vortex):"] + out
+    if not todo or not apply:
+        return "\n".join(head + ([] if not todo else ["", "apply=True downloads, installs, switches, deploys and runs bg3_deps_update."]))
+    for dep_m, src, nx in todo:
+        before = {x["id"] for x in vortex.action("downloads").get("downloads") or []}
+        r = vortex.action("update", src)
+        if r.get("error"):
+            head.append(f"  !! {dep_m['name']}: download failed to start: {r['error']}")
+            return "\n".join(head)
+        head.append(f"  {dep_m['name']}: download requested (a free Nexus account: click 'Mod manager download' on the page Vortex opened)")
+        t0, dl = time.time(), None
+        while time.time() - t0 < wait_s:
+            for x in vortex.action("downloads").get("downloads") or []:
+                if (x["id"] not in before or str(x.get("fileId")) == str(nx.get("newestFileId"))) and \
+                        str(x.get("modId") or nx.get("modId")) == str(nx.get("modId")) and x.get("state") == "finished":
+                    dl = x
+            if dl:
+                break
+            time.sleep(10)
+        if not dl:
+            head.append(f"  !! {dep_m['name']}: no finished download after {wait_s}s - run bg3_deps_fetch(apply=True) again once it's in")
+            return "\n".join(head)
+        ins = vortex.action("install", dl["id"])
+        if ins.get("error") or not ins.get("installed"):
+            head.append(f"  !! install failed: {ins.get('error') or ins}")
+            return "\n".join(head)
+        new_id = ins["installed"]
+        for step in (vortex.action("disable", src), vortex.action("enable", new_id), vortex.action("deploy")):
+            if step.get("error"):
+                head.append(f"  !! Vortex: {step['error']}")
+                return "\n".join(head)
+        head.append(f"  {dep_m['name']}: installed {new_id}, enabled instead of {src}, deployed")
+    head.append("")
+    head.append(update(store, layer, apply=True, log=log))
+    return "\n".join(head)
