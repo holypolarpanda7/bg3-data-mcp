@@ -634,9 +634,10 @@ def bg3_icon_build(layer: str, src_dir: str | None = None, atlas: str = "Icons")
 
 @mcp.tool()
 @guarded
-def bg3_icon_import(paths: list[str], layer: str, names: list[str] | None = None, key: str = "green") -> str:
+def bg3_icon_import(paths: list[str], layer: str, names: list[str] | None = None, key: str = "unmix") -> str:
     """Take generated images (e.g. ComfyUI outputs) into a mod's icon sources (<mod root>/Icons/src) as
-    <IconName>.png: the green screen the BG3 icon LoRAs paint on is keyed out (key="none" to skip), centre-cropped,
+    <IconName>.png: the green screen the BG3 icon LoRAs paint on is unmixed (key="unmix": the soft glow over it survives
+    as semi-transparent haze, like base-game icons; "green" = hard key; "none" to skip), centre-cropped,
     512 px. names: one icon name per path (default: the file name without ComfyUI's _00001_ counter). Then
     bg3_icon_build."""
     from . import iconkit

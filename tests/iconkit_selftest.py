@@ -35,6 +35,16 @@ with tempfile.TemporaryDirectory() as d:
     sq = iconkit._square(Image.new("RGBA", (400, 300)))
     check(sq.size == (300, 300), "non-square sources are centre-cropped")
 
+# unmix: pure green -> transparent; a faint (20%) orange glow over green -> low alpha with its colour recovered (a strong
+# glow can't be separated by greenness alone - it stays opaque, a known limit)
+g = (40, 200, 50)
+img = Image.new("RGB", (64, 64), g)
+img.putpixel((32, 32), tuple(round(0.2 * f + 0.8 * b) for f, b in zip((255, 140, 0), g)))
+u = iconkit.unmix_green(img)
+check(u.getpixel((0, 0))[3] == 0, f"pure background unmixes to alpha 0 ({u.getpixel((0, 0))})")
+r, gg, b, a = u.getpixel((32, 32))
+check(50 <= a <= 110 and r > 150 and b < 60, f"faint glow keeps its colour at low alpha ({(r, gg, b, a)})")
+
 lsx = iconkit._atlas_lsx(["A", "B", "C"], 512, "Assets/Textures/Icons/X.dds", "u-1")
 uv = re.findall(r'id="U1" type="float" value="([^"]+)"', lsx)
 check(abs(float(uv[0]) - 0.5 / 512) < 1e-7 and abs(float(uv[1]) - 64.5 / 512) < 1e-7, f"tile UVs inset half a pixel ({uv[:2]})")

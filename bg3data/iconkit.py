@@ -107,8 +107,31 @@ def key_green(img, low=12, high=90):
     return img
 
 
-def import_art(paths, src_dir, names=None, key="green", size=512):
-    """Copy generated images into a mod's icon sources as <IconName>.png: green keyed out, square, `size` px.
+def unmix_green(img, dark=(0.06, 0.30)):
+    """Green screen -> transparency by UNMIXING, not deleting (2026-10-05): the LoRA paints its soft glow over the green,
+    so those pixels are a mix of glow and green. With the background colour G (median of the corners) and a pixel p,
+    alpha = 1 - greenness(p) / greenness(G) and the glow colour = (p - (1 - alpha) G) / alpha; the haze survives as
+    semi-transparent colour, like the base game's icons (~5% opaque, ~60% soft haze). Near-black paint fades out too
+    (base icons have no dark fills: their darkness is transparency)."""
+    import numpy as np
+    a = np.asarray(img.convert("RGB"), dtype=float) / 255
+    c = max(4, a.shape[0] // 64)
+    corners = np.concatenate([a[:c, :c].reshape(-1, 3), a[:c, -c:].reshape(-1, 3), a[-c:, :c].reshape(-1, 3), a[-c:, -c:].reshape(-1, 3)])
+    g = np.median(corners, 0)
+    kb = max(g[1] - max(g[0], g[2]), 0.2)
+    al = np.clip(1 - (a[..., 1] - np.maximum(a[..., 0], a[..., 2])) / kb, 0, 1)
+    fg = np.clip((a - (1 - al)[..., None] * g) / np.maximum(al, 1e-3)[..., None], 0, 1)
+    fg[..., 1] = np.minimum(fg[..., 1], np.maximum(fg[..., 0], fg[..., 2]) + 0.15)  # residual spill
+    lo, hi = dark
+    al = al * np.clip((fg.max(-1) - lo) / (hi - lo), 0, 1)
+    out = (np.dstack([fg, al]) * 255).round().astype(np.uint8)
+    from PIL import Image
+    return Image.fromarray(out, "RGBA")
+
+
+def import_art(paths, src_dir, names=None, key="unmix", size=512):
+    """Copy generated images into a mod's icon sources as <IconName>.png: green unmixed (key="unmix", default; "green" =
+    the older hard key, "none"), square, `size` px.
     names: one per path (default: the file name without ComfyUI's _00001_ counter)."""
     Image = _pil()
     os.makedirs(src_dir, exist_ok=True)
@@ -118,7 +141,9 @@ def import_art(paths, src_dir, names=None, key="green", size=512):
         if not re.fullmatch(r"[A-Za-z0-9_]+", name):
             raise ValueError(f"bad icon name {name!r}")
         img = _square(Image.open(p).convert("RGBA"))
-        if key == "green":
+        if key == "unmix":
+            img = unmix_green(img)
+        elif key == "green":
             img = key_green(img)
         img = img.resize((size, size), Image.LANCZOS)
         dst = os.path.join(src_dir, f"{name}.png")
