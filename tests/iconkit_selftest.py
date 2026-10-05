@@ -53,7 +53,7 @@ for x in range(40, 60):
 lk = iconkit.luma_key(blk)
 check(lk.getpixel((0, 0))[3] == 0 and lk.getpixel((50, 50))[3] == 255, "luma_key: black transparent, bright opaque")
 tf = iconkit.tint(blk, "fire")
-check(tf.getpixel((50, 50))[:3] == (255, 212, 122) and tf.getpixel((0, 0))[3] == 0, f"tint: bright core takes fire's last stop ({tf.getpixel((50, 50))})")
+check(tf.getpixel((50, 50))[:3] == tuple(int(iconkit.PALETTE["fire"][-1][i:i + 2], 16) for i in (1, 3, 5)) and tf.getpixel((0, 0))[3] == 0, f"tint: bright core takes fire's last stop ({tf.getpixel((50, 50))})")
 ac = iconkit.autocrop(lk)
 check(abs(ac.size[0] - 22) <= 2, f"autocrop to the 20 px artwork + 8% margin each side ({ac.size})")
 

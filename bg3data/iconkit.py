@@ -132,8 +132,8 @@ def unmix_green(img, dark=(0.06, 0.30)):
 # Colour per damage type, sampled from base-game icons (2026-10-05): the haze/edge colour, then the core colour(s).
 # Base icons are one hue with a brighter core; IP-Adapter output mixes the references' colours, so it is recoloured.
 PALETTE = {
-    "fire": ["#c1440e", "#e98a2c", "#ffd47a"], "cold": ["#1a93c5", "#4ecbf0"], "lightning": ["#3c79e4", "#8ebcfe"],
-    "thunder": ["#9961bb", "#dfbbf5"], "acid": ["#bcc311", "#ecef74"], "poison": ["#698e0b", "#a9c22a"],
+    "fire": ["#a82a08", "#e0601a", "#ffa040"], "cold": ["#1a93c5", "#4ecbf0"], "lightning": ["#3c79e4", "#8ebcfe"],
+    "thunder": ["#9961bb", "#dfbbf5"], "acid": ["#bcc311", "#ecef74"], "poison": ["#3f7a12", "#8cc43a"],
     "necrotic": ["#3ad077", "#92f5c5"], "radiant": ["#caac2d", "#efe084"], "psychic": ["#c467bc", "#efadeb"],
     "force": ["#e13c3f", "#fa878a"], "healing": ["#20bab1", "#66efe9"],
     "arcane": ["#4f22a8", "#9466e0"], "earth": ["#8a5a2b", "#e0b070"],  # no damage type: deeper violet (user 2026-10-05); brown for stone
