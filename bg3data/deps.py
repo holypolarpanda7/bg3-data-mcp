@@ -371,7 +371,6 @@ def fetch(store, layer, apply=False, wait_s=900, log=print):
     if not todo or not apply:
         return "\n".join(head + ([] if not todo else ["", "apply=True downloads, installs, switches, deploys and runs bg3_deps_update."]))
     for dep_m, src, nx in todo:
-        before = {x["id"] for x in vortex.action("downloads").get("downloads") or []}
         r = vortex.action("update", src)
         if r.get("error"):
             head.append(f"  !! {dep_m['name']}: download failed to start: {r['error']}")
@@ -380,8 +379,9 @@ def fetch(store, layer, apply=False, wait_s=900, log=print):
         t0, dl = time.time(), None
         while time.time() - t0 < wait_s:
             for x in vortex.action("downloads").get("downloads") or []:
-                if (x["id"] not in before or str(x.get("fileId")) == str(nx.get("newestFileId"))) and \
-                        str(x.get("modId") or nx.get("modId")) == str(nx.get("modId")) and x.get("state") == "finished":
+                # exactly the new file: an older download of the same mod (4.12.18.1 once) must never match
+                if str(x.get("fileId")) == str(nx.get("newestFileId")) and str(x.get("modId")) == str(nx.get("modId")) \
+                        and x.get("state") == "finished":
                     dl = x
             if dl:
                 break

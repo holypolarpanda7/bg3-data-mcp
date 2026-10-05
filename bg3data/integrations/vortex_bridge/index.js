@@ -38,7 +38,8 @@ function main(context) {
     };
     const downloads = () => {
       const files = (state().persistent.downloads || {}).files || {};
-      return Object.entries(files).map(([id, d]) => ({
+      const g = gameId();
+      return Object.entries(files).filter(([, d]) => (d.game || []).includes(g)).map(([id, d]) => ({
         id, state: d.state, game: d.game, localPath: d.localPath, received: d.received, size: d.size,
         version: ((d.modInfo || {}).version) || ((((d.modInfo || {}).nexus || {}).fileInfo || {}).version),
         modId: (((d.modInfo || {}).nexus || {}).ids || {}).modId, fileId: (((d.modInfo || {}).nexus || {}).ids || {}).fileId,
