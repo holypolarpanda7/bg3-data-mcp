@@ -23,7 +23,8 @@ import tomllib
 from . import testing
 
 TECHNICAL = re.compile(r"^(UnlockedSpellSlotLevel\d|.*_Unlock$|.*Technical.*|.*_Hidden$)")
-EMPTY = {"passives": [], "spells": [], "resources": [], "selectors": [], "feat": False, "slots": {}, "ours": False, "removed": []}
+EMPTY = {"passives": [], "spells": [], "resources": [], "choices": [], "selectors": [], "feat": False, "slots": {}, "ours": False,
+         "removed": []}
 GENERIC = {"subclass feature", "ability score improvement", "epic boon", "metamagic", "eldritch invocations"}
 
 
@@ -77,8 +78,8 @@ def _granted(store, active, nodes, layer):
     for lvl, _name, _t, src, a in nodes:
         if str(a.get("IsMulticlass", "")).lower() == "true":
             continue
-        g = out.setdefault(lvl, {"passives": [], "spells": [], "resources": [], "selectors": [], "feat": False, "slots": {},
-                                 "ours": False, "removed": []})
+        g = out.setdefault(lvl, {"passives": [], "spells": [], "resources": [], "choices": [], "selectors": [], "feat": False,
+                                 "slots": {}, "ours": False, "removed": []})
         g["ours"] |= src == layer or src.startswith(layer)
         for p in filter(None, (a.get("PassivesAdded") or "").split(";")):
             r = store.resolve(p, active)
@@ -86,6 +87,9 @@ def _granted(store, active, nodes, layer):
         g["removed"] += [p for p in (a.get("PassivesRemoved") or "").split(";") if p]
         for kind, args in re.findall(r"(\w+)\(([^)]*)\)", a.get("Selectors") or ""):
             g["selectors"].append((kind, [x.strip() for x in args.split(",")]))
+            a_ = [x.strip() for x in args.split(",")]
+            if kind == "SelectPassives" and len(a_) > 2 and a_[2]:   # a feature offered as a choice (Wild Heart 14 PowerOfTheWilds)
+                g["choices"].append((f"SelectPassives:{a_[2]}", re.sub(r"(?<=[a-z])(?=[A-Z])", " ", a_[2])))
             if kind == "AddSpells":
                 for sp in testing._list_spells(store, active, args.split(",")[0].strip()) or []:
                     r = store.resolve(sp, active)
@@ -127,7 +131,7 @@ def _check_features(where, L, want, g, aliases, technical, out, earlier=()):
         al = aliases["feature"].get(fname)
         if al == "skip":
             continue
-        pool = g["passives"] + g["spells"]
+        pool = g["passives"] + g["spells"] + g["choices"]
         hit = [p for p, d in pool if (al and p in al) or _matches(fname, d) or _matches(fname, p)]
         # a feature that only adds uses ("Indomitable (two uses)", "Action Surge (two uses)") is a resource boost
         if not hit and re.search(r"\((?:\w+ )?uses?\)|\(\w+ uses\)", fname):
