@@ -743,17 +743,22 @@ def _icon_candidates(kind, j, count):
 def _selector_info(key, i, j):
     """{n, hidden, hidden_before, sel, sel_before, complete} of a spell selector, or None. The grid hides selected items (they move
     to the "Selected" row) and items whose Spell.Override is Worse or Different (live 2026-10-04: 168 items, 2 selected + 2 Worse
-    + 1 Different = 5 hidden, 163 shown; the 27 Equal / NotAvailable ones are shown greyed)."""
+    + 1 Different = 5 hidden, 163 shown; the 27 Equal / NotAvailable ones are shown greyed). Bard Magical Secrets (live
+    2026-10-05: 317 items, 71 NotAvailable) instead hides exactly the NotAvailable (and selected) ones and shows Worse/Different:
+    na_before / na_hidden count that layout, for the other estimate."""
     res, _ = _client(FIND + _VM + """
 local sel = d.ClassProgressionDetails.%s[%d]
-local hb, ht, sb, st = 0, 0, 0, 0
+local hb, ht, sb, st, nb, nt = 0, 0, 0, 0, 0, 0
 for k = 1, #sel.Available do
   local it = sel.Available[k]
   local o = tostring(it.Spell.Override)
+  local hid = it.Selected or o == "Worse" or o == "Different"
   if it.Selected then st = st + 1 if k < %d then sb = sb + 1 end end
-  if it.Selected or o == "Worse" or o == "Different" then ht = ht + 1 if k < %d then hb = hb + 1 end end
+  if hid then ht = ht + 1 if k < %d then hb = hb + 1 end end
+  if it.Selected or it.NotAvailable then nt = nt + 1 if k < %d then nb = nb + 1 end end
 end
-return {n = #sel.Available, hidden = ht, hidden_before = hb, sel = st, sel_before = sb, complete = sel.IsComplete == true}""" % (key, i, j, j))
+return {n = #sel.Available, hidden = ht, hidden_before = hb, sel = st, sel_before = sb, na_before = nb, na_hidden = nt,
+        complete = sel.IsComplete == true}""" % (key, i, j, j, j))
     return res if isinstance(res, dict) else None
 
 
@@ -814,11 +819,17 @@ def _pick_wanted(y, kind, wanted, log):
             # which), so the icon's place is searched: the raw index first, then up to 10 places earlier and 2 later, each click
             # verified through Selected and undone if wrong. The best estimate (Worse/Different overrides hidden) goes first.
             est = info["hidden_before"] - info["sel_before"]
-            shifts = sorted(set(range(-2, 11)) | {est}, key=lambda h: (abs(h - est), -h))
+            # two layouts: greyed (NotAvailable) items shown in place, or hidden like the overridden ones - try the second's
+            # estimate and its neighbours first when it differs (a 317-spell Magical Secrets grid hid 71)
+            est_na = info.get("na_before", est) - info["sel_before"]
+            near = [est_na, est_na - 1, est_na + 1] if est_na != est else []
+            shifts = near + [h for h in sorted(set(range(-2, 11)) | {est}, key=lambda h: (abs(h - est), -h)) if h not in near]
             cands = []
             for h in shifts:
+                # the icons shown: a scrolled grid is counted back from its last row, so this must be the real number
+                shown = info["n"] - info.get("na_hidden", 0) if h in near else info["n"] - max(h, 0)
                 if 1 <= j - h:
-                    cands += [c for c in _all_candidates(kind, j - h, info["n"] - max(h, 0)) if c not in cands][:1]
+                    cands += [c for c in _all_candidates(kind, j - h, shown) if c not in cands][:1]
             for how, px, py in cands:
                 _want_scroll(how == "scroll")
                 _rclick(px, py)
