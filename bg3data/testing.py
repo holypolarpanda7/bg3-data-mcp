@@ -1972,6 +1972,10 @@ def lint_progressions(store, active, layer):
                 for x in gone:
                     dismissed.append(f"  {me[1]} L{L}: {x} - {UPSTREAM_ANSWERED[me[1] + ':' + x]}")
                 lost = [x for x in lost if x not in gone]
+                # granted later under another id with the same name (a 2014 spell became a 2024 passive) is moved, not lost:
+                # bg3dnd #1556 - War Domain's old level 2 Shout_GuidedStrike, the "Guided Strike" passive at 3
+                later_names = {_dname(store, active, x) for x in later_p | later_s} - {""}
+                lost = [x for x in lost if _dname(store, active, x) not in later_names]
                 if lost:   # features granted again at or above the pick level were moved, not lost
                     early.append(f"  {me[1]} L{L} [{n[0]}] (subclass chosen at L{pl}): never applied, not granted later - {', '.join(lost)[:160]}")
     if early:
@@ -1990,7 +1994,13 @@ def lint_progressions(store, active, layer):
 
 # Lint findings the dnd55e author already answered as intended, so they aren't reported as problems again:
 # "<table>:<lost feature>" -> reason with the issue.
+def _dname(store, active, name):
+    r = store.resolve(name, active)
+    return (store.display_name(r["fields"], active) if r else "").strip().lower()
+
+
 UPSTREAM_ANSWERED = {
+    "WarDomain:Shout_GuidedStrike": "not lost: the 2024 Guided Strike is the level 3 passive and its interrupts (bg3dnd #1556)",
     "Oathbreaker:Target_SpitefulSuffering": "by design: the owner removed every Paladin subclass level-1 feature (bg3dnd #307)",
 }
 

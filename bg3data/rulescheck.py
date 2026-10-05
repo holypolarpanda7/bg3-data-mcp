@@ -107,11 +107,22 @@ def _sel_count(g, test):
     return sum(int(float(a[1] or 0)) if len(a) > 1 else 1 for k, a in g["selectors"] if test(k, a))
 
 
-def _check_features(where, L, want, g, aliases, technical, out):
-    """want: rules feature names at L; g: granted. Appends MISSING / EXTRA lines; returns the matched passive names."""
+def _check_features(where, L, want, g, aliases, technical, out, earlier=()):
+    """want: rules feature names at L; g: granted. Appends MISSING / EXTRA lines; returns the matched passive names.
+    earlier: names the table already listed at a lower level - here they're an improvement of that feature (Critical Shot at
+    9 and 17, Improved Brutal Strike at 17), checked only for SOMETHING changing at the level."""
     used = set()
+    seen_before = {_norm(x) for x in earlier}
     for fname in want:
         if _norm(fname) in {_norm(x) for x in GENERIC}:
+            continue
+        low = fname.lower().strip()
+        if low.endswith(" feature") or low.endswith(" features"):      # "Diabolic Contract feature" = a subclass level
+            continue
+        if low.endswith(" improvement") or _norm(fname) in seen_before:
+            used.update(p for p, d in g["passives"] + g["spells"] if _matches(fname, d) or _matches(fname, p))
+            if not (g["passives"] or g["spells"] or g["resources"] or g["selectors"] or g["slots"]):
+                out.append(f"  SCALE   {where} L{L}: {fname} improves here, but the level grants nothing")
             continue
         al = aliases["feature"].get(fname)
         if al == "skip":
@@ -156,7 +167,8 @@ def lint_rules(store, active, layer, lo=13, hi=20):
             if not row:
                 continue
             feats = row.get("features", [])
-            _check_features(cname, L, feats, g, aliases, technical, out)
+            earlier = [f for L0 in range(1, L) for f in rows.get(L0, {}).get("features", [])]
+            _check_features(cname, L, feats, g, aliases, technical, out, earlier)
             fn = {_norm(f) for f in feats}
             if (_norm("Ability Score Improvement") in fn) != g["feat"]:
                 out.append(f"  CHOICE  {cname} L{L}: feat/Ability Score Improvement {'missing' if not g['feat'] else 'offered, the rules have none here'}")
