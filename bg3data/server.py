@@ -915,6 +915,58 @@ def bg3_test_build_status(lines: int = 60) -> str:
 
 @mcp.tool()
 @guarded
+def bg3_gate(layer: str, action: str = "plan", builds: str = "affected", ingame: bool = True, post: bool = False,
+             sha: str | None = None, since: str | None = None) -> str:
+    """Local release gate for a mod layer (bg3data/gate.py): clean git tree -> static XML checks -> regen changes nothing -> the
+    four lints clean -> deploy + the in-game builds the commit owes. A build is owed when it never passed or when the changes
+    since the commit it last passed at reach its footprint (stats/list/progression nodes/cases reachable from its class and
+    subclass); Script Extender code, meta.lsx and unplaceable files owe every build. action: "plan" (what would run, no game),
+    "run" (detached, hours; progress with bg3_gate_status; refuses while a background build batch runs), "status" (HEAD green/red,
+    per-build records), "seed" (record a runbuilds log's results as run at `sha`, batches started at/after `since`), "post"
+    (GitHub commit status "bg3data/gate" for `sha` or HEAD). builds: affected | all | id,id. post=True posts when a run ends."""
+    from . import gate
+    if action == "run":
+        import subprocess, sys
+        if subprocess.run(["pgrep", "-f", "bg3data.(runbuilds|gate) "], capture_output=True).returncode == 0:
+            return "a background build batch or gate run is still running - wait for it (bg3_test_build_status / bg3_gate_status)"
+        log = os.path.join(sources.CACHE, "gate", "gate.log")
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        args = [sys.executable, "-m", "bg3data.gate", "run", layer, "--builds", builds, "--out", log] + \
+               (["--no-ingame"] if not ingame else []) + (["--post"] if post else [])
+        subprocess.Popen(args, cwd=os.path.dirname(os.path.dirname(__file__)), stdout=subprocess.DEVNULL,
+                         stderr=open(log + ".err", "a"), start_new_session=True)
+        return f"gate started in the background; progress: bg3_gate_status (log {log})"
+    if action == "plan":
+        from . import deploy
+        _, m, _, _ = deploy.mod_info(layer)
+        head = gate._git(m["path"], "rev-parse", "HEAD").strip()
+        s, active = _testing_store(None)
+        todo, notes = gate.plan(s, active, layer, m["path"], head, gate.load_state(layer), builds)
+        return (f"{len(todo)} build(s) owed at {head[:10]}:" + "".join(f"\n  {b}: {'; '.join(w)}" for b, w in todo)
+                + "".join(f"\n  note: {n}" for n in notes))
+    if action == "status":
+        return gate.status(layer)
+    if action == "seed":
+        if not sha:
+            return "seed needs sha (the commit the logged builds ran against)"
+        return gate.seed(layer, sha, os.path.join(sources.CACHE, "test_builds.log"), since)
+    if action == "post":
+        return gate.post(layer, sha)
+    return f"unknown action {action!r} (plan, run, status, seed, post)"
+
+
+@mcp.tool()
+@guarded
+def bg3_gate_status(lines: int = 60) -> str:
+    """The background gate run's log (bg3_gate action="run"): the last `lines` lines."""
+    log = os.path.join(sources.CACHE, "gate", "gate.log")
+    if not os.path.exists(log):
+        return "no gate has run"
+    return "\n".join(open(log, encoding="utf-8").read().splitlines()[-lines:])
+
+
+@mcp.tool()
+@guarded
 def bg3_lint_stats(layer: str, layers: list[str] | None = None, limit: int = 200) -> str:
     """Static stats lint for a mod layer, before the game ever loads it: enum values (Cooldown,
     StatsFunctorContext, RemoveEvents, SpellFlags, TickType...) and functor/condition/boost names that no

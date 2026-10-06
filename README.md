@@ -74,6 +74,7 @@ redistributed - data is read from your own install.
 | `bg3_test_build` / `bg3_test_build_status` | run a test build ([[build]] in the suite TOML) hands-free: its start save is loaded, every level is taken with the plan's subclass and the spells its tests need, validated (level_check, and the spell levels the level-up screen offers) and that level's tests run; every 5th level is saved as a checkpoint (`<build id> L<n>`) that `start_level` resumes from; `background=True` runs a batch of builds in a detached process, logging as it goes |
 | `bg3_deps_status` / `bg3_deps_diff` / `bg3_deps_lock` / `bg3_deps_update` | dependency drift: each meta.lsx dependency that is a layer (its deployed pak), declared vs locked (`<mod>/bg3deps.lock.json`) vs current; what changed since the lock that the mod overrides or references; and an update that runs the mod's `regen` commands (layers.json), re-indexes, lints, bumps the dependency Version64/MD5 in meta.lsx and rewrites the lock (dry run unless `apply`) |
 | `bg3_toolkit_status` / `bg3_toolkit_export` / `bg3_toolkit_check` | Larian Toolkit (mod.io publishing): where the Toolkit expects the mod, generate its editor copy (.stats/.tbl) from the game-ready files, and diff the two copies - formats learned from vanilla + dnd55e editor data |
+| `bg3_gate(layer, action)` / `bg3_gate_status` | local release gate (`bg3data/gate.py`, also `python -m bg3data.gate`): clean git tree, XML parses (no comments in loca), `regen` changes nothing, the four lints clean, then deploy + the in-game builds the commit owes - a build is owed when it never passed or the changes since its last passing commit reach its footprint (stats, list/progression nodes and cases reachable from its class/subclass; SE code, meta.lsx and unplaceable files owe every build). `plan` / `run` (detached) / `status` / `seed` (from a build-batch log) / `post` (GitHub commit status `bg3data/gate`). Releases: `python -m bg3data.release prepare LAYER VERSION` (Version64 stamp + CHANGELOG), `package` (gate must be green: pak + info.json zip), `publish` (tag + GitHub Release) |
 | `bg3_ingame_check(layer)` | every stats entry a layer defines vs what the running game loaded (invalid values the engine dropped) |
 
 ## Install
@@ -186,6 +187,8 @@ as text. SE reports `ComboCategory` as empty.
   patches to do it ahead of time.
 
 ## Tests
+- `uv run python tests/gate_selftest.py`: offline checks for the gate and release helpers (build report verdicts, stats/LSX
+  change keys, Version64 math and stamping).
 - `uv run python tests/stress_test.py` drives the real server over stdio with the official MCP client:
   protocol, correct answers, bad input, concurrency (400 calls, 32 at a time), refresh under load,
   `.pak` layer add and remove, and a full resolution sweep. It writes `tests/STRESS_REPORT.md`.
