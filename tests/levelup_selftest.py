@@ -70,6 +70,8 @@ def test_pure():
 
     def bands(lit):
         def fake(cmd, timeout=15):
+            if cmd.startswith("tiles"):  # the ritual-page guard counts grid tiles: a ritual page has a few
+                return True, "ok"
             y = float(cmd.split()[2]) * gameui.REF_H
             kind = next(k for k, b in gameui.ICON_PROBES.items() if abs(b[1] - y) < 1)
             return True, "ok " + str(lit.get(kind, 15))

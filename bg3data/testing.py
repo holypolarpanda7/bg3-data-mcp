@@ -5,6 +5,7 @@ Fidelity is explicit. A scripted cast (Osi.UseSpell) never pays costs and skips 
 player cast from the hotbar can verify slots/resources; every verdict says which kind of run it was.
 Test suites live in each mod repo (default `<mod path>/tests/bg3/*.toml`, or `tests` in layers.json).
 """
+import fnmatch
 import glob
 import hashlib
 import json
@@ -1523,6 +1524,92 @@ def checkpoint_name(build_id, level):
     return f"{build_id} L{level}"
 
 
+def _level_nodes(store, active, table, L):
+    """The attrs of a progression table's nodes at level L (first-class nodes; exact duplicates counted once)."""
+    out, seen = [], set()
+    for lvl, _n, _t, _src, a in store.progression(table, active):
+        if lvl != L or str(a.get("IsMulticlass", "")).lower() == "true":
+            continue
+        sig = json.dumps({k: v for k, v in a.items() if k != "UUID"}, sort_keys=True)
+        if sig not in seen:
+            seen.add(sig)
+            out.append(a)
+    return out
+
+
+def _selectors(nodes):
+    return [(k, [x.strip() for x in args.split(",")]) for a in nodes for k, args in re.findall(r"(\w+)\(([^)]*)\)", a.get("Selectors") or "")]
+
+
+def screen_vs_data(store, active, tables, L, screen):
+    """The level-up screen's choice rows against the level's progression selectors: one passive choice per SelectPassives with
+    its pick count, one spell choice per SelectSpells, the feat row exactly where a node has AllowImprovement. tables: {"class":
+    uuid, "sub": uuid or None}. The rules lint (bg3_lint_rules) ties the selectors to the books; this ties the screen to them."""
+    if not screen:
+        return ["WARN level-up screen choices not read (view model didn't answer)"]
+    bad, feat = [], False
+    for side, table in tables.items():
+        if not table:
+            continue
+        nodes = _level_nodes(store, active, table, L)
+        feat |= any(str(a.get("AllowImprovement", "")).lower() == "true" for a in nodes)
+        sel = _selectors(nodes)
+        want_p = sorted(int(float(a[1] or 0)) for k, a in sel if k == "SelectPassives")
+        want_s = sum(1 for k, a in sel if k == "SelectSpells")
+        got = screen.get(side) or {}
+        got_p = sorted(int(x) for x in got.get("passives") or [])
+        got_s = len(got.get("spells") or [])
+        label = "subclass" if side == "sub" else "class"
+        if got_p != want_p:
+            bad.append(f"FAIL screen: {label} passive choices pick {got_p}, the level's selectors give {want_p}")
+        if got_s != want_s:
+            bad.append(f"FAIL screen: {got_s} {label} spell choice(s), the level's selectors give {want_s}")
+        empty = [n for n in got.get("spells") or [] if not n]
+        if empty:
+            bad.append(f"FAIL screen: a {label} spell choice offers no spells")
+    if bool(screen.get("feat")) != feat:
+        bad.append(f"FAIL screen: feat row {'shown' if screen.get('feat') else 'missing'}, the level's nodes "
+                   f"{'allow' if feat else 'have no'} AllowImprovement")
+    return bad
+
+
+def _list_passives(store, active, uuid):
+    row = store.spell_list(uuid, active)
+    return [p for p in re.split(r"[;,]", json.loads(row[4]).get("Passives", "")) if p] if row else []
+
+
+def passive_delta(store, active, before, after, tables, L, char_level, races, extra_ok=()):
+    """Passives gained and lost in one level-up, against what the level grants: a gained passive must be added by a class /
+    subclass node at L or a race node at the character level, or come from a choice on this level's screen (a SelectPassives list,
+    a feat when the level allows one); a lost one must be removed by a node (2026-10-06: the user saw level-ups no test would flag -
+    level_check only confirms what the data adds is there, never that nothing else came with it)."""
+    gained, lost = set(after) - set(before), set(before) - set(after)
+    added, removed, chosen, feat = set(), set(), set(), False
+    nodes = [a for t in tables.values() if t for a in _level_nodes(store, active, t, L)]
+    nodes += [a for r in races or [] for a in _level_nodes(store, active, r["table"], char_level)]
+    for a in nodes:
+        added.update(p for p in (a.get("PassivesAdded") or "").split(";") if p)
+        removed.update(p for p in (a.get("PassivesRemoved") or "").split(";") if p)
+        feat |= str(a.get("AllowImprovement", "")).lower() == "true"
+    for k, a in _selectors(nodes):
+        if k == "SelectPassives":
+            chosen.update(_list_passives(store, active, a[0]))
+    if feat:
+        w, p = store._where(active)
+        for (at,) in store.db.execute(f"SELECT attrs FROM staticdata WHERE kind='Feat' AND {w}", p):
+            chosen.update(x for x in (json.loads(at).get("PassivesAdded") or "").split(";") if x)
+    from .rulescheck import TECHNICAL
+    bad = []
+    for x in sorted(gained - added - chosen):
+        if TECHNICAL.match(x) or any(fnmatch.fnmatch(x, pat) for pat in extra_ok):
+            continue
+        bad.append(f"FAIL gained passive {x}: no class/subclass/race node at this level adds it and no choice offered it")
+    for x in sorted(lost - removed):
+        if not any(fnmatch.fnmatch(x, pat) for pat in extra_ok):
+            bad.append(f"FAIL lost passive {x}: no node at this level removes it")
+    return bad
+
+
 def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_level=None, progress=None):
     """Level the host through a build's plan with the automatic level-up driver - its subclass and the spells its tests need -
     validating every level (level +1, subclass, wanted spells, level_check) and running that level's automated tests. Starts at
@@ -1587,12 +1674,21 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
         want = ch.get(L, {})
         spells = {sp: spell_handle(store, active, sp) for sp in want.get("spells", [])}
         sub = want.get("subclass") if b.get("subclass") else None
+        p_before = host_state()["passives"]
         r = gameui.levelup_auto(subclass=subclass_ui_name(store, active, b["class"], sub) if sub else None, spells=spells or None)
         if not r.get("ok"):
             out.append(f"L{L}: LEVEL-UP FAILED - {r.get('error')} | {r.get('log')}")
             break
         chk = level_check(store, active)
         bad = [l.strip() for l in chk.splitlines() if l.strip().startswith(("FAIL", "WARN"))]
+        # the screen against the level's selectors, and nothing gained or lost that the level doesn't explain
+        st1 = host_state()
+        me = next((c for c in st1["classes"] if c["class"] == b["class"]), None)
+        if me:
+            tables = {"class": me["class_table"], "sub": me.get("subclass_table")}
+            bad += screen_vs_data(store, active, tables, me["level"], r.get("screen"))
+            bad += passive_delta(store, active, p_before, st1["passives"], tables, me["level"], st1["level"], st1.get("races"),
+                                 b.get("known_passives") or ())
         # what the level-up screen offered: a spell choice that skips levels the character can cast (Apotheosis Sorcerer 13
         # offered only level 7 - found by the user in game 2026-10-05, no check caught it)
         top = lua("local m = 0 for u, es in pairs(Ext.Entity.Get(Osi.GetHostCharacter()).ActionResources.Resources) do "

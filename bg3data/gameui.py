@@ -968,6 +968,25 @@ return out""")
     return res if isinstance(res, list) else []
 
 
+def screen_choices():
+    """The choice rows the open level-up screen shows, from its view model: {class|sub: {passives: [max picks], spells: [n spell
+    choices' sizes], skills: n}, feat: bool} - compared with the level's progression selectors by testing.screen_vs_data
+    (2026-10-06: the level-up screen had no check of what it offers, only of what got applied)."""
+    res, _ = _client(FIND + _VM + """
+local det = d.ClassProgressionDetails
+local out = {class = {passives = {}, spells = {}}, sub = {passives = {}, spells = {}}, feat = d.CanSelectFeat and true or false}
+for _, k in ipairs({{"NotSubPassiveSelectors", "class"}, {"SubPassiveSelectors", "sub"}}) do
+  local c = det[k[1]]
+  for i = 1, (c and #c or 0) do table.insert(out[k[2]].passives, c[i].MaxSelectedPassiveCount) end
+end
+for _, k in ipairs({{"NotSubSpellSelectors", "class"}, {"SubSpellSelectors", "sub"}}) do
+  local c = det[k[1]]
+  for i = 1, (c and #c or 0) do table.insert(out[k[2]].spells, #c[i].Available) end
+end
+return out""")
+    return res if isinstance(res, dict) else None
+
+
 def offer_gaps(offers, top_slot):
     """Spell choices that skip spell levels: leveled spells offered, but not every level from 1 to the highest offered. A choice
     entirely above the character's highest slot (slot-free, e.g. Mystic Arcanum) or of cantrips only is exempt."""
@@ -1039,6 +1058,7 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
             out["error"] = f"couldn't choose subclass {subclass}: {msg}"
             return out
     out["offers"] = spell_offers()  # before any pick changes the lists
+    out["screen"] = screen_choices()
     _fill_passive_selectors(log)
     _fill_skill_selectors(log)
     wanted = dict(spells or {})
@@ -1210,16 +1230,39 @@ if #hits ~= 1 then
   return {n = #hits, names = names}
 end
 d:SetProperty("SelectedSave", hits[1])
-return {n = 1, selected = tostring(d.SelectedSave.Title)}""" % _lua_str(name))
+-- the Load Game button's own command: a click loads the row the LIST has selected, which the view model property doesn't move
+-- (2026-10-06: a save in another part of the list never loaded, and the newest save's running session passed as loaded)
+local function f(n, dd)
+  if dd > 12 then return nil end
+  local ok, nm = pcall(function() return n.Name end)
+  if ok and nm == "LoadSaveBtn" then return n end
+  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+  if okc and cnt then for i = 1, cnt do local r = f(n:VisualChild(i), dd + 1) if r then return r end end end
+end
+local b = f(find(Ext.UI.GetRoot(), "LoadGame", 0), 0)
+local ok = b and pcall(function() b.Command:Execute(d.SelectedSave) end)
+return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true or false}""" % _lua_str(name))
         if not isinstance(res, dict) or res.get("n") != 1:
             send_key(0x01, hold_ms=60)
             return None, f"{(res or {}).get('n', '?')} saves match {name!r}: {', '.join((res or {}).get('names') or [])}"
-        time.sleep(0.4)
+        if not res.get("executed"):
+            _rclick(1068, 1005)       # Load Game button (fallback)
     else:
         _rclick(320, 210 + 34 * index)
         time.sleep(0.4)
-    _rclick(1068, 1005)               # Load Game button
-    time.sleep(6.0)
+        _rclick(1068, 1005)           # Load Game button
+    # the running session has to go away first: until it does, a host still answers (the old one). No Enter before that - a Mod
+    # Verification box (the save's mod versions differ from the load order) takes Enter as Start Game with its Downgrade ticked
+    gone = False
+    while time.time() - t0 < 40:
+        time.sleep(1.0)
+        if host_level() is None:
+            gone = True
+            break
+    if not gone:
+        shown = screen() or []
+        return None, (f"the load didn't start - the old session is still running (screen: {', '.join(shown)}); a Mod Verification "
+                      "box means the save's mod list differs from the load order - fix it with bg3_save_fix_mods")
     while time.time() - t0 < timeout:
         send_key(0x1C, hold_ms=60)    # the [ForceUpdate] box appears as the save starts loading
         time.sleep(1.5)
