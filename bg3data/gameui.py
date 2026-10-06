@@ -974,14 +974,17 @@ def screen_choices():
     (2026-10-06: the level-up screen had no check of what it offers, only of what got applied)."""
     res, _ = _client(FIND + _VM + """
 local det = d.ClassProgressionDetails
+-- rows left from the subclass shown before the pick stay in the collections as UpdateState "Old" and aren't on screen (Fighter 3:
+-- Eldritch Knight's cantrip and spell rows for a Champion, 2026-10-06)
+local function old(sel) local ok, st = pcall(function() return tostring(sel.UpdateState) end) return ok and st == "Old" end
 local out = {class = {passives = {}, spells = {}}, sub = {passives = {}, spells = {}}, feat = d.CanSelectFeat and true or false}
 for _, k in ipairs({{"NotSubPassiveSelectors", "class"}, {"SubPassiveSelectors", "sub"}}) do
   local c = det[k[1]]
-  for i = 1, (c and #c or 0) do table.insert(out[k[2]].passives, c[i].MaxSelectedPassiveCount) end
+  for i = 1, (c and #c or 0) do if not old(c[i]) then table.insert(out[k[2]].passives, c[i].MaxSelectedPassiveCount) end end
 end
 for _, k in ipairs({{"NotSubSpellSelectors", "class"}, {"SubSpellSelectors", "sub"}}) do
   local c = det[k[1]]
-  for i = 1, (c and #c or 0) do table.insert(out[k[2]].spells, #c[i].Available) end
+  for i = 1, (c and #c or 0) do if not old(c[i]) then table.insert(out[k[2]].spells, #c[i].Available) end end
 end
 return out""")
     return res if isinstance(res, dict) else None
