@@ -1577,8 +1577,21 @@ def screen_vs_data(store, active, tables, L, screen):
 
 
 def _list_passives(store, active, uuid):
-    row = store.spell_list(uuid, active)
-    return [p for p in re.split(r"[;,]", json.loads(row[4]).get("Passives", "")) if p] if row else []
+    """A passive list as the game loads it: its own passives plus every list merged into it (MergedInto, transitively) -
+    dnd55e's Warlock invocation lists are cumulative this way ("invocations 12" holds only Devouring Blade on file)."""
+    w, p = store._where(active)
+    latest = {}
+    for u, at in store.db.execute(f"SELECT uuid, attrs FROM lists WHERE {w} ORDER BY rank", p):
+        latest[u] = json.loads(at)
+    out, todo, seen = [], [uuid], {uuid}
+    while todo:
+        tgt = todo.pop()
+        out += [x for x in re.split(r"[;,]", (latest.get(tgt) or {}).get("Passives", "")) if x]
+        for u, at in latest.items():
+            if at.get("MergedInto") == tgt and u not in seen:
+                seen.add(u)
+                todo.append(u)
+    return out
 
 
 def passive_delta(store, active, before, after, tables, L, char_level, races, extra_ok=()):
