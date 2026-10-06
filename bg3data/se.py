@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 
-from . import platform, sources
+from . import platform, sources, timing
 
 INJECTOR = os.path.join(os.path.dirname(__file__), "ps", "se_inject.ps1")
 
@@ -97,8 +97,23 @@ def _game_process():
     return int(pid), name, int(start)
 
 
+_LOG_CACHE = {"key": None, "at": 0.0, "value": None}
+
+
 def current_log(proc=None):
-    """Newest Extender Runtime log, only if written during the current game run."""
+    """Newest Extender Runtime log, only if written during the current game run. One game run writes one log, so the answer is
+    reused for 30 s per game process: the folder scan over /mnt/c took 0.3-0.65 s and ran before every console call
+    (2026-10-06)."""
+    proc = proc or game_process()
+    key = proc[0] if proc else None
+    if key and _LOG_CACHE["key"] == key and _LOG_CACHE["value"] and time.time() - _LOG_CACHE["at"] < 30:
+        return _LOG_CACHE["value"]
+    v = _current_log(proc)
+    _LOG_CACHE.update(key=key, at=time.time(), value=v)
+    return v
+
+
+def _current_log(proc=None):
     se = _cfg()
     logs = glob.glob(os.path.join(se["log_dir"], "Extender Runtime*.log"))
     if not logs:
@@ -196,7 +211,7 @@ def _readline(p, timeout):
 def _inject(lines, pid):
     try:
         p = _server()
-        p.stdin.write(json.dumps({"pid": int(pid), "lines": lines, "gap": LINE_GAP_MS}) + "\n")
+        p.stdin.write(json.dumps({"pid": int(pid), "lines": lines, "gap": timing.get("se.line_gap_ms")}) + "\n")
         p.stdin.flush()
         out = _readline(p, 30)
         if out and out.startswith("ok"):
@@ -241,13 +256,25 @@ def _preflight():
     return proc, log
 
 
-def eval_lua(code, context="server", timeout=15.0):
-    """Run Lua in the game; return {'ok', 'result', 'output': [printed lines]}."""
+RPC_DIR = "bg3data_rpc"  # under the Script Extender IO folder (Ext.IO.SaveFile's root)
+
+
+def _io_root(log):
+    """The Script Extender IO folder (Ext.IO.SaveFile writes there): a sibling of the "Script Extender Logs" folder."""
+    return os.path.join(os.path.dirname(os.path.dirname(log)), "Script Extender")
+
+
+def eval_lua(code, context="server", timeout=15.0, want_output=False):
+    """Run Lua in the game; return {'ok', 'result', 'output': [printed lines]}. The result comes back through a file
+    (Ext.IO.SaveFile, ~0.06 s) instead of the runtime log, which the game flushes ~0.65 s late (measured 2026-10-06: every call
+    paid that, dozens per level-up). want_output: also wait for the log to collect what the code printed (and what the game
+    printed while it ran, e.g. stats loading) - the slow path; without it `output` is empty."""
     if context not in ("server", "client"):
         raise ValueError("context must be 'server' or 'client'")
     with _console_guard():
         (pid, _, _), log = _preflight()
         tag = uuid.uuid4().hex[:10]
+        rpc = os.path.join(_io_root(log), RPC_DIR, tag + ".txt")
         chunk = (
             f'local __t={_lua_string(tag)}; Ext.Utils.Print("[BG3SE:"..__t..":BEGIN]"); '
             # SE replaces load() (2nd arg must be an env table), and load itself can throw: pcall it so
@@ -256,11 +283,30 @@ def eval_lua(code, context="server", timeout=15.0):
             f'if not __lok then __ok,__r=false,__f elseif __f then __ok,__r=pcall(__f) else __ok,__r=false,__e end; '
             f'local __s; local __js,__jv=pcall(Ext.Json.Stringify,{{r=__r}},{{Beautify=false,StringifyInternalTypes=true,IterateUserdata=true,AvoidRecursion=true,LimitDepth=10,LimitArrayElements=200}}); '
             f'__s=__js and __jv or Ext.Json.Stringify({{r=tostring(__r)}}); '
-            f'Ext.Utils.Print("[BG3SE:"..__t..":END]"..(__ok and "OK" or "ERR").."|"..__s)'
+            f'Ext.Utils.Print("[BG3SE:"..__t..":END]"..(__ok and "OK" or "ERR").."|"..__s); '
+            f'pcall(Ext.IO.SaveFile, "{RPC_DIR}/"..__t..".txt", (__ok and "OK" or "ERR").."|"..__s)'
         )
         offset = os.path.getsize(log)
         _inject([context, chunk], pid)
         deadline = time.time() + timeout
+        while not want_output and time.time() < deadline:
+            if os.path.exists(rpc):
+                try:
+                    with open(rpc, encoding="utf-8") as f:
+                        data = f.read()
+                    status_, _, payload = data.partition("|")
+                    if not payload:
+                        raise ValueError("partial")
+                    result = json.loads(payload).get("r")
+                except ValueError:
+                    time.sleep(timing.get("se.poll_s"))  # still being written
+                    continue
+                try:
+                    os.remove(rpc)
+                except OSError:
+                    pass
+                return {"ok": status_ == "OK", "result": result, "output": []}
+            time.sleep(timing.get("se.poll_s"))
         while time.time() < deadline:
             text = _read_from(log, offset)
             end_marker = f"[BG3SE:{tag}:END]"
@@ -275,7 +321,7 @@ def eval_lua(code, context="server", timeout=15.0):
                 except ValueError:
                     result = payload
                 return {"ok": status_ == "OK", "result": result, "output": output}
-            time.sleep(0.05)
+            time.sleep(timing.get("se.log_poll_s"))
         raise TimeoutError(f"no result within {timeout:.0f}s (game paused/minimised in a menu, or console not accepting input?)")
 
 
@@ -430,7 +476,7 @@ def hot_load_stats(layer, files=None):
         "local sok,se_=pcall(Ext.Stats.Sync,name,false); if sok then res.synced=res.synced+1 elseif #res.sync_errors<10 then res.sync_errors[#res.sync_errors+1]=name..': '..tostring(se_) end end; "
         "res.files[#res.files+1]={file=p, ok=ok, err=(not ok) and tostring(e) or nil, entries=n} end; return res"
     )
-    r = eval_lua(code, "server", timeout=120)
+    r = eval_lua(code, "server", timeout=120, want_output=True)
     if not r["ok"]:
         raise RuntimeError(f"hot load failed in game: {r['result']}")
     created = sum(1 for l in r["output"] if "Create new entry" in l)

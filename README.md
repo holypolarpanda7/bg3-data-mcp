@@ -19,6 +19,10 @@ tied to any one mod.
   ([docs/TESTING.md](docs/TESTING.md)).
 - **Deploy and Toolkit:** pack/deploy/enable any mod (`bg3_deploy`), restart the game into the newest
   save, and generate or diff the Toolkit's editor copy ([docs/TOOLKIT.md](docs/TOOLKIT.md)).
+- **Timing per machine:** `bg3_timing` keeps each user's waits in `~/.config/bg3-data-mcp/timing.json` (or
+  `BG3_DATA_TIMING`): a `scale` for every UI / harness wait with `min_wait` / `max_wait` clamps, and named settings
+  (console polling, checkpoint interval...) each clamped to its own range. `calibrate` measures the console and
+  screen-helper round trips on this machine and suggests a scale.
 
 The SQLite index is cached per machine (see Configuration). A layer is rebuilt only when its sources'
 timestamps or sizes change; rebuilds are atomic, so a failed rebuild keeps serving the previous index.

@@ -421,7 +421,7 @@ def bg3_se_eval(code: str, context: str = "server", timeout: float = 15, delay: 
         return "error: `code` must be 1-8000 characters"
     if delay:
         time.sleep(max(0.0, min(float(delay), 30.0)))
-    r = se.eval_lua(code, context, timeout=max(2.0, min(float(timeout), 120.0)))
+    r = se.eval_lua(code, context, timeout=max(2.0, min(float(timeout), 120.0)), want_output=True)
     out = [("OK" if r["ok"] else "LUA ERROR") + ": " + json.dumps(r["result"], indent=1)[:MAX_OUTPUT // 2]]
     if r["output"]:
         out.append("printed:\n" + "\n".join(r["output"]))
@@ -555,6 +555,44 @@ def bg3_deploy(layer: str, enable: bool = True) -> str:
     from . import deploy
     lines, ok = deploy.deploy(layer, enable)
     return "\n".join(lines)
+
+
+@mcp.tool()
+def bg3_timing(action: str = "show", scale: float | None = None, settings: dict | None = None,
+               min_wait: float | None = None, max_wait: float | None = None, apply: bool = False) -> str:
+    """This machine's timing settings for the in-game driver and tests (per user: ~/.config/bg3-data-mcp/timing.json, or
+    BG3_DATA_TIMING). action "show": effective values with their ranges. "set": write scale (multiplies every UI / harness
+    wait; slower PC > 1), min_wait / max_wait (clamp for scaled waits, seconds) and/or named settings, e.g.
+    {"build.checkpoint_every": 10, "se.poll_s": 0.02}. "calibrate" (game running): measures the console and screen-helper round
+    trips and suggests a scale; apply=True writes it."""
+    from . import timing
+    if action == "show":
+        return timing.describe()
+    if action == "set":
+        return timing.save(scale, settings, min_wait, max_wait)
+    if action == "calibrate":
+        import statistics
+        import time as _t
+        from . import gameui
+        con, helper = [], []
+        se.eval_lua("return 1", "server", timeout=15)
+        for _ in range(5):
+            t0 = _t.time()
+            se.eval_lua("return 1", "server", timeout=15)
+            con.append(_t.time() - t0)
+            t0 = _t.time()
+            gameui._fast("lum 0.55 0.08 0.2 0.2", 5)
+            helper.append(_t.time() - t0)
+        c, h = statistics.median(con), statistics.median(helper)
+        # reference machine (2026-10-06): console 0.08 s, helper 0.02 s at scale 1.0. Waits mostly cover game-side settling
+        # (animations, view-model updates), which tracks the console latency better than raw CPU speed.
+        suggest = round(min(4.0, max(0.75, (c / 0.08) ** 0.5)), 2)
+        out = [f"console round trip {c:.3f} s (reference 0.08), screen helper {h:.3f} s (reference 0.02)",
+               f"suggested scale {suggest} (current {timing.scale()})"]
+        if apply:
+            out.append(timing.save(suggest))
+        return "\n".join(out)
+    return "action must be show, set or calibrate"
 
 
 @mcp.tool()

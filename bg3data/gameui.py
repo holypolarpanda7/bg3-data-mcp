@@ -9,7 +9,7 @@ import os
 import re
 import time
 
-from . import platform, se
+from . import platform, se, timing
 
 FIND = """
 local function find(n, name, d)
@@ -98,7 +98,7 @@ def _screenshot_script(out=None):
     if platform.IS_WSL:  # a Windows path the PowerShell script can write to, readable from WSL
         out = os.path.join(platform.windows_temp(), "bg3_screenshot.png")
     focus_game()  # a screen capture only sees what is visible: the game must be in front of the editor
-    time.sleep(0.4)
+    timing.wait(0.4)
     ps = os.path.join(os.path.dirname(__file__), "ps", "screenshot.ps1")
     r = platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-ExecutionPolicy", "Bypass", "-File",
                           platform.to_win(ps), "-Out", platform.to_win(out)], timeout=60)
@@ -164,7 +164,7 @@ def end_host_turn(timeout=90):
         end_turn()
         t0 = time.time()
         while time.time() - t0 < 6 and host_turn_active():
-            time.sleep(0.3)
+            timing.wait(0.3)
         return wait_host_turn(timeout)
     end = time.time() + timeout
     clicks = 0
@@ -172,7 +172,7 @@ def end_host_turn(timeout=90):
         if clicks == 0 or (host_turn_active() and time.time() - last > 6):
             end_turn()  # again if the host still has the turn 6 s after a click (it ended a summon's turn)
             clicks, last = clicks + 1, time.time()
-        time.sleep(0.4)
+        timing.wait(0.4)
         n = _host_turns()
         if n is not None and n > before and host_turn_active():
             return True
@@ -185,7 +185,7 @@ def wait_host_turn(timeout=60, poll=0.3):
     while time.time() < end:
         if host_turn_active():
             return True
-        time.sleep(poll)
+        timing.wait(poll)
     return False
 
 
@@ -235,7 +235,7 @@ def dismiss_dialog(wait=3.0, timeout=12):
     accept_dialog(info["uuid"])
     end = time.time() + wait
     while time.time() < end:
-        time.sleep(0.5)
+        timing.wait(0.5)
         if not dialog_info(timeout):
             return True, info
         press_key()
@@ -247,14 +247,14 @@ def quit_game(processes, tasklist, wait=45):
     if not main_menu_command("QuitGame"):
         return False
     for _ in range(10):
-        time.sleep(1)
+        timing.wait(1)
         if accept_dialog("QuitMsgID"):
             break
     t0 = time.time()
     while time.time() - t0 < wait:
         if not any(p.lower() in tasklist() for p in processes):
             return True
-        time.sleep(2)
+        timing.wait(2)
     return False
 
 
@@ -323,7 +323,7 @@ def _state(tries=3):
         st = levelup_state()
         if st.get("known"):
             return st
-        time.sleep(0.5)
+        timing.wait(0.5)
     return st
 
 
@@ -339,7 +339,7 @@ def levelup_open(sheet_scan=0x17, wait=12.0):
     if not st.get("sheet_open"):
         send_key(sheet_scan)          # a toggle: only pressed when the sheet is known to be closed
         for _ in range(12):
-            time.sleep(0.25)
+            timing.wait(0.25)
             if levelup_state().get("sheet_open"):
                 break
     click_frac(*LEVELUP_BAR)
@@ -357,7 +357,7 @@ def levelup_open(sheet_scan=0x17, wait=12.0):
         if seen_dark and lum is not None and lum < DARK and time.time() - last_key >= 0.5:
             send_key(0x1C, hold_ms=100)
             last_key = time.time()
-        time.sleep(0.05)
+        timing.wait(0.05)
     return _state()
 
 
@@ -424,7 +424,7 @@ def stable_pending_rows(timeout=4.0, poll=0.35):
                 return cur
             if not cur and len(hist) >= 3 and hist[-2] == hist[-3] == []:
                 return []
-        time.sleep(poll)
+        timing.wait(poll)
     return hist[-1] if hist else []
 
 
@@ -458,7 +458,7 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
     """Open the checklist row at y and fill its page until the row's marker clears (the wanted spells first, if this page offers
     them). Returns True when it cleared."""
     _rclick(CHECKLIST_X, y)
-    time.sleep(0.5)
+    timing.wait(0.5)
     _SCROLLED[0] = False
     if wanted:                        # don't assume where the page is scrolled: put it at the top (probes expect that)
         _scroll_panel(down=False)
@@ -478,7 +478,7 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
                 if not tiles:
                     break
                 _rclick(*tiles[0])
-                time.sleep(0.35)
+                timing.wait(0.35)
                 if not _row_pending(y):
                     log.append(f"row y={y}: scanned icons, {i + 1} click(s)")
                     return True
@@ -486,21 +486,21 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
             return False
         for name, pos, extra in FEATS:
             _rclick(*pos)
-            time.sleep(1.1)           # the details panel fades in
+            timing.wait(1.1)           # the details panel fades in
             if extra == "asi":        # +2 to the class's primary ability; past the cap of 20 the rest spills over to the next ones
                 order = _asi_order()
                 for ab in order:
                     for _ in range(2):
                         _rclick(ASI_PLUS[0], ASI_PLUS[1] + 44 * ABILITIES.index(ab))
-                        time.sleep(0.3)
+                        timing.wait(0.3)
                     if not _row_pending(y):
                         log.append(f"row y={y}: feat {name} ({ab})")
                         return True
                 continue
             for e in extra:
                 _rclick(*e)
-                time.sleep(0.5)
-            time.sleep(0.4)
+                timing.wait(0.5)
+            timing.wait(0.4)
             if not _row_pending(y):
                 log.append(f"row y={y}: feat {name}")
                 return True
@@ -511,7 +511,7 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
         if _icon_taken(i + 1):
             continue                  # a wanted spell picked above sits here: clicking it would deselect it
         _rclick(ox + ICON_STEP * (i % 8), oy + ICON_ROW * (i // 8))
-        time.sleep(0.35)
+        timing.wait(0.35)
         if not _row_pending(y):
             log.append(f"row y={y}: {kind} picker, {i + 1} icon(s)")
             return True
@@ -580,7 +580,7 @@ return {done = true}""")
             log.append(f"passive selector {res['stuck']}: no selectable option left")
             break
         n += 1
-        time.sleep(0.35)
+        timing.wait(0.35)
     if n:
         log.append(f"passives: {n} toggled through the view model")
     return n
@@ -625,7 +625,7 @@ return {done = true}""")
             break
         n += 1
         log.append(f"skill {res['toggled']} chosen through the view model")
-        time.sleep(0.35)
+        timing.wait(0.35)
     return n
 
 
@@ -695,7 +695,7 @@ def _stable_tiles(tries=4):
         if cur and cur == prev:
             return cur
         prev = cur
-        time.sleep(0.3)
+        timing.wait(0.3)
     return prev or []
 
 
@@ -782,13 +782,13 @@ return {added = added, kept = kept}""" % (key, i, keep))[0] or {}
     top = [t for t in tiles if t[1] < tiles[0][1] + 15] if tiles else []   # the topmost icon row = "Selected"
     for tx, ty in top:
         _rclick(tx, ty)
-        time.sleep(0.4)
+        timing.wait(0.4)
         s1 = state()
         if s1.get("added", 0) < s0.get("added", 0) and s1.get("kept", 0) == s0.get("kept", 0):
             log.append(f"row y={y}: freed a slot ({key}[{i}])")
             return True
         _rclick(tx, ty)               # restore whatever that click changed
-        time.sleep(0.4)
+        timing.wait(0.4)
     return False
 
 
@@ -833,7 +833,7 @@ def _pick_wanted(y, kind, wanted, log):
             for how, px, py in cands:
                 _want_scroll(how == "scroll")
                 _rclick(px, py)
-                time.sleep(0.4)
+                timing.wait(0.4)
                 if _item_selected(key, i, j):
                     got.append(sid)
                     _TAKEN.add(j)
@@ -841,7 +841,7 @@ def _pick_wanted(y, kind, wanted, log):
                     done = True
                     break
                 _rclick(px, py)       # not this page's selector, or not this icon: undo
-                time.sleep(0.4)
+                timing.wait(0.4)
             if done:
                 break
     _want_scroll(False)               # back to the top, where the filler clicks expect the grid
@@ -862,7 +862,7 @@ def _scroll_panel(down=True):
     """Drag the left panel's scrollbar to the bottom (or top)."""
     y1, y2 = (380, 1000) if down else (900, 60)
     _fast("drag %d %d %d %d" % (round(SCROLLBAR_X * _sx()), round(y1 * _sy()), round(SCROLLBAR_X * _sx()), round(y2 * _sy())), 15)
-    time.sleep(0.6)
+    timing.wait(0.6)
 
 
 def _sx():
@@ -888,7 +888,7 @@ d.SelectedSubClass = target
 return {ok = true}""" % name)
     if not isinstance(res, dict) or not res.get("ok"):
         return False, (res or {}).get("err", "no answer") if isinstance(res, dict) else "no answer from the client"
-    time.sleep(1.0)                   # read back in a later frame: the same frame still shows the old value
+    timing.wait(1.0)                   # read back in a later frame: the same frame still shows the old value
     res, _ = _client(FIND + _VM + "return tostring(d.SelectedSubClass and d.SelectedSubClass.IDString)")
     return (str(res).lower() == name.lower()), f"subclass now {res}"
 
@@ -1023,7 +1023,7 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
     st = levelup_open()
     if st.get("known") and not st.get("levelup_open"):   # the bar click can miss while the sheet is still settling: once more
         send_key(0x01, hold_ms=100)
-        time.sleep(1.5)
+        timing.wait(1.5)
         st = levelup_open()
     if not st.get("known"):
         out["error"] = "the Script Extender didn't answer while opening the level-up screen"
@@ -1045,14 +1045,14 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
             steps = sorted(owned).index(add_class)
             for cmd in ["SelectFirstUsedClass"] + ["SelectNextUsedClass"] * steps:
                 _client(FIND + 'local d = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0).DataContext d.%s:Execute(nil) return true' % cmd)
-                time.sleep(0.6)
-            time.sleep(0.9)
+                timing.wait(0.6)
+            timing.wait(0.9)
             log.append(f"levelled owned class {add_class} (carousel position {steps + 1} of {len(owned)})")
         else:
             _rclick(*ADD_CLASS_BUTTON)
-            time.sleep(1.2)
+            timing.wait(1.2)
             _rclick(*CLASS_TILES[add_class])
-            time.sleep(1.5)           # the class's first-level picks are pre-filled as it switches
+            timing.wait(1.5)           # the class's first-level picks are pre-filled as it switches
             log.append(f"added class {add_class}")
     if subclass:
         ok, msg = _set_subclass(subclass)
@@ -1174,7 +1174,7 @@ return {ok = ok, err = ok and "" or tostring(err)}""")
         return False, "accepted, but the level before was unreadable, so the apply can't be confirmed"
     t0 = time.time()
     while time.time() - t0 < wait:
-        time.sleep(0.5)
+        timing.wait(0.5)
         lv = host_level()
         if lv is not None and lv > before:
             return True, f"level {before} -> {lv} after {time.time() - t0:.1f}s"
@@ -1190,7 +1190,7 @@ def _pause_menu():
         if "GameMenu" in names:
             return True
         send_key(0x01, hold_ms=100)
-        time.sleep(1.0)
+        timing.wait(1.0)
     return False
 
 
@@ -1200,7 +1200,7 @@ def _close_menus():
         if not any(n in names for n in ("GameMenu", "SaveLoad", "Save", "Load")):
             return
         send_key(0x01, hold_ms=100)
-        time.sleep(0.8)
+        timing.wait(0.8)
 
 
 def _lua_str(s):
@@ -1216,7 +1216,7 @@ def load_save(index=0, timeout=90.0, name=None):
     if not _pause_menu():
         return None, "the pause menu didn't open (nothing was clicked)"
     _rclick(960, 568)                 # Load Game
-    time.sleep(3.0)                   # the list fills in after a spinner
+    timing.wait(3.0)                   # the list fills in after a spinner
     if name:
         # select it in the Load screen's view model (gui::DCSavegames.SelectedSave via SetProperty): the list shows ~22 rows, so
         # a row click missed any older save once checkpoints pushed it down and the NEWEST save loaded instead (2026-10-05)
@@ -1254,13 +1254,13 @@ return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true
             _rclick(1068, 1005)       # Load Game button (fallback)
     else:
         _rclick(320, 210 + 34 * index)
-        time.sleep(0.4)
+        timing.wait(0.4)
         _rclick(1068, 1005)           # Load Game button
     # the running session has to go away first: until it does, a host still answers (the old one). No Enter before that - a Mod
     # Verification box (the save's mod versions differ from the load order) takes Enter as Start Game with its Downgrade ticked
     gone = False
     while time.time() - t0 < 40:
-        time.sleep(1.0)
+        timing.wait(1.0)
         if host_level() is None:
             gone = True
             break
@@ -1270,12 +1270,12 @@ return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true
                       "box means the save's mod list differs from the load order - fix it with bg3_save_fix_mods")
     while time.time() - t0 < timeout:
         send_key(0x1C, hold_ms=60)    # the [ForceUpdate] box appears as the save starts loading
-        time.sleep(1.5)
+        timing.wait(1.5)
         lv = host_level()
         if lv is not None:
             # the [ForceUpdate] box can still come up after the host exists, and it blocks the console: clear it
             for _ in range(6):
-                time.sleep(1.0)
+                timing.wait(1.0)
                 if not dialog_info():
                     break
                 dismiss_dialog()
@@ -1292,22 +1292,22 @@ def save_game(name, timeout=40.0):
     if not _pause_menu():
         return False, "the pause menu didn't open (nothing was clicked)"
     _rclick(960, 524)                 # Save Game
-    time.sleep(2.5)
+    timing.wait(2.5)
     _rclick(608, 200)                 # New Save
-    time.sleep(1.2)
+    timing.wait(1.2)
     _rclick(958, 738)                 # the description field
-    time.sleep(0.4)
+    timing.wait(0.4)
     _fast("chord 29 30")              # Ctrl+A: replace the default description
-    time.sleep(0.2)
+    timing.wait(0.2)
     _fast("text " + name)
-    time.sleep(0.4)
+    timing.wait(0.4)
     _rclick(1066, 862)                # Save
     t = time.time()
     while time.time() - t < timeout:
-        time.sleep(1.5)
+        timing.wait(1.5)
         new = [d for _m, d, _p in saves.list_saves(cfg, 500) if d not in before]
         if any(name.lower() in d.lower() for d in new):
-            time.sleep(2.0)           # let the write finish
+            timing.wait(2.0)           # let the write finish
             _close_menus()
             return True, next(d for d in new if name.lower() in d.lower())
     _close_menus()
@@ -1335,17 +1335,17 @@ def respec(cls, timeout=20.0):
         return False, "Osi.StartRespec failed"
     t = time.time()
     while time.time() - t < timeout and "CharacterRespec" not in (screen() or []):
-        time.sleep(0.5)
+        timing.wait(0.5)
     if "CharacterRespec" not in (screen() or []):
         return False, "the respec screen didn't open"
-    time.sleep(1.0)
+    timing.wait(1.0)
     if cls in RESPEC_MORE_TILES:
         _fast("drag %d %d %d %d" % RESPEC_SCROLL, 15)
-        time.sleep(0.8)
+        timing.wait(0.8)
         _rclick(*RESPEC_MORE_TILES[cls])
     else:
         _rclick(*RESPEC_CLASS_TILES[cls])
-    time.sleep(1.5)
+    timing.wait(1.5)
     # most classes come pre-filled; some don't (Artificer cantrips, Monster Hunter weapon mastery) - fill them like a level-up
     log = []
     _fill_passive_selectors(log)
@@ -1360,8 +1360,8 @@ def respec(cls, timeout=20.0):
     _rclick(*RESPEC_CONFIRM)
     t = time.time()
     while time.time() - t < timeout and "CharacterRespec" in (screen() or ["CharacterRespec"]):
-        time.sleep(0.5)
-    time.sleep(1.0)
+        timing.wait(0.5)
+    timing.wait(1.0)
     got = class_levels()
     return (got == {cls: 1}), f"host is now {got}"
 
@@ -1484,7 +1484,7 @@ def click_many(points, shot=True, gap=0.15, right=False):
     for x, y in points:
         if click(x, y, right, 1, shot):
             sent += 1
-        time.sleep(gap)
+        timing.wait(gap)
     return sent
 
 

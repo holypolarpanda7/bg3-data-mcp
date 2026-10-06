@@ -16,7 +16,7 @@ import subprocess
 import time
 import tomllib
 
-from . import parse, se, sources
+from . import parse, se, sources, timing
 
 HERE = os.path.dirname(__file__)
 HARNESS = os.path.join(HERE, "lua", "harness.lua")
@@ -151,7 +151,7 @@ def host_state():
         cl = st.get("classes") or []
         if cl and all(c.get("class") for c in cl) and st.get("spells"):
             return st
-        time.sleep(1.0)
+        timing.wait(1.0)
     raise RuntimeError(f"host class data didn't resolve: {st.get('classes')}")
 
 
@@ -187,7 +187,7 @@ def grant_levels(store, active, levels=1, st=None):
     lua(f"Osi.AddExplorationExperience(BG3T.host(), {amount}); return true")
     after = None
     for _ in range(12):  # poll instead of a fixed 1.5 s (2026-10-06: build overhead)
-        time.sleep(0.25)
+        time.sleep(timing.get("build.xp_poll_s"))
         after = lua("local e=Ext.Entity.Get(BG3T.host()); return e.Experience.TotalExperience")
         if isinstance(after, (int, float)) and after >= need:
             break
@@ -719,10 +719,10 @@ def stage(store, active, layer, case_id):
         r_ = lua("local h=BG3T.host() if Osi.GetEquippedItem(h,'Ranged Main Weapon') then return 'has' end "
                  "Osi.TemplateAddTo('a5d843ab-c3af-4e60-a925-bb2e15828938', h, 1, 0) return 'added'", timeout=10)
         if r_ == "added":
-            time.sleep(1.0)
+            timing.wait(1.0)
             lua("local h=BG3T.host() local i=Osi.GetItemByTemplateInInventory('a5d843ab-c3af-4e60-a925-bb2e15828938', h) "
                 "if i then Osi.Equip(h,i) end return true", timeout=10)
-            time.sleep(1.0)
+            timing.wait(1.0)
             notes.append("equipped a hand crossbow on the host (the case makes a ranged weapon attack)")
     cl = next((x for x in st["classes"] if not c.get("class") or x["class"] == c["class"]), None)
     if c.get("class") and not cl:
@@ -770,7 +770,7 @@ for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("ServerCharacter")) do
 end
 Osi.LeaveCombat(h) return true""")
         if left:
-            time.sleep(2)
+            timing.wait(2)
         if not left or (lua("return Osi.IsInCombat(BG3T.host())") == 1):
             blockers.append("host is already in combat - finish or reload first")
         else:
@@ -819,7 +819,7 @@ Osi.LeaveCombat(h) return true""")
     if missing:
         lua("BG3T.cleanup(); return true")
         raise RuntimeError(f"spawn failed for {missing}")
-    time.sleep(0.4)  # boosts (initiative, max HP) apply on the next tick (a frame; was 1.2 s)
+    timing.wait(0.4)  # boosts (initiative, max HP) apply on the next tick (a frame; was 1.2 s)
     post, late = [], []
     for s in spawns:
         if s.get("hp") is not None:
@@ -858,7 +858,7 @@ Osi.LeaveCombat(h) return true""")
     for st_, code_ in late:
         n_ = 0
         for _ in range(6):
-            time.sleep(0.25)
+            timing.wait(0.25)
             n_ = lua(code_, timeout=10) or 0
             if n_:
                 break
@@ -868,9 +868,9 @@ Osi.LeaveCombat(h) return true""")
     # Shield / Arcane or Projected Ward / opportunity attack changes the rolls a case checks (Last Stand's bite was
     # eaten by Projected Ward, 2026-10-02). AI mode keeps them all on unless the case lists some.
     keep = c.get("reactions", ["*"] if mode == "ai" else [])
-    time.sleep(0.6)  # a freshly added passive's interrupt appears a moment later
+    timing.wait(0.6)  # a freshly added passive's interrupt appears a moment later
     lua(f"return BG3T.setReactions(BG3T.host(), {{{', '.join(se._lua_string(k) for k in keep)}}})", timeout=15)
-    time.sleep(0.2)
+    timing.wait(0.2)
     before = lua("return BG3T.world()", timeout=30)
     if combat == "after_setup":  # the fight starts after the snapshot, so "when you roll Initiative" effects count
         lua("BG3T.enterCombat(); return true")
@@ -883,7 +883,7 @@ Osi.LeaveCombat(h) return true""")
             if turns:
                 first_turn = turns[0]
                 break
-            time.sleep(0.5)
+            timing.wait(0.5)
     try:  # where the SE log stood when the case began: `log` expectations read only what came after
         log_at = [se.current_log(), os.path.getsize(se.current_log())]
     except (OSError, TypeError, RuntimeError):
@@ -910,12 +910,12 @@ Osi.LeaveCombat(h) return true""")
                     g = lua(f"return BG3T.adoptSummon({se._lua_string(cs['summon_as'])}, {se._lua_string(cs.get('summon_stats', ''))})")
                     if g:
                         break
-                    time.sleep(0.5)
+                    timing.wait(0.5)
                 notes.append(f"summon_as {cs['summon_as']}: " + (f"adopted {g}" if g else "NO summon appeared"))
                 if g and cs.get("near"):  # next to that spawn (within melee reach)
                     lua(f"BG3T.placeNear(BG3T.spawns[{se._lua_string(cs['summon_as'])}], BG3T.spawns[{se._lua_string(cs['near'])}], "
                         f"{float(cs.get('near_distance', 1.2))}); return true")
-                    time.sleep(0.5)
+                    timing.wait(0.5)
             continue
         tgt = "BG3T.host()" if tgt == "host" else f"BG3T.spawns[{se._lua_string(tgt)}]"
         lua(f"BG3T.cast({by}, {se._lua_string(cs['spell'])}, {tgt}, {'true' if cs.get('real_rolls') else 'false'}); return true")
@@ -943,12 +943,12 @@ Osi.LeaveCombat(h) return true""")
             from . import gameui as _g
             notes.append("game window focused" if _g.focus_game() else "couldn't focus the game window")
         if c.get("auto_reactions", True):  # reactions of the target/host on auto (Enabled, no Ask), after a tick
-            time.sleep(0.6)  # a freshly added passive's interrupt preference appears a moment later
+            timing.wait(0.6)  # a freshly added passive's interrupt preference appears a moment later
             for who in {"host", c.get("target", "host")} - {"host"}:  # the host's were set at staging (`reactions`)
                 lua(f"return BG3T.autoReactions(BG3T.spawns[{se._lua_string(who)}])")
         if c.get("sanctuary", True):  # keep the enemy AI off the host so it uses the spell on the target
             lua("Osi.ApplyStatus(BG3T.host(), 'SANCTUARY', 600, 1, BG3T.host()); return true")
-        time.sleep(1.5)
+        timing.wait(1.5)
         c = dict(c, end_turns=int(c.get("ai_rounds", 8)))
     if mode in ("auto", "script") and c.get("spell"):
         if c.get("target") == "ground":
@@ -1000,7 +1000,7 @@ def _wait_casts(since, spell, n, timeout):
     while time.time() < end:
         if (_progress(since, spell).get("casts") or 0) >= n:
             return True
-        time.sleep(0.1)
+        timing.wait(0.1)
     return False
 
 
@@ -1013,7 +1013,7 @@ def _settle(since, quiet=0.8, cap=6.0):
             last, t_last = n, time.time()
         elif time.time() - t_last >= quiet:
             return True
-        time.sleep(0.1)
+        timing.wait(0.1)
     return False
 
 
@@ -1130,7 +1130,7 @@ def verify(store, active, cleanup=True, wait=2.0):
     elif state["mode"] == "ai":
         _settle(state["since"], quiet=0.8, cap=3)
     else:
-        time.sleep(max(0.0, min(wait, 30)))
+        timing.wait(max(0.0, min(wait, 30)))
     want = [e["summon"] for e in c.get("expect", []) if e.get("summon")]
     if want:  # a summon can arrive seconds after the case's own cast (a script casting the summon): wait for it
         need = max(sx.get("count", [1, 1])[0] for sx in want)
@@ -1139,9 +1139,9 @@ def verify(store, active, cleanup=True, wait=2.0):
         while time.time() - t0 < 8 and need > 0:
             cur = lua("local o = {} for _, x in ipairs(BG3T.summons(BG3T.host())) do o[#o + 1] = x.guid end return o") or []
             if sum(1 for g in cur if g not in pre) >= need:
-                time.sleep(0.5)  # its statuses land a moment later
+                timing.wait(0.5)  # its statuses land a moment later
                 break
-            time.sleep(0.4)
+            timing.wait(0.4)
     after = lua("return BG3T.world()", timeout=30)
     events = lua(f"return BG3T.drain({state['since']})", timeout=30) or []
     before = state["before"]
@@ -1503,7 +1503,10 @@ def subclass_ui_name(store, active, cls, sub):
     return hits[0] if hits else sub
 
 
-CHECKPOINT_EVERY = 5  # a build saves "<build id> L<n>" at every 5th level, so a re-test can start near the level it needs
+def checkpoint_every():
+    """A build saves "<build id> L<n>" every N levels, so a re-test can start near the level it needs (timing setting
+    build.checkpoint_every, default 5; 0 = no checkpoints)."""
+    return int(timing.get("build.checkpoint_every"))
 
 
 class _Log(list):
@@ -1635,7 +1638,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     """Level the host through a build's plan with the automatic level-up driver - its subclass and the spells its tests need -
     validating every level (level +1, subclass, wanted spells, level_check) and running that level's automated tests. Starts at
     the host's current level (load the build's start save first). Stops at the first failure. Returns the report text.
-    Every CHECKPOINT_EVERY-th level is saved as "<build id> L<n>". start_level: the first level to (re)take - the newest checkpoint
+    Every checkpoint_every()-th level is saved as "<build id> L<n>". start_level: the first level to (re)take - the newest checkpoint
     below it is loaded instead of the start save (only valid if nothing at or below that checkpoint changed since it was made)."""
     from . import gameui
     b = find_build(layer, build_id)
@@ -1650,7 +1653,8 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     cl = gameui.class_levels() or {}
     resumed = None
     if start_level:
-        for k in range((start_level - 1) // CHECKPOINT_EVERY * CHECKPOINT_EVERY, lo - 1, -CHECKPOINT_EVERY):
+        ce = checkpoint_every() or 5
+        for k in range((start_level - 1) // ce * ce, lo - 1, -ce):
             if k < lo or k < 1:
                 break
             if lv == k and cl == {b["class"]: k}:
@@ -1692,7 +1696,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
             out.append(f"L{L}: already reached")
             st_prev = None
             continue
-        time.sleep(1.0)  # was 3 s; the level-up screen opener waits for the screen itself
+        time.sleep(timing.get("build.pre_levelup_s"))  # was 3 s; the level-up screen opener waits for the screen itself
         if lua("return Osi.IsInCombat(Osi.GetHostCharacter())") == 1 and end_combat()["in_combat"]:
             out.append(f"L{L}: host is in combat - a level-up can't open; stopping")
             break
@@ -1747,7 +1751,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
             if ec["in_combat"]:
                 out.append("    host is still in combat after the tests - stopping (a level-up can't open in combat)")
                 break
-        if L % CHECKPOINT_EVERY == 0:   # a checkpoint for later re-tests (start_level)
+        if checkpoint_every() and L % checkpoint_every() == 0:   # a checkpoint for later re-tests (start_level)
             try:
                 ok_, info_ = gameui.save_game(checkpoint_name(build_id, L))
                 out.append(f"    checkpoint {checkpoint_name(build_id, L)!r} " + ("saved" if ok_ else f"NOT saved: {info_}"))
@@ -1834,7 +1838,7 @@ def end_combat(wait=8.0):
         st = lua("return Osi.IsInCombat(Osi.GetHostCharacter())")
         if st == 0:
             break
-        time.sleep(1.0)
+        timing.wait(1.0)
     return {"killed": r.get("killed", 0), "in_combat": lua("return Osi.IsInCombat(Osi.GetHostCharacter())") == 1}
 
 
@@ -2524,7 +2528,7 @@ def kill_game(graceful=True):
     for _ in range(30):
         if not any(p.lower() in _tasklist() for p in g["processes"]):
             break
-        time.sleep(1)
+        timing.wait(1)
     return killed
 
 
@@ -2610,7 +2614,7 @@ def _clear_dialogs(log, seconds=0.0, timeout=12, t0=None):
                 log.append(("dismissed message box" + when + " " if closed else f"message box left open{when} (needs your answer, {info.get('actions')} actions) ") + msg)
         if time.time() >= end or (info and closed):  # nothing left to clear: don't wait out the grace period
             return
-        time.sleep(1)
+        timing.wait(1)
 
 
 def missing_dependencies():
@@ -2698,7 +2702,7 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
     _unstick_menu.splash = 0
     enters = 0
     while time.time() - t0 < timeout:
-        time.sleep(1)
+        timing.wait(1)
         # The load-time warning (GameMsgID [ForceUpdate]) is modal from the moment the save starts loading, but the Script
         # Extender can't see the UI for most of the load (it shows up in SE only with the HUD, ~60 s in). A posted Enter
         # needs no visibility and closes it in about a second, so press it until the host exists - unless the main menu

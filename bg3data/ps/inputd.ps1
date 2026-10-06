@@ -16,6 +16,30 @@
 #   text STRING                 type the rest of the line as Unicode characters (SendInput KEYEVENTF_UNICODE)
 #   ping
 Add-Type -AssemblyName System.Drawing
+# compiled pixel scans: PowerShell GetPixel loops cost ~0.6 s per checklist read (2026-10-06), LockBits in C# a few ms
+Add-Type -ReferencedAssemblies System.Drawing @"
+using System; using System.Drawing; using System.Drawing.Imaging; using System.Collections.Generic; using System.Runtime.InteropServices;
+public class Scan {
+  public static string Rows(int sx, int sy, int w, int h, bool all, int minh, int y0) {
+    using (var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb)) {
+      using (var g = Graphics.FromImage(bmp)) { g.CopyFromScreen(sx, sy, 0, 0, new Size(w, h)); }
+      var d = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+      var px = new byte[d.Stride * h]; Marshal.Copy(d.Scan0, px, 0, px.Length); bmp.UnlockBits(d);
+      var rows = new List<string>(); bool inside = false; int start = 0;
+      for (int y = 0; y <= h; y++) {
+        bool hit = false;
+        if (y < h) for (int x = 0; x < w; x++) {
+          int i = y * d.Stride + x * 4; int b = px[i], gg = px[i + 1], r = px[i + 2];
+          if ((r > 150 && gg < 90 && b < 100) || (all && r > 150 && gg > 140 && b > 110)) { hit = true; break; }
+        }
+        if (hit) { if (!inside) { inside = true; start = y; } }
+        else if (inside) { inside = false; if (y - start >= minh) rows.Add(((int)(y0 + (start + y) / 2.0)).ToString()); }
+      }
+      return string.Join(",", rows);
+    }
+  }
+}
+"@
 Add-Type @"
 using System; using System.Text; using System.Runtime.InteropServices;
 public class ID {
@@ -132,16 +156,8 @@ while ($true) {
                       $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
                       $x0 = [int]($s[0] * [double]$a[1]); $y0 = [int]($s[1] * [double]$a[2])
                       $w = [Math]::Max(4, [int]($s[0] * [double]$a[3])); $hh = [Math]::Max(4, [int]($s[1] * [double]$a[4]))
-                      $bmp = New-Object System.Drawing.Bitmap $w, $hh
-                      $g = [System.Drawing.Graphics]::FromImage($bmp)
-                      $g.CopyFromScreen($pt.X + $x0, $pt.Y + $y0, 0, 0, (New-Object System.Drawing.Size $w, $hh))
                       $minh = [Math]::Max(2, [int]($s[1] / 270))
-                      $rows = @(); $in = $false; $start = 0
-                      for ($y = 0; $y -le $hh; $y++) { $hit = $false
-                        if ($y -lt $hh) { for ($x = 0; $x -lt $w; $x++) { $c = $bmp.GetPixel($x, $y)
-                          if (($c.R -gt 150 -and $c.G -lt 90 -and $c.B -lt 100) -or ($all -and $c.R -gt 150 -and $c.G -gt 140 -and $c.B -gt 110)) { $hit = $true; break } } }
-                        if ($hit) { if (-not $in) { $in = $true; $start = $y } } elseif ($in) { $in = $false; if ($y - $start -ge $minh) { $rows += [int]($y0 + ($start + $y) / 2) } } }
-                      $g.Dispose(); $bmp.Dispose(); $r = "ok " + $s[1] + " " + ($rows -join ",") }
+                      $r = "ok " + $s[1] + " " + [Scan]::Rows($pt.X + $x0, $pt.Y + $y0, $w, $hh, $all, $minh, $y0) }
             "tiles" { $h = Get-Game; $s = Client-Size
                       $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
                       $x0 = [int]($s[0] * [double]$a[1]); $y0 = [int]($s[1] * [double]$a[2])
