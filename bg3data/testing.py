@@ -173,8 +173,8 @@ def xp_table(store, active):
     return table, max_level
 
 
-def grant_levels(store, active, levels=1):
-    st = host_state()
+def grant_levels(store, active, levels=1, st=None):
+    st = st or host_state()
     table, max_level = xp_table(store, active)
     level, xp = st["level"], st.get("xp") or 0
     target = level + levels
@@ -185,8 +185,12 @@ def grant_levels(store, active, levels=1):
     if amount <= 0:
         return {"level": level, "xp": xp, "granted": 0, "target": target, "note": "already has enough XP - level up in the UI"}
     lua(f"Osi.AddExplorationExperience(BG3T.host(), {amount}); return true")
-    time.sleep(1.5)
-    after = lua("local e=Ext.Entity.Get(BG3T.host()); return e.Experience.TotalExperience")
+    after = None
+    for _ in range(12):  # poll instead of a fixed 1.5 s (2026-10-06: build overhead)
+        time.sleep(0.25)
+        after = lua("local e=Ext.Entity.Get(BG3T.host()); return e.Experience.TotalExperience")
+        if isinstance(after, (int, float)) and after >= need:
+            break
     return {"level": level, "xp": xp, "granted": amount, "xp_after": after, "target": target, "needed_total": need}
 
 
@@ -222,9 +226,10 @@ def _resource_boosts(boosts, abilities):
     return out
 
 
-def level_check(store, active):
-    """Compare the host with what its class/subclass progressions grant up to its current level."""
-    st = host_state()
+def level_check(store, active, st=None):
+    """Compare the host with what its class/subclass progressions grant up to its current level. st: a host_state() already
+    taken (a build reuses one snapshot per level for every check)."""
+    st = st or host_state()
     have_p = set(st["passives"])
     have_s = {s["id"]: s["source"] for s in st["spells"]}
     # the spellbook can hold a spell as a numbered variant: Pact Magic upcasts (Zone_Fear_4 for a Warlock whose slots are level 4)
@@ -1678,27 +1683,32 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     out = _Log(progress)
     out.append(f"build {build_id}: level {lv} -> {hi}" + (f" ({resumed})" if resumed else ""))
     t_all = time.time()
+    st_prev = None
     for L in range(lv + 1, hi + 1):
-        g = grant_levels(store, active, 1)
+        if st_prev is None:
+            st_prev = host_state()
+        g = grant_levels(store, active, 1, st_prev)
         if not g.get("granted") and g.get("level", 0) >= L:
             out.append(f"L{L}: already reached")
+            st_prev = None
             continue
-        time.sleep(3)
+        time.sleep(1.0)  # was 3 s; the level-up screen opener waits for the screen itself
         if lua("return Osi.IsInCombat(Osi.GetHostCharacter())") == 1 and end_combat()["in_combat"]:
             out.append(f"L{L}: host is in combat - a level-up can't open; stopping")
             break
         want = ch.get(L, {})
         spells = {sp: spell_handle(store, active, sp) for sp in want.get("spells", [])}
         sub = want.get("subclass") if b.get("subclass") else None
-        p_before = host_state()["passives"]
+        p_before = st_prev["passives"]
         r = gameui.levelup_auto(subclass=subclass_ui_name(store, active, b["class"], sub) if sub else None, spells=spells or None)
         if not r.get("ok"):
             out.append(f"L{L}: LEVEL-UP FAILED - {r.get('error')} | {r.get('log')}")
             break
-        chk = level_check(store, active)
+        st1 = host_state()  # one snapshot per level: level_check, the passive delta, and the next level's "before"
+        st_prev = st1
+        chk = level_check(store, active, st1)
         bad = [l.strip() for l in chk.splitlines() if l.strip().startswith(("FAIL", "WARN"))]
         # the screen against the level's selectors, and nothing gained or lost that the level doesn't explain
-        st1 = host_state()
         me = next((c for c in st1["classes"] if c["class"] == b["class"]), None)
         if me:
             tables = {"class": me["class_table"], "sub": me.get("subclass_table")}
@@ -1722,6 +1732,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
         if any(x.startswith("FAIL") for x in bad):
             break
         if any(c.get("mode", "auto") != "player" for c in cases_by_level.get(L, [])):
+            st_prev = None  # the tests change the character: the next level takes a fresh snapshot
             rep = run_level(store, active, layer, None, L, wait, build_id)
             out.append("    tests: " + rep.splitlines()[0])
             out += [f"      {x}" for x in rep.splitlines()[1:] if x.strip() and ("FAIL" in x or "NOT RUN" in x or "ERROR" in x)]
