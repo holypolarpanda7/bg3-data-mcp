@@ -1555,15 +1555,18 @@ def screen_vs_data(store, active, tables, L, screen):
         feat |= any(str(a.get("AllowImprovement", "")).lower() == "true" for a in nodes)
         sel = _selectors(nodes)
         want_p = sorted(int(float(a[1] or 0)) for k, a in sel if k == "SelectPassives")
-        want_s = sum(1 for k, a in sel if k == "SelectSpells")
+        # a replace-only pick (SelectSpells(list,0,1): Bard 6) shows no spell row (seen 2026-10-06), so it may be absent
+        want_s = sum(1 for k, a in sel if k == "SelectSpells" and int(float(a[1] or 0)) > 0)
+        want_s_max = sum(1 for k, a in sel if k == "SelectSpells")
         got = screen.get(side) or {}
         got_p = sorted(int(x) for x in got.get("passives") or [])
         got_s = len(got.get("spells") or [])
         label = "subclass" if side == "sub" else "class"
         if got_p != want_p:
             bad.append(f"FAIL screen: {label} passive choices pick {got_p}, the level's selectors give {want_p}")
-        if got_s != want_s:
-            bad.append(f"FAIL screen: {got_s} {label} spell choice(s), the level's selectors give {want_s}")
+        if not want_s <= got_s <= want_s_max:
+            bad.append(f"FAIL screen: {got_s} {label} spell choice(s), the level's selectors give "
+                       f"{want_s}{'' if want_s == want_s_max else f'-{want_s_max}'}")
         empty = [n for n in got.get("spells") or [] if not n]
         if empty:
             bad.append(f"FAIL screen: a {label} spell choice offers no spells")
