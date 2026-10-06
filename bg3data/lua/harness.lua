@@ -350,7 +350,31 @@ function T.cast(caster, spell, target, realRolls)
             end)
         end
     end
+    T.singlePick(spell)
     Osi.UseSpell(uuid(caster), spell, uuid(target))
+end
+
+-- A scripted cast of a multi-target spell (AmountOfTargets N) puts all N picks on the one target - the engine fills the
+-- missing picks (the queued request holds one target; seen 2026-10-05: Entrancing Mirrors hit its wolf 3 times, Wail of
+-- the Banshee's 10 Kill()s on one creature crashed the game). In play IgnorePreviouslyPickedEntities forbids that, so
+-- the scripted cast gets one pick: AmountOfTargets 1 for the cast, restored a few seconds later.
+T.restorePicks = T.restorePicks or {}
+function T.singlePick(spell)
+    local st = Ext.Stats.Get(spell)
+    local n = st and tonumber(st.AmountOfTargets)
+    if not n or n <= 1 then return end
+    T.restorePicks[spell] = T.restorePicks[spell] or tostring(st.AmountOfTargets)
+    st.AmountOfTargets = "1"
+    st:Sync()
+    Ext.Timer.WaitFor(5000, function()
+        local orig = T.restorePicks[spell]
+        if orig then
+            local s2 = Ext.Stats.Get(spell)
+            s2.AmountOfTargets = orig
+            s2:Sync()
+            T.restorePicks[spell] = nil
+        end
+    end)
 end
 
 -- ground-targeted spells (summons, zones): cast at a point dx metres in front of the caster

@@ -288,6 +288,19 @@ def lint_stats(store, active, layer, limit=200):
             if wrong:
                 add("PICKER", name, file, f"level {lvl} container lists {', '.join(wrong[:3])} although _{lvl} versions exist - "
                                           "the picker casts the wrong level")
+    # functors that can't reach a creature (2026-10-05, found by an in-game test): GROUND: puts healing, revival or a status
+    # on the ground point, never on the creatures in the area (Wish's Mass Heal / Resurrect / Blessing did nothing).
+    ground = re.compile(r"(?<![A-Z_])GROUND:\s*(?:IF\([^:]*\):\s*)?(RegainHitPoints|Resurrect|ApplyStatus\((?!\s*(?:SELF|SOURCE|TARGET|OBSERVER_\w+)\s*,))")
+    for name, typ, file, using, data in rows:
+        if typ != "SpellData":
+            continue
+        r = store.resolve(name, active)
+        fl = r["fields"] if r else {}
+        props = " ".join(str(fl.get(k, ("",))[0] or "") for k in ("SpellProperties", "SpellSuccess", "SpellFail"))
+        tc = str(fl.get("TargetConditions", ("",))[0] or "")
+        for m in ground.findall(props):
+            if m != "ApplyStatus(" or re.search(r"Ally\(|Enemy\(|Character\(|Dead\(", tc):
+                add("SPELL", name, file, f"GROUND:{m.rstrip('(')} acts on the ground point, never on the creatures in the area - drop GROUND:")
     # root templates: what the layer's own templates reference, and templates its stats summon (2026-10-02: a
     # template skill that doesn't exist is silently missing from the creature's hotbar)
     import json as _json

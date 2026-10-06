@@ -19,7 +19,7 @@ DAMAGE_SPELLS = {  # damage type -> (spell a wolf can cast at the host, raw rang
     "Psychic": "Target_ViciousMockery",
 }
 APPLY = re.compile(r"ApplyStatus\(\s*(?:(SELF|TARGET|SOURCE|OBSERVER_\w+)\s*,\s*)?([A-Z][A-Z0-9_]+)")
-RESTORE = re.compile(r"RestoreResource\(\s*(?:SELF\s*,\s*)?(\w+)\s*,\s*(\d+)")
+RESTORE = re.compile(r"RestoreResource\(\s*(?:SELF\s*,\s*)?(\w+)\s*,\s*(\d+)(?:\s*,\s*(\d+))?")  # name, amount, level (spell slots)
 COST = re.compile(r"(\w+):(\d+)(?::(\d+))?")
 UNLOCK_SPELL = re.compile(r"UnlockSpell\(\s*(\w+)")
 UNLOCK_INT = re.compile(r"UnlockInterrupt\(\s*(\w+)")
@@ -167,6 +167,10 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
     if target == "A" and "RegainHitPoints" in body and not dead:  # healing another creature: hurt it first
         d.setup.append({"target": "A", "hp": 5})
         d.expect.append({"target": "A", "hp_change": [1, 999]})
+        if not any(x.get("faction", "hostile") == "hostile" for x in d.c.get("spawn", [])):
+            # out of combat a friendly NPC regenerates to full on its own (REGAINHP_PEACE_NPC, seen 2026-10-05): a far
+            # hostile wolf keeps the case in combat so only the spell heals
+            d.c["spawn"].append(_wolf(8, "hostile", "Z"))
     for grp in re.findall(r"RemoveStatus\(\s*(SG_\w+)\)", body):  # ends a condition: give it one to end (SG_Blinded -> BLINDED)
         st = grp[3:].upper()
         if target != "host" and _fields(store, active, st)[0] and not any(x.get("status") == st for x in d.setup):
@@ -202,8 +206,11 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
             d.c.setdefault("spawn", []).append(_wolf(3, "friendly", "B"))
             d.expect.append({"target": "B", "status_present": aura[:1]})
             d.notes.append(f"{st} is an aura: a friendly wolf 3 m away should get {aura[0]}.")
-    for res, n in RESTORE.findall(body):
-        d.expect.append({"resource": res, "level": 0, "amount_change": int(n)})
+    for res, n, lvl in RESTORE.findall(body):  # a full pool can't gain: empty that level first
+        d.setup.insert(0, {"target": "host", "resource": res, "level": int(lvl or 0), "amount": 0})
+        if res not in STD_RESOURCES and res not in grants:  # a pool the host may not have at all (Seal on a Cleric)
+            d.setup.insert(0, {"target": "host", "boost": f"ActionResource({res},{int(n) + 6},{int(lvl or 0)})"})
+        d.expect.append({"resource": res, "level": int(lvl or 0), "amount_change": int(n)})
     if "DealDamage" in body and target != "host":
         m_ = DICE.search(body)
         lo_, hi_ = (int(m_.group(2)), int(m_.group(2)) * int(m_.group(3))) if m_ else (1, 300)
@@ -323,11 +330,11 @@ def passive_cases(store, active, passive, prefix=None):
         d = Draft(prefix + "-initiative", f"{passive}: rolling Initiative")
         d.c.update({"combat": "after_setup", "spawn": [_wolf(18)]})
         d.setup.append({"target": "host", "passive": passive})
-        for res, n in RESTORE.findall(fun):
+        for res, n, lvl in RESTORE.findall(fun):
             if res not in grants:
-                d.setup.insert(0, {"target": "host", "boost": f"ActionResource({res},6,0)"})
+                d.setup.insert(0, {"target": "host", "boost": f"ActionResource({res},6,{int(lvl or 0)})"})
             d.setup.append({"target": "host", "resource": res, "amount": 0})
-            d.expect.append({"resource": res, "level": 0, "amount_change": int(n)})
+            d.expect.append({"resource": res, "level": int(lvl or 0), "amount_change": int(n)})
         for who, st in _status_expects(fun, "host"):
             d.expect.append({"target": "host", "status_applied": [st]})
         d.notes.append("18 m away: a hostile the host can see starts the fight during staging.")
@@ -351,8 +358,8 @@ def passive_cases(store, active, passive, prefix=None):
             d.setup.append({"target": "host", "boost": "CriticalHit(AttackRoll,Success,ForcedAlways)"})
         for who, st in _status_expects(fun, "A", d):
             d.expect.append({"target": "host" if who == "host" else "A", "status_applied": [st]})
-        for res, n in RESTORE.findall(fun):
-            d.expect.append({"resource": res, "level": 0, "amount_change": int(n)})
+        for res, n, lvl in RESTORE.findall(fun):
+            d.expect.append({"resource": res, "level": int(lvl or 0), "amount_change": int(n)})
         for sv in SAVE.findall(fun):
             d.setup.append({"target": "A", "boost": f"AbilityFailedSavingThrow({sv})"})
         if not d.expect:
