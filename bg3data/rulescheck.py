@@ -107,6 +107,19 @@ def _granted(store, active, nodes, layer):
     return out
 
 
+def _all_cantrips(store, active, uuid, _cache={}):
+    if uuid not in _cache:
+        lv = set()
+        for sp in testing._list_spells(store, active, uuid) or []:
+            r = store.resolve(sp, active)
+            try:
+                lv.add(int((r or {}).get("fields", {}).get("Level", ("-1",))[0]))
+            except ValueError:
+                pass
+        _cache[uuid] = lv == {0}
+    return _cache[uuid]
+
+
 def _sel_count(g, test):
     return sum(int(float(a[1] or 0)) if len(a) > 1 else 1 for k, a in g["selectors"] if test(k, a))
 
@@ -189,7 +202,8 @@ def lint_rules(store, active, layer, lo=13, hi=20):
                 if inv != want:
                     out.append(f"  CHOICE  {cname} L{L}: {inv} invocation pick(s), the table adds {want}")
             if "cantrips" in row:
-                ct = _sel_count(g, lambda k, a: k == "SelectSpells" and any("Cantrip" in x for x in a[3:]))
+                # a cantrip pick: tagged as one, or a list of cantrips only (dnd55e's Artificer list has no tag)
+                ct = _sel_count(g, lambda k, a: k == "SelectSpells" and (any("Cantrip" in x for x in a[3:]) or _all_cantrips(store, active, a[0])))
                 want = row["cantrips"] - prev.get("cantrips", 0)
                 if ct != want:
                     out.append(f"  CHOICE  {cname} L{L}: {ct} cantrip pick(s), the table adds {want}")
