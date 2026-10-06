@@ -28,6 +28,16 @@ TEMPLATES = {  # verified base-game creatures; any template GUID also works
     "skeleton": ("6c06cda2-6e13-4663-a6f6-c4bb7564c10f", "Skeleton"),
     "zombie": ("c2a2c269-ede8-4887-99f1-e0c044cc0c75", "Zombie"),
 }
+# origin companions a case can borrow as a real party member (spawn entry `companion = "shadowheart"`): an NPC spawn dies at
+# 0 HP, a party member goes Downed - features reacting to an ally dropping need one (2026-10-06)
+COMPANIONS = {
+    "shadowheart": "3ed74f06-3c60-42dc-83f6-f034cb47c679",
+    "astarion": "c7c13742-bacd-460a-8f65-f864fe41f255",
+    "gale": "ad9af97d-75da-406a-ae13-7071c563f604",
+    "laezel": "58a69333-40bf-8358-1d17-fff240d7fb12",
+    "wyll": "c774d764-4a17-48dc-b470-32ace9ce447d",
+    "karlach": "2c76687d-93a2-477b-8b18-8a14b549304c",
+}
 FACTIONS = {
     "hostile": "64321d50-d516-b1b2-cfac-2eb773de1ff6",
     "friendly": "80182081-6bb1-95f1-c40f-4c3cea368269",
@@ -537,6 +547,10 @@ def validate(store, active, c):
         errs.append(f"target {c['target']!r} is not host or a spawn alias")
     for s in c.get("spawn", []):
         t = s.get("template", "")
+        if s.get("companion"):
+            if s["companion"] not in COMPANIONS and not GUID.match(s["companion"]):
+                errs.append(f"spawn {s.get('as')}: companion {s['companion']!r} is not one of {', '.join(COMPANIONS)} or a GUID")
+            continue
         if t not in TEMPLATES and not GUID.match(t):
             errs.append(f"spawn {s.get('as')}: template {t!r} is not an alias ({', '.join(TEMPLATES)}) or GUID")
         if s.get("faction", "hostile") not in FACTIONS and not GUID.match(s.get("faction", "")):
@@ -603,7 +617,7 @@ def design_warnings(store, active, c, cases=None):
         f = (r or {}).get("fields", {})
         melee = "IsMelee" in (f.get("SpellFlags", ("",))[0] or "") or "Melee" in (f.get("SpellRoll", ("",))[0] or "")
         blocked = {st.get("target") for st in c.get("setup", []) if "ReactionActionPoint" in (st.get("boost") or "")}
-        hostile = {sp.get("as") for sp in c.get("spawn", []) if sp.get("faction") == "hostile"}
+        hostile = {sp.get("as") for sp in c.get("spawn", []) if sp.get("faction") == "hostile" and not sp.get("companion")}
         free = [a for a in sorted(hostile) if a not in blocked and a != c.get("caster")]
         if melee and free and c.get("caster", "host") not in hostile:
             w.append(f"melee cast with hostile spawn(s) {', '.join(free)} able to react: an Opportunity Attack can interrupt "
@@ -760,7 +774,7 @@ Osi.LeaveCombat(h) return true""")
 
     pre_statuses = pre.get("statuses") or []  # anything not here at the end was added by the run
     spawns = c.get("spawn", [])
-    hostile = any(s.get("faction", "hostile") == "hostile" for s in spawns)
+    hostile = any((not s.get("companion") and s.get("faction", "hostile") == "hostile") for s in spawns)
     combat = c.get("combat", hostile)
     first = combat and c.get("initiative", "host_first") == "host_first"
     floor = int(c.get("safety_floor", 35))
@@ -772,13 +786,17 @@ Osi.LeaveCombat(h) return true""")
     if first:
         code.append("BG3T.grant(BG3T.host(), 'Initiative(50)')")
     for i, s in enumerate(spawns):
-        tpl = TEMPLATES.get(s["template"], (s["template"], None))[0]
+        tpl = TEMPLATES.get(s.get("template", ""), (s.get("template", ""), None))[0]
         dist = float(s.get("distance", 8))
         # fanned out around the host's facing, 0.6 rad (~34 deg) apart; `spread` (degrees) packs them tighter, e.g. a
         # group inside an area spell's cone or radius
         ang = (i - (len(spawns) - 1) / 2) * math.radians(float(c.get("spread", math.degrees(0.6))))
         dx, dz = dist * math.cos(ang), dist * math.sin(ang)
         a_ = se._lua_string(s["as"])
+        if s.get("companion"):  # a real party member, borrowed for the case
+            g_ = COMPANIONS.get(s["companion"], s["companion"])
+            code.append(f"r[{a_}]=BG3T.borrow({a_},{se._lua_string(g_)},{dx:.2f},{dz:.2f})")
+            continue
         code.append(f"r[{a_}]=BG3T.spawn({a_},{se._lua_string(tpl)},{se._lua_string(FACTIONS['neutral'])},{dx:.2f},{dz:.2f})")
         if s.get("hp") is not None:
             code.append(f"if r[{a_}] then local m=Osi.GetMaxHitpoints(r[{a_}]); "
@@ -824,7 +842,7 @@ Osi.LeaveCombat(h) return true""")
                 "if p<=BG3T.safety.floor then BG3T.safety.floor=math.max(1,math.floor(p)-1) end")
     for s in spawns:
         fac = FACTIONS.get(s.get("faction", "hostile"), s.get("faction"))
-        if fac != FACTIONS["neutral"]:
+        if fac != FACTIONS["neutral"] and not s.get("companion"):
             post.append(f"pcall(Osi.SetFaction, BG3T.spawns[{se._lua_string(s['as'])}], {se._lua_string(fac)})")
     if combat and combat != "after_setup":
         post.append("BG3T.enterCombat()")
@@ -2263,6 +2281,8 @@ def _expect_text(store, active, c, e):
 def _spawn_label(c, alias):
     for s in c.get("spawn", []):
         if s.get("as") == alias:
+            if s.get("companion"):
+                return f"the {str(s['companion']).capitalize()} ({alias}, your party)"
             base = TEMPLATES.get(s["template"], (None, s["template"]))[1]
             return f"the {base} ({alias}{', ' + str(s['hp']) + ' HP' if s.get('hp') else ''})"
     return alias
@@ -2298,6 +2318,9 @@ def script(store, active, layer, cls=None, level=None, write=True):
             steps = [f"Say **\"stage {c['id']}\"**. I set up:"]
             setup = []
             for s in c.get("spawn", []):
+                if s.get("companion"):
+                    setup.append(f"{_spawn_label(c, s['as'])[4:]} joins you, about {s.get('distance', 8)} m away")
+                    continue
                 setup.append(f"{'a hostile' if s.get('faction', 'hostile') == 'hostile' else 'a ' + s.get('faction')} "
                              f"{_spawn_label(c, s['as'])[4:]} about {s.get('distance', 8)} m away")
             for st_ in c.get("setup", []):
@@ -2308,7 +2331,7 @@ def script(store, active, layer, cls=None, level=None, write=True):
                     setup.append(f"{_name(store, active, st_['status'])} on {'you' if who == 'your' else who[:-2]}")
                 if st_.get("boost"):
                     setup.append(f"test boost `{st_['boost']}`")
-            hostile = any(s.get("faction", "hostile") == "hostile" for s in c.get("spawn", []))
+            hostile = any((not s.get("companion") and s.get("faction", "hostile") == "hostile") for s in c.get("spawn", []))
             combat = c.get("combat", hostile)
             if combat:
                 setup.append("combat starts; a temporary Initiative +50 makes you act first")

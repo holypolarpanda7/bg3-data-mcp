@@ -307,6 +307,17 @@ def lint_stats(store, active, layer, limit=200):
         for m in ground.findall(props):
             if m != "ApplyStatus(" or re.search(r"Ally\(|Enemy\(|Character\(|Dead\(", tc):
                 add("SPELL", name, file, f"GROUND:{m.rstrip('(')} acts on the ground point, never on the creatures in the area - drop GROUND:")
+    # an interrupt waiting for DOWNED through OnStatusApplied never fires (Life Beyond Death, seen in game 2026-10-06 for the
+    # caster and for a party member): react OnCastHit to the target's HP after the hit (as dnd55e's Bloodthirst), and handle the
+    # Downed character itself in script (it gets no reaction prompt)
+    for name, typ, file, using, data in rows:
+        if typ != "InterruptData":
+            continue
+        r = store.resolve(name, active)
+        fl = r["fields"] if r else {}
+        if ("OnStatusApplied" in str(fl.get("InterruptContext", ("",))[0] or "")
+                and re.search(r"HasStatus\('DOWNED'", str(fl.get("Conditions", ("",))[0] or ""))):
+            add("CALL", name, file, "OnStatusApplied interrupt on DOWNED never fires - use OnCastHit with HasHPLessThan(1,context.Target)")
     # root templates: what the layer's own templates reference, and templates its stats summon (2026-10-02: a
     # template skill that doesn't exist is silently missing from the creature's hotbar)
     import json as _json

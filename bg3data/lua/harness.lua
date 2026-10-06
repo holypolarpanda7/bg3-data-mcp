@@ -226,6 +226,48 @@ function T.spawn(alias, template, faction, dx, dz)
     return g
 end
 
+-- a real party member for a test (an origin companion already in the world): features that react to an ALLY dropping need
+-- one - a spawned NPC dies at 0 HP instead of going Downed (2026-10-06). Recruited with the story's own party proc if it
+-- isn't in the party, placed next to the host, and handed back at cleanup (revived, out of the party again, back where it
+-- stood). Listed in T.spawns under its alias so cases address it like a spawn; cleanup never kills or deletes it.
+T.borrowed = T.borrowed or {}  -- alias -> { guid, was_member, x, y, z }
+function T.borrow(alias, g, dx, dz)
+    g = uuid(g)
+    if not Ext.Entity.Get(g) or Osi.IsDead(g) == 1 then return nil, "companion " .. g .. " isn't in this level or is dead" end
+    local h = T.host()
+    local was = #(Osi.DB_Players:Get(g) or {}) > 0
+    local ox, oy, oz = Osi.GetPosition(g)
+    if not was then
+        local ok, err = pcall(function() Osi.PROC_GLO_PartyMembers_Add(g, h) end)
+        if not ok then return nil, "couldn't add " .. g .. " to the party: " .. tostring(err) end
+    end
+    local x, y, z = Osi.GetPosition(h)
+    if not pcall(Osi.TeleportToPosition, g, x + (dx or 2), y, z + (dz or 0), "", 0, 0, 0, 0, 1) then
+        pcall(Osi.TeleportTo, g, h, "", 0, 0, 0, 0, 0)
+    end
+    T.revive(g)
+    T.borrowed[alias] = { g, was, ox, oy, oz }
+    T.spawns[alias] = g
+    return g
+end
+
+local function giveBack()
+    local n = 0
+    for alias, b in pairs(T.borrowed) do
+        T.spawns[alias] = nil
+        pcall(Osi.LeaveCombat, b[1])
+        T.revive(b[1])
+        if not b[2] then
+            pcall(function() Osi.PROC_GLO_PartyMembers_Remove(b[1], T.host(), 1) end)
+            if #(Osi.DB_Players:Get(b[1]) or {}) > 0 then pcall(function() Osi.PROC_GLO_PartyMembers_Remove(b[1], T.host()) end) end
+        end
+        if b[3] then pcall(Osi.TeleportToPosition, b[1], b[3], b[4], b[5], "", 0, 0, 0, 0, 1) end
+        n = n + 1
+    end
+    T.borrowed = {}
+    return n
+end
+
 function T.grant(g, boost)
     g = uuid(g)
     Osi.AddBoosts(g, boost, T.TAG, g)
@@ -424,6 +466,7 @@ function T.cleanup()
         report.passives = report.passives + 1
     end
     T.added_passives = {}
+    report.borrowed = giveBack()
     for _, g in pairs(T.spawns) do
         if Osi.IsDead(g) == 0 then pcall(Osi.Die, g, 0, NULL, 0, 1) end
         pcall(Osi.RequestDelete, g)
@@ -472,7 +515,9 @@ local function safetyCheck(entity, pct)
     pct = pct or (Osi.GetHitpoints(g) * 100 / math.max(1, Osi.GetMaxHitpoints(g)))
     if pct >= T.safety.floor and Osi.HasActiveStatus(g, "DOWNED") ~= 1 then return end
     T.safety.tripped = true
-    for _, s in pairs(T.spawns) do if Osi.IsDead(s) == 0 then pcall(Osi.Die, s, 0, NULL, 0, 1) end end
+    local lent = {}
+    for _, b in pairs(T.borrowed or {}) do lent[b[1]] = true end
+    for _, s in pairs(T.spawns) do if not lent[s] and Osi.IsDead(s) == 0 then pcall(Osi.Die, s, 0, NULL, 0, 1) end end
     pcall(Osi.RemoveStatus, g, "DOWNED")
     Osi.SetHitpointsPercentage(g, 100)
     push({ kind = "SAFETY", who = g, pct = pct })
