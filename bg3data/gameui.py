@@ -1058,7 +1058,6 @@ def levelup_auto(finish=True, add_class=None, subclass=None, spells=None):
             out["error"] = f"couldn't choose subclass {subclass}: {msg}"
             return out
     out["offers"] = spell_offers()  # before any pick changes the lists
-    out["screen"] = screen_choices()
     _fill_passive_selectors(log)
     _fill_skill_selectors(log)
     wanted = dict(spells or {})
@@ -1111,6 +1110,9 @@ return out""")
                "levels without the slot-free selector form), so the game can't finish this level-up: " + ", ".join(dead)) if dead else ""
         out["error"] = "choices still pending after the driver ran: " + "; ".join(log[-3:] or ["no pending rows were found"]) + why
         return out
+    # read last: right after a subclass pick the view model can still hold the default subclass's rows (Fighter 3 showed Eldritch
+    # Knight's two spell choices for a Champion, 2026-10-06)
+    out["screen"] = screen_choices()
     if not finish:
         out["ok"] = True
         return out
