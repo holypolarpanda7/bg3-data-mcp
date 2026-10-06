@@ -1710,6 +1710,45 @@ def cleanup():
 GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
+def container_gaps(store, active, layer):
+    """(container, group, tested?) for every behaviour group of children of the containers `layer` defines or fills
+    (containers.groups). A case covers a child through `spell`, a `casts` entry, or `covers = [...]` (the alike children
+    a drafted case stands for). Children that carry an inherited list (SpellContainerID set) and upcast copies
+    (RootSpellID) are skipped - they are checked through their root."""
+    from . import containers as C
+    tested = set()
+    for c in load_cases(layer):
+        tested.add(c.get("spell"))
+        tested |= {x.get("spell") for x in c.get("casts", [])}
+        tested |= set(c.get("covers", []))
+    w, p = store._where(active)
+    ours = {n for (n,) in store.db.execute("SELECT DISTINCT name FROM stats WHERE layer=? AND type='SpellData'", [layer])}
+    names = [n for (n,) in store.db.execute(f"SELECT DISTINCT name FROM stats WHERE {w} AND type='SpellData' AND data LIKE '%ContainerSpells%'", p)]
+    out = []
+    for n in sorted(set(names)):
+        r = store.resolve(n, active)
+        f = {k: v[0] for k, v in (r or {"fields": {}})["fields"].items()}
+        if not f.get("ContainerSpells") or f.get("SpellContainerID") or f.get("RootSpellID") not in (None, "", n):
+            continue
+        kids = C.kids(store, active, n)
+        mine = set(kids) if n in ours else {k for k in kids if k in ours}
+        for g in (C.groups(store, active, n) if mine else []):
+            if mine & set(g):
+                out.append((n, g, bool(tested & set(g))))
+    return out
+
+
+def lint_container_tests(store, active, layer):
+    """Container test coverage (2026-10-05): every spell container with children from `layer` (or defined there) needs a
+    case per behaviour group of its children - children that differ only by damage type or the spell/status they name
+    share one (containers.groups). See container_gaps."""
+    gaps = container_gaps(store, active, layer)
+    rows = [f"  UNTESTED {n}: {g[0]}" + (f" (+{len(g) - 1} alike: {', '.join(g[1:4])}{'...' if len(g) > 4 else ''})" if len(g) > 1 else "")
+            for n, g, ok in gaps if not ok]
+    head = f"container test coverage for {layer}: {len(gaps)} child group(s), {len(rows)} untested"
+    return head + (" - clean" if not rows else "\n" + "\n".join(rows))
+
+
 def lint_progressions(store, active, layer):
     """Static checks on the progression nodes a layer defines: invalid node UUIDs (the game drops the
     node), selectors pointing at lists no layer defines, several nodes for the same table+level from

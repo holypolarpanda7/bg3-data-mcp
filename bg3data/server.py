@@ -1113,6 +1113,17 @@ def bg3_lint_progressions(layer: str, layers: list[str] | None = None) -> str:
 
 
 @mcp.tool()
+@guarded
+def bg3_lint_container_tests(layer: str, layers: list[str] | None = None) -> str:
+    """Container test coverage for a mod layer: every spell container with children from the layer needs a test case
+    per behaviour group of its children (children differing only by damage type or the spell/status they name share
+    one). A case covers a child via `spell`, `casts`, or `covers = [...]`. Lists each UNTESTED group."""
+    from . import testing
+    s = store()
+    return testing.lint_container_tests(s, s.active(layers), layer)
+
+
+@mcp.tool()
 @se_guarded
 def bg3_test_plan(layer: str, build: str, layers: list[str] | None = None) -> str:
     """The step-by-step plan for a test build ([[build]] in the suite TOML): for every level the exact

@@ -81,7 +81,7 @@ class Draft:
             c["notes"] = " ".join(self.notes)
         lines = [f"# draft confidence: {self.confidence}"] + [f"# TODO: {t}" for t in self.todo] + ["[[case]]"]
         order = ["id", "title", "mode", "grant_passive", "spell", "caster", "target", "real_rolls", "combat", "reactions",
-                 "ai_rounds", "sanctuary", "safety", "spawn", "setup", "casts", "expect", "notes"]
+                 "ai_rounds", "sanctuary", "safety", "spawn", "setup", "casts", "expect", "covers", "notes"]
         for k in order + [k for k in c if k not in order]:
             if k in c:
                 lines.append(f"{k} = {_toml(c[k])}")
@@ -117,13 +117,17 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
     f, _ = _fields(store, active, spell)
     if not f:
         return []
-    if f.get("ContainerSpells"):
-        kids = [x for x in f["ContainerSpells"].split(";") if x]
+    if f.get("ContainerSpells") and not f.get("SpellContainerID"):
+        # one draft per behaviour group (containers.groups): children differing only by damage type or the spell/status
+        # they name share a case, which lists the others in `covers` (bg3_lint_container_tests counts them as tested)
+        from . import containers
         out = []
-        for child in (kids if len(kids) <= 4 else kids[:1]):  # many near-identical options: one stands for all
-            out += spell_cases(store, active, passive, child, grants, scales, prefix)
-        if len(kids) > 4 and out:
-            out[0].notes.append(f"One of {len(kids)} options ({', '.join(k.split('_')[-1] for k in kids[:6])}...) stands for the rest.")
+        for g in containers.groups(store, active, spell):
+            cases = spell_cases(store, active, passive, g[0], grants, scales, prefix)
+            if cases and len(g) > 1:
+                cases[0].c["covers"] = g[1:]
+                cases[0].notes.append(f"Stands for {len(g) - 1} alike option(s): {', '.join(g[1:4])}{'...' if len(g) > 4 else ''}.")
+            out += cases
         return out
     tc, typ = f.get("TargetConditions", ""), f.get("SpellType", "")
     self_cast = typ == "Shout" or tc.strip().startswith("Self()")
@@ -134,20 +138,42 @@ def spell_cases(store, active, passive, spell, grants, scales, prefix):
     if f.get("RequirementConditions", "").find("not Combat(") >= 0:
         d.c["combat"] = False
         d.notes.append("Out of combat only (a long casting time).")
-    if "Dead()" in f.get("OriginTargetConditions", "") + tc and "not Dead()" not in f.get("OriginTargetConditions", "") + tc:
-        d.lower("targets a dead creature: add a spawn with `dead = true` setup (and a friendly faction for allies)")
+    # a spell gated on another passive (Lay on Hands' Restore options need Restoring Touch): grant it
+    for need in re.findall(r"(?<!not )HasPassive\('(\w+)'", f.get("RequirementConditions", "")):
+        if need != passive and not any(x.get("passive") == need for x in d.setup):
+            d.setup.append({"target": "host", "passive": need})
+    body = " ".join(f.get(k, "") for k in ("SpellProperties", "SpellSuccess"))
+    dead = "Dead()" in f.get("OriginTargetConditions", "") + tc and "not Dead()" not in f.get("OriginTargetConditions", "") + tc
+    # helpful spells (heal, revive, end a condition) go on a friendly creature unless they say Enemy()
+    helpful = ("RegainHitPoints" in body or "Resurrect(" in body or re.search(r"RemoveStatus\(\s*SG_", body)) and "Enemy()" not in tc
+    summon = re.search(r"IF\(not [^:]*\):\s*Summon\(([0-9a-f-]{36})", body) or re.search(r"Summon\(([0-9a-f-]{36})", body)
     target = "host"
-    if not self_cast:
-        ally = "Ally()" in tc and "not Ally()" not in tc
+    if summon and "GROUND:" in body:  # a summon at a point: cast at the ground, expect the creature
+        target = "ground"
+        d.expect.append({"summon": {"template": summon.group(1)}})
+    elif not self_cast or dead:
+        ally = ("Ally()" in tc and "not Ally()" not in tc) or helpful or dead
         melee = f.get("TargetRadius", "") in ("1.5", "MeleeMainWeaponRange") or "IsMelee" in f.get("SpellFlags", "")
-        d.c["spawn"] = [_wolf(1.2 if melee else 6, "friendly" if ally else "hostile")]
-        target = "A"
+        d.c["spawn"] = [_wolf(1.2 if melee else 3 if dead else 6, "friendly" if ally else "hostile")]
+        if dead:  # a corpse to raise (a Shout raises the dead around the caster)
+            d.setup.append({"target": "A", "dead": True})
+            if "Resurrect(" in body:
+                d.expect.append({"target": "A", "dead": False})
+        if not self_cast:
+            target = "A"
         if melee and not ally:
             d.setup.append({"target": "A", "boost": "ActionResourceBlock(ReactionActionPoint)"})
     d.c["target"] = target
+    if target == "A" and "RegainHitPoints" in body and not dead:  # healing another creature: hurt it first
+        d.setup.append({"target": "A", "hp": 5})
+        d.expect.append({"target": "A", "hp_change": [1, 999]})
+    for grp in re.findall(r"RemoveStatus\(\s*(SG_\w+)\)", body):  # ends a condition: give it one to end (SG_Blinded -> BLINDED)
+        st = grp[3:].upper()
+        if target != "host" and _fields(store, active, st)[0] and not any(x.get("status") == st for x in d.setup):
+            d.setup.append({"target": target, "status": st, "turns": 10})
+            d.expect.append({"target": target, "status_removed": [st]})
     roll = f.get("SpellRoll", "")
     saves = SAVE.findall(roll)
-    body = " ".join(f.get(k, "") for k in ("SpellProperties", "SpellSuccess"))
     for st, mine in re.findall(r"HasStatus\('(\w+)',\s*context\.Target(\s*,\s*context\.Source)?\)", tc):  # it only targets X-carriers
         if target != "host":
             d.setup.append({"target": target, "status": st, "turns": -1, **({"by": "host"} if mine else {})})
