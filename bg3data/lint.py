@@ -344,7 +344,8 @@ def lint_stats(store, active, layer, limit=200):
     # Feat prerequisites: the engine parses Feats.lsx Requirements at load and only understands the requirement functions the
     # game's own feats use (FeatRequirementProficiency / FeatRequirementAbilityGreaterEqual). Anything else - e.g.
     # CharacterLevelGreaterThan(18) - is silently ignored and the feat is takeable at any level (verified in game 2026-10-06
-    # with probe feats; editing the string at runtime through SE has no effect either).
+    # with probe feats; editing the Requirements string at runtime through SE has no effect either - but writing the parsed
+    # Feat.FeatRequirements list does: the level-up screen reads it live).
     fw, fp = store._where([l for l in active if l != layer])
     known_req, known_prof = set(), set()
     for (at,) in store.db.execute(f"SELECT attrs FROM staticdata WHERE kind='Feat' AND {fw}", fp):
@@ -359,7 +360,8 @@ def lint_stats(store, active, layer, limit=200):
         for fn, args in re.findall(r"(\w+)\(([^)]*)\)", req):
             if known_req and fn not in known_req:
                 add("FEAT", fname, "Feats.lsx", f"Requirements {fn}(...) isn't a feat requirement the engine understands "
-                                                f"({', '.join(sorted(known_req))}) - it's ignored and the feat is takeable at any level")
+                                                f"({', '.join(sorted(known_req))}) - it's ignored and the feat is takeable at any level; to gate "
+                                                f"it, have Script Extender write Feat.FeatRequirements at runtime (the parsed list is live)")
             elif fn == "FeatRequirementProficiency" and known_prof and args.strip(" '\"") not in known_prof:
                 add("FEAT", fname, "Feats.lsx", f"FeatRequirementProficiency({args}) - no proficiency of that name in any other layer")
     by_kind = {}
