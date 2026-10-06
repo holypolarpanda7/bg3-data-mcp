@@ -345,12 +345,36 @@ def levelup_open(sheet_scan=0x17, wait=12.0):
     # the sheet's own StartLevelUp command with the selected character: the LEVEL UP bar click often missed (the screen then
     # opened on the retry, 17 s a level), the command doesn't (2026-10-06). Then Space while the step is "Started" - the intro
     # takes it from ~2.4 s on (earlier presses are ignored) and goes SkipAnimation -> IntroComplete: ready in ~3 s, not ~7
-    res, _ = _client(FIND + """
+    # wait until the game itself has the next level available (AvailableLevel > level): the command and the bar do nothing before
+    # (a Choreography level 19 never opened, 2026-10-06)
+    for _ in range(25):
+        try:
+            r = se.eval_lua("local e=Ext.Entity.Get(Osi.GetHostCharacter()) return e.AvailableLevel and e.EocLevel "
+                            "and e.AvailableLevel.Level > e.EocLevel.Level", "server", timeout=8)
+        except (RuntimeError, TimeoutError):
+            r = {}
+        if r.get("result") is True:
+            break
+        timing.wait(0.2)
+    res = None
+    for attempt in range(3):          # the command can be ignored right after the sheet opens: a few tries before the bar
+        res, _ = _client(FIND + """
 local w = find(Ext.UI.GetRoot(), "CharacterPanel", 0)
 local d = w and w.DataContext
 if not d then return false end
 local ok = pcall(function() d.StartLevelUp:Execute(d.CurrentPlayer.SelectedCharacter) end)
 return ok""")
+        if res is not True:
+            break
+        opened = False
+        for _ in range(10):
+            timing.wait(0.15)
+            if levelup_state().get("levelup_open"):
+                opened = True
+                break
+        if opened:
+            break
+        res = None
     if res is True:
         t0 = time.time()
         last_key = 0.0
