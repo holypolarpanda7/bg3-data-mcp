@@ -187,11 +187,17 @@ def lint_rules(store, active, layer, lo=13, hi=20):
             earlier = [f for L0 in range(1, L) for f in rows.get(L0, {}).get("features", [])]
             _check_features(cname, L, feats, g, aliases, technical, out, earlier)
             fn = {_norm(f) for f in feats}
-            if (_norm("Ability Score Improvement") in fn) != g["feat"]:
-                out.append(f"  CHOICE  {cname} L{L}: feat/Ability Score Improvement {'missing' if not g['feat'] else 'offered, the rules have none here'}")
-            eb = _sel_count(g, lambda k, a: k == "SelectPassives" and len(a) > 2 and a[2] == "EpicBoon")
-            if (_norm("Epic Boon") in fn) != (eb > 0):
-                out.append(f"  CHOICE  {cname} L{L}: Epic Boon {'missing' if not eb else 'offered, the rules have none here'}")
+            # Epic Boon (PHB 2024): "an Epic Boon feat or another feat of your choice" - a feat pick, like an ASI; the boons
+            # themselves are feats with a level 19 prerequisite (checked once below). A SelectPassives(..., EpicBoon) pick
+            # (Apotheosis before 2026-10-06) also counts, but leaves out "another feat".
+            eb_rule = _norm("Epic Boon") in fn
+            eb_old = _sel_count(g, lambda k, a: k == "SelectPassives" and len(a) > 2 and a[2] == "EpicBoon")
+            want_feat = _norm("Ability Score Improvement") in fn or (eb_rule and not eb_old)
+            if want_feat != g["feat"]:
+                what = "Epic Boon (a feat pick)" if eb_rule else "feat/Ability Score Improvement"
+                out.append(f"  CHOICE  {cname} L{L}: {what} {'missing' if not g['feat'] else 'offered, the rules have none here'}")
+            if eb_old and not eb_rule:
+                out.append(f"  CHOICE  {cname} L{L}: Epic Boon offered, the rules have none here")
             if cname == "Sorcerer":
                 mm = _sel_count(g, lambda k, a: k == "SelectPassives" and len(a) > 2 and a[2] == "Metamagic")
                 if (_norm("Metamagic") in fn) != (mm > 0):
@@ -269,5 +275,12 @@ def lint_rules(store, active, layer, lo=13, hi=20):
             tag = f"   ({best[1]}: {best[2]})" if best[2] and len(versions) > 1 else (f"   ({best[2]})" if best[2] else "")
             out += [x + tag for x in best[0]]
         summary.append(f"{cname}: {len(out) - n0}")
+    # the Epic Boon feat pick needs Epic Boon feats on the list: feats with a character-level prerequisite of 18+ (the level the
+    # feat list sees during the level-up is 18 or 19 - either way nothing below 18)
+    if lo <= 19 <= hi and any("Epic Boon" in f for rows in classes.values() for r in rows.values() for f in r.get("features", [])):
+        boons = [n for n, at in store.db.execute(f"SELECT name, attrs FROM staticdata WHERE kind='Feat' AND {w} ORDER BY rank", p)
+                 if any(int(v) >= 17 for v in re.findall(r"CharacterLevelGreaterThan\((\d+)\)", json.loads(at).get("Requirements") or ""))]
+        if not boons:
+            out.append("  CHOICE  Epic Boon: no feat with a level 19 prerequisite (CharacterLevelGreaterThan) - the level 19 feat pick offers no boons")
     head = f"rules check {layer} L{lo}-{hi}: {len(out)} finding(s) (" + ", ".join(summary) + ")"
     return head + ("\n" + "\n".join(out) if out else " - clean")
