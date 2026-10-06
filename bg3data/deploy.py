@@ -159,10 +159,52 @@ def enable(layer):
     return lines + [f"enabled {info['Name']} in modsettings.lsx (last in load order, after its dependencies; backup kept)"]
 
 
+def _changed(path):
+    """{file: content hash} of the files differing from git HEAD (ignoring line endings) in a mod folder."""
+    import hashlib
+    import subprocess
+    r = subprocess.run(["git", "diff", "HEAD", "--ignore-cr-at-eol", "--name-only"], cwd=path, capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    out = {}
+    for f in r.stdout.split():
+        p = os.path.join(path, f)
+        out[f] = hashlib.sha1(open(p, "rb").read()).hexdigest() if os.path.exists(p) else None
+    return out
+
+
+def regen(m):
+    """Run the layer's `regen` commands (layers.json) before packing and report generated files they changed: a
+    generator run on its own overwrites what later generators add (2026-10-06: gen_subclass_features alone reset Warlock 17's
+    spell pick and 28 icons, and the pak shipped that way)."""
+    import subprocess
+    cmds = m.get("regen") or []
+    if not cmds:
+        return []
+    before = _changed(m["path"])
+    lines = []
+    for c in cmds:
+        r = subprocess.run(c, shell=True, cwd=m["path"], capture_output=True, text=True, timeout=900)
+        if r.returncode != 0:
+            tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
+            raise RuntimeError(f"regen `{c}` failed (exit {r.returncode}) - not packed:\n  " + "\n  ".join(tail))
+    after = _changed(m["path"])
+    if before is None or after is None:
+        return [f"regen ran ({len(cmds)} command(s)); not a git folder, drift not checked"]
+    drift = sorted(f for f in after if before.get(f, "-") != after[f]) + sorted(f for f in before if f not in after)
+    if not drift:
+        return ["regen: generated files up to date"]
+    return [f"!! regen changed {len(drift)} file(s) - they were stale (a generator run alone, or a hand edit to generated "
+            f"output); the pak has the regenerated version - review and commit:"] + [f"     {f}" for f in drift[:20]]
+
+
 def deploy(layer, do_enable=True):
     cfg, m, info, _ = mod_info(layer)
     _, mods_dir, _ = _paths(cfg)
-    lines = []
+    try:
+        lines = regen(m)
+    except RuntimeError as e:
+        return [str(e)], False
     pak, n = pack(layer)
     lines.append(f"packed {n} files -> {pak}")
     if game_running():

@@ -547,7 +547,8 @@ def bg3_environment() -> str:
 @mcp.tool()
 @se_guarded
 def bg3_deploy(layer: str, enable: bool = True) -> str:
-    """Pack a mod layer (Mods/<folder> + Public/<folder>, via Divine), deploy the pak to the user Mods folder
+    """Run the layer's layers.json `regen` commands (reporting generated files that were stale), pack a mod layer
+    (Mods/<folder> + Public/<folder>, via Divine), deploy the pak to the user Mods folder
     (refused while the game runs; previous pak backed up) and enable it in the active profile's
     modsettings.lsx after its dependencies. Works for any mod; no per-mod scripts. Re-run after a mod
     manager rewrites the load order."""
