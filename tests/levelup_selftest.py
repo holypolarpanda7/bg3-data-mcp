@@ -118,9 +118,9 @@ def test_enter_only_when_dark():
             gameui.levelup_open()
         finally:
             time.time = real_time
-    check("Enter is pressed during the dark intro", any(k == 0x1C for k, _ in keys), keys)
-    check("every Enter was sent while the screen was dark (never on the sheet or the interface)",
-          all(k == 0x1C and l < gameui.DARK for k, l in keys), keys)
+    check("Space is pressed during the dark intro (skips it)", any(k == 0x39 for k, _ in keys), keys)
+    check("every Space was sent while the screen was dark (never on the sheet or the interface)",
+          all(k == 0x39 and l < gameui.DARK for k, l in keys), keys)
 
     with Patch(_state=lambda tries=3: {"known": False, "sheet_open": False, "levelup_open": False},
                send_key=lambda *a, **k: keys.append("SENT"), click_frac=lambda *a, **k: keys.append("CLICK")):
