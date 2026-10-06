@@ -38,6 +38,7 @@ BASE_GLOBS = [
     "Public/*/MultiEffectInfos/*.lsf",
     "Public/*/Content/Assets/Effects/*_merged.lsf",
     "Public/*/ClassDescriptions/*.lsf", "Public/*/ClassDescriptions/*.lsx",
+    "Public/*/Progressions/ProgressionDescriptions.lsf", "Public/*/Progressions/ProgressionDescriptions.lsx",
     "Public/*/Levelmaps/*.lsf", "Public/*/Levelmaps/*.lsx",
     "Public/*/ActionResourceDefinitions/*.lsf", "Public/*/ActionResourceDefinitions/*.lsx",
     "Public/*/Feats/*.lsf", "Public/*/Feats/*.lsx",
@@ -139,7 +140,9 @@ def base_paks(cfg):
 def base_signature(cfg):
     paks = base_paks(cfg) + [os.path.join(cfg["base"]["game_data"], cfg["base"]["localization_pak"])]
     stats = [(os.path.basename(p), int(os.path.getmtime(p)), os.path.getsize(p)) for p in paks]
-    return json.dumps(stats), max(s[1] for s in stats)
+    # the extraction globs are part of it: a newly indexed file kind re-extracts the base game (added 2026-10-06 with
+    # ProgressionDescriptions, which no pak change would have pulled in)
+    return json.dumps(stats + [("globs", sorted(BASE_GLOBS))]), max(s[1] for s in stats)
 
 
 def extract_base(cfg, log=print):
@@ -191,7 +194,8 @@ def module_of(path):
 
 
 STATIC_PATTERNS_LSX = ["Public/*/ClassDescriptions/*.lsx", "Public/*/Levelmaps/*.lsx",
-                       "Public/*/ActionResourceDefinitions/*.lsx", "Public/*/Feats/*.lsx"]
+                       "Public/*/ActionResourceDefinitions/*.lsx", "Public/*/Feats/*.lsx",
+                       "Public/*/Progressions/ProgressionDescriptions.lsx"]
 
 
 def base_files(cfg, kind):

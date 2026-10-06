@@ -341,13 +341,34 @@ def lint_stats(store, active, layer, limit=200):
         for g in re.findall(r"\b(?:Summon|SpawnInInventory|Spawn)\(\s*([0-9a-f]{8}-[0-9a-f-]{27})", data or ""):
             if g not in known_tpl:
                 add("REF", name, file, f"template '{g}' (Summon/Spawn) doesn't exist")
+    # Feat prerequisites: the engine parses Feats.lsx Requirements at load and only understands the requirement functions the
+    # game's own feats use (FeatRequirementProficiency / FeatRequirementAbilityGreaterEqual). Anything else - e.g.
+    # CharacterLevelGreaterThan(18) - is silently ignored and the feat is takeable at any level (verified in game 2026-10-06
+    # with probe feats; editing the string at runtime through SE has no effect either).
+    fw, fp = store._where([l for l in active if l != layer])
+    known_req, known_prof = set(), set()
+    for (at,) in store.db.execute(f"SELECT attrs FROM staticdata WHERE kind='Feat' AND {fw}", fp):
+        for fn, args in re.findall(r"(\w+)\(([^)]*)\)", json.loads(at).get("Requirements") or ""):
+            known_req.add(fn)
+            if fn == "FeatRequirementProficiency":
+                known_prof.add(args.strip(" '\""))
+    for (d,) in store.db.execute(f"SELECT data FROM stats WHERE {fw} AND data LIKE '%Proficiency(%'", fp):
+        known_prof |= set(re.findall(r"\bProficiency\((\w+)\)", d))
+    for fname, at in store.db.execute("SELECT name, attrs FROM staticdata WHERE kind='Feat' AND layer=?", (layer,)):
+        req = json.loads(at).get("Requirements") or ""
+        for fn, args in re.findall(r"(\w+)\(([^)]*)\)", req):
+            if known_req and fn not in known_req:
+                add("FEAT", fname, "Feats.lsx", f"Requirements {fn}(...) isn't a feat requirement the engine understands "
+                                                f"({', '.join(sorted(known_req))}) - it's ignored and the feat is takeable at any level")
+            elif fn == "FeatRequirementProficiency" and known_prof and args.strip(" '\"") not in known_prof:
+                add("FEAT", fname, "Feats.lsx", f"FeatRequirementProficiency({args}) - no proficiency of that name in any other layer")
     by_kind = {}
     for kind, *_ in issues:
         by_kind[kind] = by_kind.get(kind, 0) + 1
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TEXT = name/description handle with no text; TPL = root template reference that doesn't exist; PICKER = a spell that opens another spell's variant picker (or a wrong-level one)"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TEXT = name/description handle with no text; TPL = root template reference that doesn't exist; FEAT = feat prerequisite the engine ignores or can't match; PICKER = a spell that opens another spell's variant picker (or a wrong-level one)"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")

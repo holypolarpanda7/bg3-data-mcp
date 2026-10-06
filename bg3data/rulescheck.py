@@ -172,6 +172,7 @@ def lint_rules(store, active, layer, lo=13, hi=20):
     for u, n, at in store.db.execute(f"SELECT uuid, name, attrs FROM staticdata WHERE kind='ClassDescription' AND {w} ORDER BY rank", p):
         cds[u] = (n, json.loads(at))
     out, summary = [], []
+    boon_by_feat = False   # some class offers its Epic Boon as a feat pick: then boon feats must exist (checked at the end)
     for cu, (cname, ca) in sorted(cds.items(), key=lambda t: t[1][0]):
         if ca.get("ParentGuid") or cname not in classes or not ca.get("ProgressionTableUUID"):
             continue
@@ -193,6 +194,7 @@ def lint_rules(store, active, layer, lo=13, hi=20):
             eb_rule = _norm("Epic Boon") in fn
             eb_old = _sel_count(g, lambda k, a: k == "SelectPassives" and len(a) > 2 and a[2] == "EpicBoon")
             want_feat = _norm("Ability Score Improvement") in fn or (eb_rule and not eb_old)
+            boon_by_feat = boon_by_feat or (eb_rule and not eb_old and g["feat"])
             if want_feat != g["feat"]:
                 what = "Epic Boon (a feat pick)" if eb_rule else "feat/Ability Score Improvement"
                 out.append(f"  CHOICE  {cname} L{L}: {what} {'missing' if not g['feat'] else 'offered, the rules have none here'}")
@@ -275,9 +277,9 @@ def lint_rules(store, active, layer, lo=13, hi=20):
             tag = f"   ({best[1]}: {best[2]})" if best[2] and len(versions) > 1 else (f"   ({best[2]})" if best[2] else "")
             out += [x + tag for x in best[0]]
         summary.append(f"{cname}: {len(out) - n0}")
-    # the Epic Boon feat pick needs Epic Boon feats on the list: feats with a character-level prerequisite of 18+ (the level the
-    # feat list sees during the level-up is 18 or 19 - either way nothing below 18)
-    if lo <= 19 <= hi and any("Epic Boon" in f for rows in classes.values() for r in rows.values() for f in r.get("features", [])):
+    # an Epic Boon offered as a feat pick needs Epic Boon feats on the list: feats with a CharacterLevelGreaterThan(17+)
+    # prerequisite. (The engine ignores that prerequisite - bg3_lint_stats FEAT - so such feats are takeable at any level.)
+    if boon_by_feat:
         boons = [n for n, at in store.db.execute(f"SELECT name, attrs FROM staticdata WHERE kind='Feat' AND {w} ORDER BY rank", p)
                  if any(int(v) >= 17 for v in re.findall(r"CharacterLevelGreaterThan\((\d+)\)", json.loads(at).get("Requirements") or ""))]
         if not boons:

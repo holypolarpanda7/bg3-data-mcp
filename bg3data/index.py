@@ -8,7 +8,7 @@ import time
 from . import parse, sources
 
 DB = os.path.join(sources.CACHE, "index.sqlite")
-SCHEMA_VERSION = "3"  # 3: condition functions from .khn helpers (staticdata kind KhnFunction)
+SCHEMA_VERSION = "4"  # 3: condition functions from .khn helpers (staticdata kind KhnFunction); 4: ProgressionDescription
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -40,8 +40,8 @@ CREATE INDEX IF NOT EXISTS fx_id ON fx(id);
 """
 TABLES = ("stats", "loca", "templates", "prog", "lists", "mei", "fx", "staticdata")
 # static-data nodes indexed generically (by UUID and Name): class/subclass descriptions, level maps
-# (SuperiorityDie, proficiency...), action resources, feats
-STATIC_NODES = ("ClassDescription", "LevelMapSeries", "ActionResourceDefinition", "Feat")
+# (SuperiorityDie, proficiency...), action resources, feats, and the level-up screen's headings per selector id
+STATIC_NODES = ("ClassDescription", "LevelMapSeries", "ActionResourceDefinition", "Feat", "ProgressionDescription")
 
 LIST_NODES = ("SpellList", "PassiveList", "SkillList", "AbilityList", "EquipmentList")
 
@@ -117,7 +117,7 @@ def _ingest(db, layer, base_rank, files_by_kind):
                 continue
             for a in parse.parse_nodes(path, node):
                 rank += 1
-                rows.append((layer, rank, source, node, a.get("UUID"), a.get("Name"), json.dumps(a)))
+                rows.append((layer, rank, source, node, a.get("UUID"), a.get("Name") or a.get("SelectorId"), json.dumps(a)))
         db.executemany("INSERT INTO lists VALUES(?,?,?,?,?,?,?)", rows)
         counts["lists"] += len(rows)
     rows = []
@@ -143,7 +143,7 @@ def _ingest(db, layer, base_rank, files_by_kind):
                 continue
             for a in parse.parse_nodes(path, node):
                 rank += 1
-                rows.append((layer, rank, source, node, a.get("UUID"), a.get("Name"), json.dumps(a)))
+                rows.append((layer, rank, source, node, a.get("UUID"), a.get("Name") or a.get("SelectorId"), json.dumps(a)))
         db.executemany("INSERT INTO staticdata VALUES(?,?,?,?,?,?,?)", rows)
         counts["staticdata"] += len(rows)
     # condition/functor helper functions (Scripts/thoth/helpers/*.khn): the names stats expressions can call

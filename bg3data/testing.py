@@ -2168,12 +2168,28 @@ def lint_progressions(store, active, layer):
     if dismissed:
         out.append(f"(already answered upstream, not counted: {len(dismissed)})")
         out += dismissed
+    # a passive pick's heading on the level-up screen comes from the ProgressionDescription with its SelectorId (the third
+    # SelectPassives argument); with none (or no id) the screen shows the generic "Class Passives" - Apotheosis level 19
+    # showed two such rows until 2026-10-06
+    named = {n for (n,) in store.db.execute(f"SELECT name FROM staticdata WHERE kind='ProgressionDescription' AND {w}", p) if n}
+    unnamed = {}
+    for r in mine:
+        for args in re.findall(r"SelectPassives\(([^)]*)\)", json.loads(r[5]).get("Selectors") or ""):
+            a = [x.strip() for x in args.split(",")]
+            sid = a[2] if len(a) > 2 and a[2] else None
+            if sid not in named:
+                unnamed.setdefault(sid or "(no selector id)", []).append(f"{r[1]} L{r[2]}")
+    heading = [f"  {sid}: {', '.join(sorted(set(where))[:6])}{'...' if len(set(where)) > 6 else ''}" for sid, where in sorted(unnamed.items())]
+    if heading:
+        out.append(f"UNNAMED passive picks ({len(heading)}): no ProgressionDescription for the SelectorId - the level-up screen says "
+                   f"\"Class Passives\" (add one in Progressions/ProgressionDescriptions.lsx):")
+        out += heading
     if dup:
         out.append(f"STACKED choices ({len(dup)}): several nodes for one table+level each grant choices/feats - all load, so they're offered twice:")
         for (t, l), v in sorted(dup, key=lambda d: (d[1][0][1], d[0][1])):
             out.append(f"  {v[0][1]} L{l}: " + "; ".join(f"{x[0]} {x[4]}" + (" [AllowImprovement]" if json.loads(x[5]).get("AllowImprovement") == "true" else "")
                                                       + (" [Selectors]" if json.loads(x[5]).get("Selectors") else "") for x in v))
-    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources, {len(noslotspells)} slot levels without spells, {len(early)} early subclass nodes, {len(unpickable)} unpickable spell choices, {len(ghost)} missing list entries")] + out)
+    return "\n".join([f"progression lint for {layer}: " + ("clean" if not out else f"{len(bad)} invalid UUIDs, {len(set(dangling))} dangling lists, {len(dup)} stacked-choice levels, {len(wrong)} wrong tables, {len(dead)} unknown resources, {len(noslotspells)} slot levels without spells, {len(early)} early subclass nodes, {len(unpickable)} unpickable spell choices, {len(ghost)} missing list entries, {len(heading)} unnamed passive picks")] + out)
 
 
 # Lint findings the dnd55e author already answered as intended, so they aren't reported as problems again:
