@@ -354,8 +354,10 @@ def levelup_open(sheet_scan=0x17, wait=12.0):
             break
         if not seen_dark and time.time() - t0 > 5 and not levelup_state().get("levelup_open"):
             break                     # the bar click opened nothing: no level-up is ready
-        if seen_dark and lum is not None and lum < DARK and time.time() - last_key >= 0.5:
-            send_key(0x1C, hold_ms=100)
+        # Space skips the intro animation (the user, 2026-10-06: Enter let it play out, 1-2 s every level); only while the
+        # screen is dark, so the key never reaches the interface itself
+        if seen_dark and lum is not None and lum < DARK and time.time() - last_key >= 0.2:
+            send_key(0x39, hold_ms=60)
             last_key = time.time()
         timing.wait(0.05)
     return _state()
