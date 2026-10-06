@@ -342,6 +342,28 @@ def levelup_open(sheet_scan=0x17, wait=12.0):
             timing.wait(0.25)
             if levelup_state().get("sheet_open"):
                 break
+    # the sheet's own StartLevelUp command with the selected character: the LEVEL UP bar click often missed (the screen then
+    # opened on the retry, 17 s a level), the command doesn't (2026-10-06). Then Space while the step is "Started" - the intro
+    # takes it from ~2.4 s on (earlier presses are ignored) and goes SkipAnimation -> IntroComplete: ready in ~3 s, not ~7
+    res, _ = _client(FIND + """
+local w = find(Ext.UI.GetRoot(), "CharacterPanel", 0)
+local d = w and w.DataContext
+if not d then return false end
+local ok = pcall(function() d.StartLevelUp:Execute(d.CurrentPlayer.SelectedCharacter) end)
+return ok""")
+    if res is True:
+        t0 = time.time()
+        last_key = 0.0
+        while time.time() - t0 < wait:
+            st = levelup_state()
+            if st.get("step") == "IntroComplete":
+                return _state()
+            if st.get("levelup_open") and st.get("step") == "Started" and time.time() - last_key >= 0.25:
+                send_key(0x39, hold_ms=60)
+                last_key = time.time()
+            if not st.get("levelup_open") and time.time() - t0 > 3:
+                break                 # the command opened nothing: try the bar
+            timing.wait(0.1)
     click_frac(*LEVELUP_BAR)
     t0 = time.time()
     seen_dark = False
@@ -351,6 +373,10 @@ def levelup_open(sheet_scan=0x17, wait=12.0):
         if lum is not None and lum < DARK:
             seen_dark = True
         if seen_dark and lum is not None and lum > BRIGHT:
+            break
+        # ready as soon as the checklist is drawn after the intro: the sky area doesn't always get BRIGHT, and waiting for it
+        # ran into the 12 s timeout on most levels (opening took 17-22 s, 3 s when it did brighten - 2026-10-06)
+        if seen_dark and lum is not None and lum >= DARK and all_rows() and levelup_state().get("levelup_open"):
             break
         if not seen_dark and time.time() - t0 > 5 and not levelup_state().get("levelup_open"):
             break                     # the bar click opened nothing: no level-up is ready
