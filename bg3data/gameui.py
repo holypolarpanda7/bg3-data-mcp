@@ -1241,10 +1241,25 @@ def load_save(index=0, timeout=90.0, name=None):
     through the Load screen's view model; else row `index` (0 = first, the newest). Waits until a host exists in the new
     session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason)."""
     t0 = time.time()
-    if not _pause_menu():
-        return None, "the pause menu didn't open (nothing was clicked)"
-    _rclick(960, 568)                 # Load Game
-    timing.wait(3.0)                   # the list fills in after a spinner
+    # the HUD's own OpenLoadGameDialog command: no Esc / pause-menu clicks (2026-10-06: Esc stopped reaching the game after a
+    # level-up session and every load failed with "the pause menu didn't open")
+    res, _ = _client(FIND + """
+local h = find(Ext.UI.GetRoot(), "HotBar", 0)
+local ok = h and pcall(function() h.DataContext.OpenLoadGameDialog:Execute(nil) end)
+return ok and true or false""")
+    opened = False
+    if res is True:
+        for _ in range(30):
+            timing.wait(0.2)
+            n, _ = _client(FIND + 'local w = find(Ext.UI.GetRoot(), "LoadGame", 0) return w ~= nil and #w.DataContext.ExistingSaves or 0')
+            if isinstance(n, (int, float)) and n > 0:
+                opened = True
+                break
+    if not opened:
+        if not _pause_menu():
+            return None, "the pause menu didn't open (nothing was clicked)"
+        _rclick(960, 568)             # Load Game
+        timing.wait(3.0)               # the list fills in after a spinner
     if name:
         # select it in the Load screen's view model (gui::DCSavegames.SelectedSave via SetProperty): the list shows ~22 rows, so
         # a row click missed any older save once checkpoints pushed it down and the NEWEST save loaded instead (2026-10-05)
