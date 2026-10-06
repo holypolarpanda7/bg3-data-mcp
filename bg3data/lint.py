@@ -298,6 +298,12 @@ def lint_stats(store, active, layer, limit=200):
         fl = r["fields"] if r else {}
         props = " ".join(str(fl.get(k, ("",))[0] or "") for k in ("SpellProperties", "SpellSuccess", "SpellFail"))
         tc = str(fl.get("TargetConditions", ("",))[0] or "")
+        # an unprefixed CreateExplosion on a ground-targeted spell went off 2-4 times per cast (Warping Implosion, seen in
+        # game 2026-10-06): prefix it (GROUND: at the point, as the base game's Hellcrawler) or trigger it from a status
+        if (fl.get("SpellType", ("",))[0] == "Target" and "not Character()" in tc
+                and re.search(r"(?:^|;)\s*CreateExplosion\(", str(fl.get("SpellProperties", ("",))[0] or ""))):
+            add("SPELL", name, file, "unprefixed CreateExplosion on a ground-targeted spell goes off several times - use GROUND: "
+                                     "(explodes at the point) or a status's OnApplyFunctors (explodes on its bearer)")
         for m in ground.findall(props):
             if m != "ApplyStatus(" or re.search(r"Ally\(|Enemy\(|Character\(|Dead\(", tc):
                 add("SPELL", name, file, f"GROUND:{m.rstrip('(')} acts on the ground point, never on the creatures in the area - drop GROUND:")
