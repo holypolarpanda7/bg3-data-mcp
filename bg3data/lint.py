@@ -226,6 +226,12 @@ def lint_stats(store, active, layer, limit=200):
                         add("REF", name, file, f"ContainerSpells: '{ref}' doesn't exist")
             if k in ("SpellContainerID", "RootSpellID", "ConcentrationSpellID") and v not in names:
                 add("REF", name, file, f"{k} '{v}' doesn't exist")
+    # SavingThrow(Ability,DC,OnFail::Functor) is not a functor the engine knows: the rider never runs (Bigby's Frigid
+    # Retaliation / Stone Throw, found in game 2026-10-07). Write ApplyStatus(...,,,,not SavingThrow(Ability,DC)) instead.
+    for name, typ, file, using, data in rows:
+        if "OnFail::" in data or "OnSuccess::" in data:
+            add("CALL", name, file, "SavingThrow(...,OnFail::...) isn't engine syntax - the rider never runs; put the save "
+                                    "in the functor's condition: ApplyStatus(X,100,1,,,,not SavingThrow(Ability.Y,DC))")
     # a spell without SpellAnimation (own or inherited) never finishes a normal cast (verified in game
     # 2026-09-30). Exempt: containers (not cast themselves), nameless editor separators, and spells only
     # cast immediately by an interrupt/functor (UseSpell(...,X,true,true,true) skips the animation).
@@ -241,6 +247,14 @@ def lint_stats(store, active, layer, limit=200):
         if not fl or fl.get("ContainerSpells", ("",))[0] or not fl.get("DisplayName", ("",))[0]:
             continue
         flags_, props_ = fl.get("SpellFlags", ("",))[0] or "", fl.get("SpellProperties", ("",))[0] or ""
+        # a spell slot spent from an area spell's functors is spent per creature hit (and per covered area with GROUND:) -
+        # Bigby's rune spells took 3 slots for one Fog Cloud (found in game 2026-10-07); spend it OnCast or in UseCosts
+        area = (fl.get("SpellType", ("",))[0] in ("Zone", "Cone", "Wall") or any((fl.get(k, ("",))[0] or "0") not in ("", "0")
+                for k in ("AreaRadius", "ExplodeRadius")))
+        if area and any(re.search(r"UseActionResource\((?:SELF,)?\s*SpellSlot", fl.get(k, ("",))[0] or "")
+                        for k in ("SpellProperties", "SpellSuccess", "SpellFail")):
+            add("SPELL", name, file, "area spell spends a spell slot in its functors: that runs per creature hit, not once per "
+                                     "cast (use UseCosts or an OnCast passive)")
         if "CannotTargetCharacter" in flags_ and "CannotTargetItems" in flags_ and "GROUND:" in props_:
             # a point-targeted spell: functors without GROUND: have no target and never run (Faithful Hound's caster
             # status, verified 2026-10-03; base writes GROUND:ApplyStatus(SELF,...), e.g. Projectile_Jump_Laezel)
