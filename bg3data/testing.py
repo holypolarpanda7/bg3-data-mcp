@@ -1812,9 +1812,13 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     # cases assigned to this build with no `level` run here too (2026-10-07: they sat in a None bucket nothing ran, and the
     # Bigby build "passed" without testing anything)
     unleveled = [c["id"] for c in cases_by_level.get(None, [])]
+    only = [x for x in os.environ.get("BG3_ONLY_CASES", "").split(",") if x]   # dev: iterate on a few cases without all of them
+    if only:
+        unleveled = [c for c in unleveled if c in only]
     if (b.get("final_cases") or unleveled) and (gameui.host_level() or 0) >= hi:
         import fnmatch
-        ids = [c["id"] for c in load_cases(layer) if any(fnmatch.fnmatch(c["id"], pat) for pat in b.get("final_cases") or ())]
+        ids = [c["id"] for c in load_cases(layer) if any(fnmatch.fnmatch(c["id"], pat) for pat in b.get("final_cases") or ())
+               and (not only or c["id"] in only)]
         ids += [cid for cid in unleveled if cid not in ids]
         passed, failed = 0, []
         for cid in ids:
