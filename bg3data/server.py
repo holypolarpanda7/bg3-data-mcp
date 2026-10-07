@@ -1357,6 +1357,28 @@ def bg3_modio(action: str = "status", layer: str | None = None, name: str | None
         return modio.golive(layer, apply)
     return f"unknown action {action!r}"
 
+
+@mcp.tool()
+@guarded
+def bg3_nexus_page(action: str = "diff", layer: str | None = None, apply: bool = False) -> str:
+    """Nexus Mods mod PAGE management (what the v3 API can't do) through a dedicated Edge window the user signed in to once
+    (own profile, CDP port 9223). action: open (start that window), pull (live page -> <mod>/nexus/page.toml +
+    description.bbcode: name, version, author, summary, full description, requirements), diff (spec vs live), push (make the
+    live page match the spec: General fields + Save, requirements method / external requirements + Save, then re-read).
+    push is a dry run unless apply=True. Outward-facing: apply only when the user approved the change."""
+    from . import nexus_web
+    if action == "open":
+        return json.dumps(nexus_web.open_browser())
+    if not layer:
+        return f"{action} needs a layer"
+    if action == "pull":
+        return json.dumps(nexus_web.pull(layer), indent=1, ensure_ascii=False)
+    if action == "diff":
+        return nexus_web._show(nexus_web.diff(layer))
+    if action == "push":
+        return nexus_web.push(layer, apply=apply)
+    return f"unknown action {action!r}"
+
 def main():
     mcp.run(transport="stdio")
 
