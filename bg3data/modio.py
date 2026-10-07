@@ -81,13 +81,15 @@ def _multipart(fields, files):
     return b"".join(out), f"multipart/form-data; boundary={b}"
 
 
-def call(method, path, game=GAME, data=None, files=None, auth=None, query=None):
+def call(method, path, game=GAME, data=None, files=None, auth=None, query=None, platform="windows"):
     """One request. Reads use the API key unless auth=True; writes always use the token."""
     c = creds()
     write = method != "GET"
     use_token = write if auth is None else auth
     q = dict(query or {})
-    h = {"User-Agent": UA, "Accept": "application/json", "X-Modio-Platform": "windows"}
+    h = {"User-Agent": UA, "Accept": "application/json"}
+    if platform:   # filters files to ones live on that platform - None for an owner's view of pending files
+        h["X-Modio-Platform"] = platform
     if use_token:
         if not c["MODIO_ACCESS_TOKEN"]:
             raise SystemExit(f"no MODIO_ACCESS_TOKEN in {ENV_FILE}")
@@ -203,10 +205,39 @@ def golive(layer, apply=False):
     return _write(layer, "PUT", "", {"visible": 1}, apply=apply, what="make the mod public")
 
 
+def files(layer, limit=5):
+    """The newest files, pending ones included (a new Toolkit upload has no platform yet: approve it with `platforms`)."""
+    e = entry(layer)
+    r = call("GET", f"/games/{e['game']}/mods/{e['mod']}/files", e["game"], auth=True, platform=None,
+             query={"_sort": "-date_added", "_limit": limit})
+    out = [f"{layer}: newest {limit} file(s)"]
+    for f in r.get("data", []):
+        plats = [(p.get("platform"), {0: "pending", 1: "approved", 2: "denied"}.get(p.get("status"), p.get("status"))) for p in f.get("platforms") or []]
+        out.append(f"  file {f['id']} v{f.get('version')} {f.get('filename')} scan {f.get('virus_status')} platforms {plats or 'none set'}")
+    return "\n".join(out)
+
+
+def platforms(layer, file_id, approve=(), deny=(), apply=False):
+    """Set a file's platform status (BG3: windows unmoderated; mac / xboxseriesx / ps5 go to moderation)."""
+    if not approve:
+        return "nothing to change (name the platforms to approve; the list replaces the file's platforms)"
+    # PUT the file with its platform list (verified 2026-10-07); POST /files/<id>/platforms answers 403 even for the owner
+    return _write(layer, "PUT", f"/files/{file_id}", {"platforms": list(approve)}, apply=apply, what=f"approve file {file_id} for {list(approve)}")
+
+
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="python -m bg3data.modio")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("files")
+    p.add_argument("layer")
+    p.add_argument("--limit", type=int, default=5)
+    p = sub.add_parser("platforms")
+    p.add_argument("layer")
+    p.add_argument("file_id", type=int)
+    p.add_argument("--approve", nargs="*", default=[])
+    p.add_argument("--deny", nargs="*", default=[])
+    p.add_argument("--apply", action="store_true")
     for n in ("status", "comments", "golive"):
         p = sub.add_parser(n)
         p.add_argument("layer")
@@ -238,7 +269,11 @@ def main(argv):
     p.add_argument("text")
     p.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
-    if a.cmd == "status":
+    if a.cmd == "files":
+        print(files(a.layer, a.limit))
+    elif a.cmd == "platforms":
+        print(platforms(a.layer, a.file_id, a.approve, a.deny, a.apply))
+    elif a.cmd == "status":
         print(status(a.layer))
     elif a.cmd == "comments":
         print(comments(a.layer, a.limit))
