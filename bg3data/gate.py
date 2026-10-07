@@ -539,7 +539,8 @@ def run(layer, which="affected", ingame=True, post=False, log=print, start=None)
             rec["pass_sha"] = head
         else:
             failed.append(b)
-            rec["last_fail"] = [l.strip() for l in r.splitlines() if FAIL_RE.search(l)][:6]
+            rec["last_fail"] = [l.strip() for l in r.splitlines() if FAIL_RE.search(l)][:6] \
+                or [l.strip() for l in r.splitlines() if l.strip()][-2:]   # a run that stopped before any level (e.g. the start save didn't load) says why on its last line
         save_state(layer, st)
         log(f"=== {b} {'PASS' if ok else 'FAIL'} in {time.time() - t:.0f}s" + ("".join(f"\n    {x}" for x in rec.get("last_fail", [])) if not ok else ""))
         rep.append(f"- {b}: {'PASS' if ok else 'FAIL'}" + ("".join(f"\n    - {x}" for x in rec.get("last_fail", [])) if not ok else ""))
