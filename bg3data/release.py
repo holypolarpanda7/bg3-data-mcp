@@ -9,6 +9,7 @@ the quick static/regen/lint pass. The zip has the pak at its root plus info.json
 metadata from it), README.md, CHANGELOG.md and LICENSE when present - the layout Nexus Mods expects for a BG3 pak mod.
 """
 import hashlib
+import html
 import json
 import os
 import re
@@ -108,7 +109,8 @@ def package(layer):
     pak_name = info["Folder"] + ".pak"
     md5 = hashlib.md5(open(pak, "rb").read()).hexdigest()
     meta_text = open(_meta(m), encoding="utf-8").read()
-    attr = lambda k: (re.search(rf'<node id="ModuleInfo">.*?<attribute id="{k}" type="\w+" value="([^"]*)"', meta_text, re.S) or [None, ""])[1]
+    # XML attribute text: unescape it for info.json (mod managers show it as is - "Baldur&apos;s" once, 2026-10-07)
+    attr = lambda k: html.unescape((re.search(rf'<node id="ModuleInfo">.*?<attribute id="{k}" type="\w+" value="([^"]*)"', meta_text, re.S) or [None, ""])[1])
     base = {"GustavDev", "GustavX", "Gustav", "Honour", "HonourX", "MainUI", "ModBrowser", "PhotoMode", "CrossplayUI"}
     info_json = {"Mods": [{"Author": attr("Author"), "Name": info["Name"], "Folder": info["Folder"], "Version": info["Version64"],
                            "Description": attr("Description"), "UUID": info["UUID"], "Created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
