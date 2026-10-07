@@ -95,7 +95,8 @@ switch ($Cmd) {
         if ($Item) {
             $t = $subs | Where-Object { $_.Current.Name -eq $Item } | Select-Object -First 1
             if (-not $t) { J @{ error = "no item $Item"; items = $names }; break }
-            $t.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            # a menu item that opens a modal window (Project Settings...) blocks Invoke until UIA times out - expected
+            try { $t.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() } catch { }
             J @{ ok = $true; invoked = $Item }
         } else {
             $m.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse()
