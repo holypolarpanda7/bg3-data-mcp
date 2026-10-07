@@ -57,12 +57,22 @@ class Browser:
             raise RuntimeError(f"page script failed{timeout_note}: {r['error']}")
         return r.get("value")
 
-    def go(self, url, settle=4.0):
+    def go(self, url, settle=4.0, timeout=45.0):
+        """Navigate and wait for the NEW document: readyState alone is already 'complete' on the old page, which once let a
+        diff read the previous page's unsaved state (2026-10-07). performance.timeOrigin changes with each document."""
         if not self.tab:
             self.ensure_tab()
+        before = self.js("performance.timeOrigin")
         self.cmd(op="navigate", tab=self.tab, url=url)
+        t = time.time()
+        while time.time() - t < timeout:
+            time.sleep(0.5)
+            try:
+                if self.js("performance.timeOrigin") != before and self.js("document.readyState") == "complete":
+                    break
+            except RuntimeError:
+                pass   # the context is being replaced mid-navigation
         time.sleep(settle)
-        self.js("new Promise(r => { if (document.readyState === 'complete') r(1); else addEventListener('load', () => r(1)); })")
 
     def wait(self, selector, timeout=30.0):
         """Wait until `selector` matches (the edit pages render client-side after load)."""
@@ -132,7 +142,10 @@ _READ_GENERAL = """(() => {
           description: inst ? inst.val() : null};
 })()"""
 
-_READ_REQS = """(() => {
+_READ_REQS = """(async () => {
+  // the legacy lists sit in collapsed <details> sections whose rows only render once opened (2026-10-07)
+  document.querySelectorAll('main details').forEach(d => { d.open = true; });
+  await new Promise(r => setTimeout(r, 1500));
   const radios = [...document.querySelectorAll('[role=radio]')].slice(0, 2).map(r => r.getAttribute('aria-checked') === 'true');
   const method = radios[1] ? 'legacy' : 'file-to-file';
   const out = {method, nexus: [], external: [], files: []};
@@ -147,7 +160,7 @@ _READ_REQS = """(() => {
                                                                    a: tr.querySelector('a[href]')})).filter(r => r.cells.join('').trim());
     if (cur === 'File-to-file requirements') rows.forEach(r => out.files.push({file: r.cells[0], category: r.cells[1], version: r.cells[2], requires: r.cells[4] || ''}));
     else if (method === 'legacy' && cur === 'Nexus Mods') rows.forEach(r => out.nexus.push({name: r.cells[0], note: r.cells[1] || '', url: r.a ? r.a.href : null}));
-    else if (method === 'legacy' && cur === 'External resources') rows.forEach(r => out.external.push({name: r.cells[0], note: r.cells[1] || '', url: r.a ? r.a.href : null}));
+    else if (method === 'legacy' && cur === 'External resources') rows.forEach(r => out.external.push({name: r.cells[0], url: r.a ? r.a.href : (r.cells[1] || null), note: r.cells[2] || ''}));
   }
   return out;
 })()"""
@@ -295,7 +308,7 @@ def push(layer, apply=False):
 
 
 def _click_save(b):
-    r = b.js("""(() => { const s = [...document.querySelectorAll('button')].find(x => x.innerText.trim() === 'Save' && x.offsetParent && !x.disabled);
+    r = b.js("""(() => { const s = [...document.querySelectorAll('button')].find(x => x.innerText.trim() === 'Save' && x.getClientRects().length && !x.disabled);  // fixed bars have no offsetParent
                          if (!s) return 'no enabled Save button'; s.click(); return 'clicked'; })()""")
     time.sleep(4)
     return r
@@ -311,13 +324,16 @@ def _apply_requirements(b, nx, req):
         time.sleep(1.5)
         out.append(f"method -> {req['method'][1]}")
     for r in req.get("add_external", []):
-        b.js("[...document.querySelectorAll('button')].filter(x => x.innerText.trim() === 'Add requirement')[1].click()")
+        # the "Add requirement" button under the External resources heading (index-based picking clicked the wrong one)
+        b.js("""(() => { const bs = [...document.querySelectorAll('button')].filter(x => /Add requirement/i.test(x.innerText || ''));
+                       const e = bs.find(x => /External resources/.test(x.closest('div').parentElement.innerText)) || bs[bs.length - 1];
+                       e.scrollIntoView(); e.click(); })()""")
         time.sleep(1.5)
         b.js(f"(() => {{ const setValue = {_SET}; const d = document.querySelector('[role=dialog]');"
              f"setValue(d.querySelector('input[name=name]'), {json.dumps(r['name'])});"
              f"setValue(d.querySelector('input[name=url]'), {json.dumps(r.get('url') or '')});"
              f"setValue(d.querySelector('input[name=notes]'), {json.dumps(r.get('note') or '')});"
-             "[...d.querySelectorAll('button')].find(x => x.innerText.trim() === 'Save').click(); }})()")
+             "[...d.querySelectorAll('button')].find(x => x.innerText.trim() === 'Save').click(); })()")
         time.sleep(2)
         out.append(f"added external {r['name']}")
     for kind in ("add_nexus", "remove_nexus", "remove_external"):
