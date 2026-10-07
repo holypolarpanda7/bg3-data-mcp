@@ -1324,7 +1324,15 @@ def _save_only_lacks_mods(name):
             rows = saves.compare(saves.mods_in(saves.read_meta(cfg, lsv, work)), saves.current_mods(cfg))
     except Exception as e:
         return f"couldn't read the save's mod list ({e})"
-    bad = [f"{(m.get('Name') or m.get('Folder'))}: {prob}" for m, prob, _ in rows if prob]
+    # the game itself ignores MD5 / PublishHandle drift (its box listed only the new mods while both differed, 2026-10-07):
+    # block on what it does warn about - a missing mod or a changed Folder / Version
+    def serious(prob):
+        if not prob:
+            return False
+        if not prob.startswith("differs: "):
+            return True
+        return bool(set(prob[len("differs: "):].split(", ")) - {"MD5", "PublishHandle", "Name"})
+    bad = [f"{(m.get('Name') or m.get('Folder'))}: {prob}" for m, prob, _ in rows if serious(prob)]
     return "; ".join(bad) if bad else None
 
 
