@@ -2636,7 +2636,8 @@ def _unstick_menu(log, relaunched):
                 want[m["name"]] = deploy.mod_info(m["name"])[2]["UUID"]
             except (ValueError, OSError):
                 pass
-        missing = [n for n, u in want.items() if u and u not in loaded]
+        iso = {r["uuid"] for r in (deploy.isolation_state() or {}).get("removed", [])}   # taken out on purpose by a test run
+        missing = [n for n, u in want.items() if u and u not in loaded and u not in iso]
         if missing and loaded:
             if relaunched:
                 msg = f"main menu without mods {', '.join(missing)} again - check the in-game mod manager"
