@@ -36,7 +36,7 @@ def _ps(cmd, timeout=120, **kw):
             "-File", platform.to_win(PS), "-Cmd", cmd]
     for k, v in kw.items():
         args += [f"-{k[0].upper()}{k[1:]}", str(v)]
-    r = platform.run_win(args, timeout=timeout)
+    r = platform.run_win(args, timeout=timeout, encoding="utf-8", errors="replace")
     out = (r.stdout or "").strip().splitlines()
     try:
         return json.loads(out[-1]) if out else {"error": (r.stderr or "no output").strip()[:300]}
