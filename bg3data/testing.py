@@ -1590,7 +1590,8 @@ def screen_vs_data(store, active, tables, L, screen):
         nodes = _level_nodes(store, active, table, L)
         feat |= any(str(a.get("AllowImprovement", "")).lower() == "true" for a in nodes)
         sel = _selectors(nodes)
-        want_p = sorted(int(float(a[1] or 0)) for k, a in sel if k == "SelectPassives")
+        # ReplacePassives (base Swarmkeeper 4-12: swap the swarm) shows as a passive choice row like SelectPassives (seen 2026-10-06)
+        want_p = sorted(int(float(a[1] or 0)) for k, a in sel if k in ("SelectPassives", "ReplacePassives"))
         # a replace-only pick (SelectSpells(list,0,1): Bard 6) shows no spell row (seen 2026-10-06), so it may be absent
         want_s = sum(1 for k, a in sel if k == "SelectSpells" and int(float(a[1] or 0)) > 0)
         want_s_max = sum(1 for k, a in sel if k == "SelectSpells")
@@ -1630,11 +1631,13 @@ def _list_passives(store, active, uuid):
     return out
 
 
-def passive_delta(store, active, before, after, tables, L, char_level, races, extra_ok=()):
+def passive_delta(store, active, before, after, tables, L, char_level, races, extra_ok=(), statuses=()):
     """Passives gained and lost in one level-up, against what the level grants: a gained passive must be added by a class /
     subclass node at L or a race node at the character level, or come from a choice on this level's screen (a SelectPassives list,
     a feat when the level allows one); a lost one must be removed by a node (2026-10-06: the user saw level-ups no test would flag -
-    level_check only confirms what the data adds is there, never that nothing else came with it)."""
+    level_check only confirms what the data adds is there, never that nothing else came with it). A passive an active status
+    grants (StatusData Passives, e.g. base HUNTERSMARK_TECHNICAL_BEE -> HuntersMark_Swarmkeeper_Bee, Swarmkeeper 3) is explained
+    by that status; statuses = the host's status ids after the level-up."""
     gained, lost = set(after) - set(before), set(before) - set(after)
     added, removed, chosen, feat = set(), set(), set(), False
     nodes = [a for t in tables.values() if t for a in _level_nodes(store, active, t, L)]
@@ -1644,12 +1647,18 @@ def passive_delta(store, active, before, after, tables, L, char_level, races, ex
         removed.update(p for p in (a.get("PassivesRemoved") or "").split(";") if p)
         feat |= str(a.get("AllowImprovement", "")).lower() == "true"
     for k, a in _selectors(nodes):
-        if k == "SelectPassives":
+        if k in ("SelectPassives", "ReplacePassives"):
             chosen.update(_list_passives(store, active, a[0]))
+        if k == "ReplacePassives":  # the swapped-out pick is lost
+            removed.update(_list_passives(store, active, a[0]))
     if feat:
         w, p = store._where(active)
         for (at,) in store.db.execute(f"SELECT attrs FROM staticdata WHERE kind='Feat' AND {w}", p):
             chosen.update(x for x in (json.loads(at).get("PassivesAdded") or "").split(";") if x)
+    for st in set(statuses or ()):
+        r = store.resolve(st, active)
+        if r and r.get("type") == "StatusData":
+            chosen.update(x.strip() for x in str((r["fields"].get("Passives") or ("",))[0]).split(";") if x.strip())
     from .rulescheck import TECHNICAL
     bad = []
     for x in sorted(gained - added - chosen):
@@ -1743,7 +1752,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
             tables = {"class": me["class_table"], "sub": me.get("subclass_table")}
             bad += screen_vs_data(store, active, tables, me["level"], r.get("screen"))
             bad += passive_delta(store, active, p_before, st1["passives"], tables, me["level"], st1["level"], st1.get("races"),
-                                 b.get("known_passives") or ())
+                                 b.get("known_passives") or (), st1.get("statuses") or ())
         # what the level-up screen offered: a spell choice that skips levels the character can cast (Apotheosis Sorcerer 13
         # offered only level 7 - found by the user in game 2026-10-05, no check caught it)
         top = lua("local m = 0 for u, es in pairs(Ext.Entity.Get(Osi.GetHostCharacter()).ActionResources.Resources) do "
