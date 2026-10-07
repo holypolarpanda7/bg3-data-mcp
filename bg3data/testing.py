@@ -1809,9 +1809,13 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
                 out.append(f"    checkpoint {checkpoint_name(build_id, L)!r} not saved: {e}")
     # final_cases: case-id patterns (fnmatch) run once the build has reached its top level - script-mode suites that grant
     # their feature to any host (Gunslinger / Illrigger 13-20), run on a real character of the class
-    if b.get("final_cases") and (gameui.host_level() or 0) >= hi:
+    # cases assigned to this build with no `level` run here too (2026-10-07: they sat in a None bucket nothing ran, and the
+    # Bigby build "passed" without testing anything)
+    unleveled = [c["id"] for c in cases_by_level.get(None, [])]
+    if (b.get("final_cases") or unleveled) and (gameui.host_level() or 0) >= hi:
         import fnmatch
-        ids = [c["id"] for c in load_cases(layer) if any(fnmatch.fnmatch(c["id"], pat) for pat in b["final_cases"])]
+        ids = [c["id"] for c in load_cases(layer) if any(fnmatch.fnmatch(c["id"], pat) for pat in b.get("final_cases") or ())]
+        ids += [cid for cid in unleveled if cid not in ids]
         passed, failed = 0, []
         for cid in ids:
             rep = run(store, active, layer, cid, wait)
