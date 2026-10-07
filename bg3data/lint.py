@@ -255,7 +255,10 @@ def lint_stats(store, active, layer, limit=200):
                         for k in ("SpellProperties", "SpellSuccess", "SpellFail")):
             add("SPELL", name, file, "area spell spends a spell slot in its functors: that runs per creature hit, not once per "
                                      "cast (use UseCosts or an OnCast passive)")
-        if "CannotTargetCharacter" in flags_ and "CannotTargetItems" in flags_ and "GROUND:" in props_:
+        # an ExplodeRadius gives the point creature targets (the blast): Bladesong Climax's un-prefixed ally heal does run
+        # (verified in game 2026-10-07: HEAL + BLADESONGFINISHER_ALLY applied)
+        explodes = (fl.get("ExplodeRadius", ("",))[0] or "0") not in ("", "0")
+        if "CannotTargetCharacter" in flags_ and "CannotTargetItems" in flags_ and "GROUND:" in props_ and not explodes:
             # a point-targeted spell: functors without GROUND: have no target and never run (Faithful Hound's caster
             # status, verified 2026-10-03; base writes GROUND:ApplyStatus(SELF,...), e.g. Projectile_Jump_Laezel)
             for part in [x.strip() for x in re.split(r";(?![^\[]*\])", props_) if x.strip()]:
