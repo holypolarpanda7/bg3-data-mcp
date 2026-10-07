@@ -224,6 +224,9 @@ def isolate_saves(layer):
         return []
     cfg = sources.load_config()
     names = {b["id"] for b in testing.load_builds(layer)} | {b["from"] for b in testing.load_builds(layer) if b.get("from")}
+    _, m, _, _ = mod_info(layer)
+    for f in glob.glob(os.path.join(m["path"], "tests", "bg3", "*.toml")):   # `save_as` names of the layer's start saves
+        names |= set(re.findall(r'^save_as\s*=\s*"([^"]+)"', open(f, encoding="utf-8").read(), flags=re.M))
     targets = {d for _, d, _ in saves.list_saves(cfg, 1)}
     for _, d, _ in saves.list_saves(cfg, 10_000):
         if any(n.lower() in d.lower() for n in names):
