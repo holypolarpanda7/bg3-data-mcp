@@ -333,6 +333,10 @@ def level_check(store, active, st=None):
                     if hit:
                         ok = True
                         have_s[sp] = have_s[hit] + f" (as {hit})"
+                known = not ok and UPSTREAM_ANSWERED.get(f"{c.get('subclass')}:{sp}")
+                if known:   # answered upstream as intended (e.g. Oathbreaker's level 1 spell under dnd55e's level 3 subclasses)
+                    lines.append(f"  info spell {sp} (L{lvl} AddSpells, {src}) not granted - {known}")
+                    continue
                 fails += not ok
                 if not ok or lvl == c["level"]:
                     lines.append(f"  {'PASS' if ok else 'FAIL'} spell {sp} (L{lvl} AddSpells, {src})" + (f" source={have_s[sp]}" if ok else ""))
