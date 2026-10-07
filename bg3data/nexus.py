@@ -72,10 +72,10 @@ def mod_info(layer):
 def status(layer):
     nx, mod, files = mod_info(layer)
     out = [f"{layer}: Nexus {nx['game']} mod {nx['mod']} = v3 mod {mod['id']} - {mod.get('name')!r}"]
-    for f in files:
-        v = f.get("latest_version") or f.get("version") or {}
-        out.append(f"  file {f.get('id')}  {f.get('name')!r}  category {f.get('category') or v.get('category')}  "
-                   f"version {v.get('version')}  uploaded {v.get('uploaded_at')}")
+    for f in files:   # the v3 file record: id, name, is_active, last_file_uploaded_at, versions/archived/removed counts
+        out.append(f"  file {f.get('id')}  {f.get('name')!r}  {'active' if f.get('is_active') else 'inactive'}  "
+                   f"last upload {f.get('last_file_uploaded_at')}  versions {f.get('versions_count')} "
+                   f"(archived {f.get('archived_count')})" + ("   <- layers.json nexus.file" if str(f.get('id')) == str(nx.get('file')) else ""))
     if not nx.get("file"):
         out.append('  -> set "file" (the main file\'s id above) under "nexus" in layers.json before uploading')
     return "\n".join(out)
