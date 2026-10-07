@@ -392,10 +392,15 @@ def step_regen(m):
 def step_lint(store, active, layer):
     from . import lint, rulescheck, testing
     out = []
+    # the rules lint checks class/subclass levels against the books' class tables; a layer without its own class progression
+    # (feats, backgrounds, a subclass tweak) sets "rules": false in layers.json (2026-10-07: Bigby, Bladesinger)
+    rules = testing.mod_entry(layer).get("rules", True)
     for name, fn in (("stats", lambda: lint.lint_stats(store, active, layer)),
                      ("progressions", lambda: testing.lint_progressions(store, active, layer)),
-                     ("rules", lambda: rulescheck.lint_rules(store, active, layer)),
+                     ("rules", (lambda: rulescheck.lint_rules(store, active, layer)) if rules else None),
                      ("container tests", lambda: testing.lint_container_tests(store, active, layer))):
+        if fn is None:
+            continue
         r = fn()
         head = r.splitlines()[0] if r else ""
         if not re.search(r" - clean\b|: 0 finding\(s\)|: clean$", head):
