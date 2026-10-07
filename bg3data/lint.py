@@ -364,6 +364,15 @@ def lint_stats(store, active, layer, limit=200):
                                                 f"it, have Script Extender write Feat.FeatRequirements at runtime (the parsed list is live)")
             elif fn == "FeatRequirementProficiency" and known_prof and args.strip(" '\"") not in known_prof:
                 add("FEAT", fname, "Feats.lsx", f"FeatRequirementProficiency({args}) - no proficiency of that name in any other layer")
+    # deliberate exceptions: <suite>/lint_allow.toml [[allow]] kind / name (fnmatch) / reason - still listed, not counted
+    allowed, allow = [], _lint_allow(layer)
+    if allow:
+        import fnmatch
+        keep = []
+        for it in issues:
+            hit = next((a for a in allow if a.get("kind") == it[0] and fnmatch.fnmatch(it[1], a.get("name", ""))), None)
+            (allowed if hit else keep).append(it + ((hit or {}).get("reason", ""),) if hit else it)
+        issues = keep
     by_kind = {}
     for kind, *_ in issues:
         by_kind[kind] = by_kind.get(kind, 0) + 1
@@ -374,4 +383,27 @@ def lint_stats(store, active, layer, limit=200):
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")
+    if allowed:
+        reasons = {}
+        for kind, name, _, _, why in allowed:
+            reasons.setdefault((kind, why), []).append(name)
+        lines.append(f"  allowed by lint_allow.toml ({len(allowed)}, not counted):")
+        lines += [f"    {k} x{len(v)} ({', '.join(v[:3])}{'...' if len(v) > 3 else ''}): {why}" for (k, why), v in reasons.items()]
     return "\n".join(lines)
+
+
+def _lint_allow(layer):
+    """[[allow]] entries from <suite>/lint_allow.toml of the layer's test suites (each needs kind, name and a reason)."""
+    import tomllib
+    from . import testing
+    out = []
+    try:
+        dirs = testing.suite_dirs(layer)
+    except Exception:
+        return out
+    for d in dirs:
+        p = os.path.join(d, "lint_allow.toml")
+        if os.path.exists(p):
+            with open(p, "rb") as fh:
+                out += [a for a in tomllib.load(fh).get("allow", []) if a.get("kind") and a.get("name") and a.get("reason")]
+    return out

@@ -1094,7 +1094,8 @@ def bg3_click(x: int = 0, y: int = 0, right: bool = False, count: int = 1, shot:
 def bg3_levelup(action: str = "state", sheet_scan: int = 0x17, add_class: str | None = None, subclass: str | None = None) -> str:
     """Level-up screen helper (needs the character level-up ready: bg3_level_up grants the XP). action: 'state' (sheet /
     level-up screen open? is every choice made = IsLevelUpComplete), 'open' (character sheet key, then the LEVEL UP bar;
-    sheet_scan is the scan code of the sheet key, 0x17 = I), 'finish' (accept via FinishLevelUp once complete, then waits until the new level is really applied), 'auto' (open, fill every pending choice - spells, cantrips, rituals, savant, a feat: Ability Improvement +2 to the primary ability, else the first free feat - accept, verify the level rose by one and run level_check; returns a log with timings). add_class (auto only): take the level in that class instead (multiclass; Barbarian, Bard, Cleric, Druid, Fighter, Monk, Paladin, Ranger, Rogue, Sorcerer, Warlock, Wizard) - the game pre-fills its first-level picks, and the class's level is verified; a class the character has is levelled from the class carousel. subclass (auto only): on a level that offers one, take this subclass (IDString, e.g. BattleMaster) instead of the game's default - verified on the character.
+    sheet_scan is the scan code of the sheet key, 0x17 = I), 'feats' (the open screen's feat list with locked flags and requirement texts, from the view model -
+    subclass= filters by name, e.g. "Boon"), 'finish' (accept via FinishLevelUp once complete, then waits until the new level is really applied), 'auto' (open, fill every pending choice - spells, cantrips, rituals, savant, a feat: Ability Improvement +2 to the primary ability, else the first free feat - accept, verify the level rose by one and run level_check; returns a log with timings). add_class (auto only): take the level in that class instead (multiclass; Barbarian, Bard, Cleric, Druid, Fighter, Monk, Paladin, Ranger, Rogue, Sorcerer, Warlock, Wizard) - the game pre-fills its first-level picks, and the class's level is verified; a class the character has is levelled from the class carousel. subclass (auto only): on a level that offers one, take this subclass (IDString, e.g. BattleMaster) instead of the game's default - verified on the character.
     The choices in between (class, subclass, spells, feat, ability points) are clicked with bg3_screenshot + bg3_click;
     after 'open' take a screenshot, click through the checklist on the left, and call 'state' until complete is true."""
     from . import gameui
@@ -1102,6 +1103,11 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17, add_class: str | 
         return json.dumps(gameui.levelup_state())
     if action == "open":
         return json.dumps(gameui.levelup_open(sheet_scan))
+    if action == "feats":   # the feat list of the open screen, with locks (subclass= filters by name, e.g. "Boon")
+        fl = gameui.levelup_feats(subclass)
+        if fl is None:
+            return "no level-up screen with a feat list (open it and select the Feat row first)"
+        return json.dumps({"count": len(fl), "locked": sum(1 for f in fl if f["locked"]), "feats": fl})
     if action == "finish":
         ok, msg = gameui.levelup_finish()
         return ("accepted " + msg).strip() if ok else "not accepted: " + msg

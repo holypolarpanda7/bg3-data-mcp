@@ -293,6 +293,32 @@ def _rclick(x, y):
     return click_frac(x / REF_W, y / REF_H)
 
 
+def levelup_feats(match=None):
+    """The open level-up screen's feat list, from its view model (CharacterLevelUp.DataContext.SelectableFeats - no scrolling
+    needed, the visual list virtualizes): [{name, locked, requirements:[{text, met}]}]. locked = some requirement not met,
+    which is how the screen decides the padlock (a mod's Feat.FeatRequirements written at runtime included; verified
+    2026-10-06). match: only feats whose name contains it (case-insensitive). None if the screen or SE isn't there."""
+    res, _ = _client(FIND + _VM + """
+local out = {}
+local col = d.SelectableFeats
+for i = 1, (col and #col or 0) do
+  local f = col[i]
+  local reqs, locked = {}, false
+  for j = 1, #f.Requirements do
+    local r = f.Requirements[j]
+    reqs[#reqs + 1] = {text = Ext.Loca.GetTranslatedString(r.Requirement), met = r.IsMet}
+    if not r.IsMet then locked = true end
+  end
+  out[#out + 1] = {name = Ext.Loca.GetTranslatedString(f.Name), locked = locked, requirements = reqs}
+end
+return out""")
+    if not isinstance(res, list):
+        return None
+    if match:
+        res = [f for f in res if match.lower() in str(f.get("name", "")).lower()]
+    return res
+
+
 def levelup_state():
     """{known, sheet_open, levelup_open, complete, step, can_feat} read from the UI tree (no screenshot needed). known=False means the
     Script Extender didn't answer, so the other fields are guesses (all False) - don't act on them."""
