@@ -1324,6 +1324,39 @@ def bg3_toolkit_ui(action: str = "state", layer: str | None = None, apply: bool 
         return f"unknown action {action!r}"
     return json.dumps(r, indent=1)
 
+
+@mcp.tool()
+@guarded
+def bg3_modio(action: str = "status", layer: str | None = None, name: str | None = None, summary: str | None = None,
+              description: str | None = None, add: list[str] | None = None, remove: list[str] | None = None,
+              image: str | None = None, comment_id: int | None = None, text: str | None = None, limit: int = 20,
+              apply: bool = False) -> str:
+    """mod.io REST API for a layer's mod (layers.json "modio": {"mod": id}; keys in ~/.config/bg3-data-mcp/modio.env).
+    Reads: status (profile, live file + scan, tags, dependencies, comment count), comments (newest first, `limit`).
+    Writes - dry run unless apply=True: edit (name / summary / description), tags (add/remove names), deps (add/remove mod
+    ids), logo (image path), reply (comment_id + text), golive (visible=1). Uploads go through the Toolkit (bg3_toolkit_ui
+    publish): BG3 on mod.io takes files only from the developer's tool. Outward-facing: apply only when the user asked."""
+    from . import modio
+    if not layer:
+        return "needs a layer"
+    if action == "status":
+        return modio.status(layer)
+    if action == "comments":
+        return modio.comments(layer, limit)
+    if action == "edit":
+        return modio.edit(layer, name=name, summary=summary, description=description, apply=apply)
+    if action == "tags":
+        return modio.tags(layer, add or (), remove or (), apply)
+    if action == "deps":
+        return modio.deps(layer, add or (), remove or (), apply)
+    if action == "logo":
+        return modio.logo(layer, image, apply) if image else "logo needs image"
+    if action == "reply":
+        return modio.reply(layer, comment_id, text, apply) if comment_id and text else "reply needs comment_id and text"
+    if action == "golive":
+        return modio.golive(layer, apply)
+    return f"unknown action {action!r}"
+
 def main():
     mcp.run(transport="stdio")
 
