@@ -613,9 +613,9 @@ def _asi_order():
     return order
 
 
-# the level-up screen and the respec screen (character creation for an existing character) share these view-model pieces
+# the level-up screen and the respec screens (CharacterFullRespec = the Oathbreaker respec; character creation for an existing character) share these view-model pieces
 _VM = ('local _w = find(Ext.UI.GetRoot(), "CharacterLevelUp", 0) or find(Ext.UI.GetRoot(), "CharacterRespec", 0) '
-       'local d = _w.DataContext ')
+       'or find(Ext.UI.GetRoot(), "CharacterFullRespec", 0) local d = _w.DataContext ')
 
 
 def _fill_passive_selectors(log, limit=24):
@@ -1480,6 +1480,44 @@ def respec(cls, timeout=20.0):
     timing.wait(1.0)
     got = class_levels()
     return (got == {cls: 1}), f"host is now {got}"
+
+
+RESPEC_OATHBREAKER_ACCEPT = (1180, 1004)
+
+
+def respec_oathbreaker(timeout=25.0):
+    """Turn the host Paladin into an Oathbreaker the way the game does once an oath is broken and the Oathbreaker Knight's offer is
+    taken (base Shared GLO_PaladinOathbreaker: StartRespecToOathbreaker). The subclass picker never offers Oathbreaker (it's tagged
+    OATHBREAKER), so a test build picks another oath and switches here. The screen comes pre-filled (subclass + prepared spells,
+    verified 2026-10-07 at Paladin 5); fill anything left, Accept, and check the subclass. Returns (ok, message)."""
+    _close_menus()
+    r = se.eval_lua("local ok = pcall(function() Osi.StartRespecToOathbreaker(Osi.GetHostCharacter()) end) return ok", "server",
+                    timeout=10)
+    if not (r.get("ok") and r.get("result")):
+        return False, "Osi.StartRespecToOathbreaker failed"
+    t = time.time()
+    while time.time() - t < timeout and "CharacterFullRespec" not in (screen() or []):
+        timing.wait(0.5)
+    if "CharacterFullRespec" not in (screen() or []):
+        return False, f"the Oathbreaker respec screen didn't open (screen: {screen()})"
+    timing.wait(1.5)
+    log = []
+    for _ in range(6):
+        rows = pending_rows() or []
+        if not rows:
+            break
+        _fill_row(rows[0], log)
+    if pending_rows():
+        return False, f"the Oathbreaker respec choices couldn't all be filled (rows {pending_rows()}; {log}) - not accepted"
+    _rclick(*RESPEC_OATHBREAKER_ACCEPT)
+    t = time.time()
+    while time.time() - t < timeout and "CharacterFullRespec" in (screen() or ["CharacterFullRespec"]):
+        timing.wait(0.5)
+    timing.wait(1.0)
+    r = se.eval_lua("local c = Ext.Entity.Get(Osi.GetHostCharacter()).Classes.Classes[1] local s = c.SubClassUUID and "
+                    "Ext.StaticData.Get(c.SubClassUUID, 'ClassDescription') return s and s.Name or ''", "server", timeout=10)
+    sub = r.get("result")
+    return sub == "Oathbreaker", f"subclass now {sub or 'none'}"
 
 
 # ---------------------------------------------------------------- fast input: one long-lived PowerShell helper

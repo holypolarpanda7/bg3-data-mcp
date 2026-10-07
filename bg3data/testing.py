@@ -1737,11 +1737,20 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
         want = ch.get(L, {})
         spells = {sp: spell_handle(store, active, sp) for sp in want.get("spells", [])}
         sub = want.get("subclass") if b.get("subclass") else None
+        # Oathbreaker is never offered on the level-up screen: pick the build's `oathbreaker_from` oath, then switch through the
+        # game's own Oathbreaker respec (what breaking an oath leads to) before this level's checks
+        via = b.get("oathbreaker_from") if sub == "Oathbreaker" else None
         p_before = st_prev["passives"]
-        r = gameui.levelup_auto(subclass=subclass_ui_name(store, active, b["class"], sub) if sub else None, spells=spells or None)
+        r = gameui.levelup_auto(subclass=subclass_ui_name(store, active, b["class"], via or sub) if sub else None, spells=spells or None)
         if not r.get("ok"):
             out.append(f"L{L}: LEVEL-UP FAILED - {r.get('error')} | {r.get('log')}")
             break
+        if via:
+            ok, msg = gameui.respec_oathbreaker()
+            r.setdefault("log", []).append(f"subclass Oathbreaker (via {via} + Oathbreaker respec): {msg}")
+            if not ok:
+                out.append(f"L{L}: OATHBREAKER RESPEC FAILED - {msg}")
+                break
         st1 = host_state()  # one snapshot per level: level_check, the passive delta, and the next level's "before"
         st_prev = st1
         chk = level_check(store, active, st1)
