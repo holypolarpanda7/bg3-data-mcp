@@ -251,8 +251,13 @@ def lint_stats(store, active, layer, limit=200):
         # Bigby's rune spells took 3 slots for one Fog Cloud (found in game 2026-10-07); spend it OnCast or in UseCosts
         area = (fl.get("SpellType", ("",))[0] in ("Zone", "Cone", "Wall") or any((fl.get(k, ("",))[0] or "0") not in ("", "0")
                 for k in ("AreaRadius", "ExplodeRadius")))
-        if area and any(re.search(r"UseActionResource\((?:SELF,)?\s*SpellSlot", fl.get(k, ("",))[0] or "")
-                        for k in ("SpellProperties", "SpellSuccess", "SpellFail")):
+        # verified 2026-10-07: GROUND: runs once on a point-targeted spell (Bladesong Climax, Fog Cloud) but per covered area
+        # on a Zone/Cone (Burning Hands, Thunderwave: 3 slots); without GROUND: it runs per creature hit
+        zone = fl.get("SpellType", ("",))[0] in ("Zone", "Cone", "Wall")
+        slot_parts = [x.strip() for k in ("SpellProperties", "SpellSuccess", "SpellFail")
+                      for x in re.split(r";(?![^(]*\))", fl.get(k, ("",))[0] or "")
+                      if re.search(r"UseActionResource\((?:SELF,)?\s*SpellSlot", x)]
+        if area and any(zone or not x.startswith("GROUND:") for x in slot_parts):
             add("SPELL", name, file, "area spell spends a spell slot in its functors: that runs per creature hit, not once per "
                                      "cast (use UseCosts or an OnCast passive)")
         # an ExplodeRadius gives the point creature targets (the blast): Bladesong Climax's un-prefixed ally heal does run
