@@ -179,6 +179,13 @@ def publish(layer, apply=False, timeout=900):
     if not apply:
         return {"dry_run": True, "project": name, "gate": f"{'GREEN' if green else 'not green'} at {head[:10]} ({desc})",
                 "screenshot": shot, "note": "check name, description, version and thumbnail in the screenshot; apply=True publishes"}
+    # Publish stays disabled until the project was packed in this session (seen 2026-10-07): Publish Local first
+    pl = publish_local(layer)
+    if pl.get("error"):
+        return {"error": "Publish Local (needed before Publish) failed: " + pl["error"], "screenshot": pl.get("screenshot")}
+    rect = open_settings()
+    if "error" in rect:
+        return rect
     before = {w["name"] for w in _ps("windows").get("windows", [])}
     x, y = _button(rect, "publish")
     _ps("click", x=x, y=y)

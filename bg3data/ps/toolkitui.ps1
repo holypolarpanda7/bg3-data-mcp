@@ -78,7 +78,8 @@ switch ($Cmd) {
         Start-Sleep -Milliseconds 500
         $btn = $row.top.FindFirst($S::Descendants, (New-Object System.Windows.Automation.PropertyCondition($A::AutomationIdProperty, "m_OpenButton")))
         if (-not $btn -or -not $btn.Current.IsEnabled) { J @{ error = "the Select button isn't enabled after selecting $Project" }; break }
-        $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        # Invoke blocks while the project loads (the UI thread is busy) and UIA times out - that's expected, the caller waits
+        try { $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() } catch { }
         J @{ ok = $true; opening = $Project }
     }
     "menu" {
