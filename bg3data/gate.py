@@ -462,7 +462,18 @@ def post_status(path, sha, state, desc):
     return "posted" if r.returncode == 0 else f"not posted ({r.stderr.strip()[:120]}) - push the commit, then run `post`"
 
 
-def run(layer, which="affected", ingame=True, post=False, log=print, start=None):
+def run(layer, which="affected", ingame=True, post=False, log=print, start=None, standalone=False):
+    """The gate (see the module doc). In-game builds run with ONLY the mods under test loaded (deploy.isolate); the user's own mod
+    list is restored afterwards, whatever happens."""
+    from . import deploy
+    try:
+        return _run(layer, which, ingame, post, log, start, standalone)
+    finally:
+        for line in deploy.restore_isolation(layer):
+            log(line)
+
+
+def _run(layer, which="affected", ingame=True, post=False, log=print, start=None, standalone=False):
     from . import deploy, server, testing
     cfg, m, info, _ = deploy.mod_info(layer)
     path = m["path"]
@@ -516,6 +527,8 @@ def run(layer, which="affected", ingame=True, post=False, log=print, start=None)
         owing = len(todo)
         return finish(False if owing else True, f"static/regen/lint clean; {owing} build(s) not run (--no-ingame)" if owing else "clean, no builds owed")
     if todo:
+        for line in deploy.isolate(layer, standalone=standalone):
+            log(line)
         r = testing.restart(layer, True)
         log(r)
         if "session loaded" not in r:
@@ -599,6 +612,7 @@ def main(argv):
     ap.add_argument("layer")
     ap.add_argument("--builds", default="affected")
     ap.add_argument("--no-ingame", action="store_true")
+    ap.add_argument("--standalone", action="store_true", help="isolate the mod list without the layer's test_mods")
     ap.add_argument("--post", action="store_true")
     ap.add_argument("--sha")
     ap.add_argument("--log", default=os.path.join(sources.CACHE, "test_builds.log"))
@@ -616,7 +630,7 @@ def main(argv):
     if a.cmd == "run":
         if out:
             log(f"started {time.strftime('%Y-%m-%d %H:%M:%S')}: gate {a.layer}")
-        ok = run(a.layer, a.builds, not a.no_ingame, a.post, log, a.start)
+        ok = run(a.layer, a.builds, not a.no_ingame, a.post, log, a.start, a.standalone)
         sys.exit(0 if ok else 1)
     if a.cmd == "plan":
         from . import deploy, server

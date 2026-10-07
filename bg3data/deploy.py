@@ -8,6 +8,7 @@ Mod managers: Vortex/BG3 Mod Manager may rewrite modsettings.lsx when they deplo
 which disables a mod they don't manage; re-running enable (or bg3_deploy) puts it back. See bg3_environment.
 """
 import glob
+import json
 import os
 import re
 import shutil
@@ -157,6 +158,81 @@ def enable(layer):
     text = text[:line_start] + node + text[line_start:]
     open(ms, "w", encoding="utf-8", newline="").write(text)
     return lines + [f"enabled {info['Name']} in modsettings.lsx (last in load order, after its dependencies; backup kept)"]
+
+
+# ---------------------------------------------------------------- test isolation (2026-10-07)
+# A test must load only the mods it is about: the layer, its declared dependencies and the mods the layer lists as `test_mods`
+# in layers.json ([{"name": "dnd55e", "uuid": "..."}]). Anything else the profile has enabled (another mod project's pak, a
+# retired mod) can mask or cause a result. isolate() trims the active profile's modsettings.lsx to that set, backing the original up;
+# restore_isolation() puts it back. Saves made with a bigger mod list then load with a "missing mods" box, which
+# gameui.load_save tolerates for exactly the mods removed here (the list is kept in isolation.json).
+ISOLATION = os.path.join(sources.CACHE, "isolation.json")
+BASE_MODULE_NAMES = {"GustavX", "GustavDev", "Gustav", "Shared", "SharedDev", "Honour", "HonourX", "MainUI", "ModBrowser",
+                     "PhotoMode", "CrossplayUI", "DiceSet_01", "DiceSet_02", "DiceSet_03", "DiceSet_06"}
+
+
+def isolation_state():
+    try:
+        return json.load(open(ISOLATION, encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def isolate(layer, standalone=False):
+    """Trim modsettings.lsx to the base game's modules + the layer + its dependencies + its test_mods (none when standalone).
+    Returns report lines. Idempotent: an earlier isolation's backup is kept, never overwritten by a trimmed file."""
+    cfg, m, info, deps = mod_info(layer)
+    _, _, ms = _paths(cfg)
+    if not os.path.exists(ms):
+        return [f"modsettings.lsx not found at {ms}; nothing isolated"]
+    keep = {info["UUID"]} | {d["UUID"] for d in deps}
+    if not standalone:
+        keep |= {(t["uuid"] if isinstance(t, dict) else t) for t in (m.get("test_mods") or [])}
+    state = isolation_state()
+    backup = state["backup"] if state and os.path.exists(state.get("backup", "")) else ms + ".pre-isolate"
+    if not (state and os.path.exists(backup)):
+        shutil.copy2(ms, backup)
+    text = open(ms, encoding="utf-8").read()
+    removed = []
+
+    def trim(mm):
+        b = mm.group(0)
+        nm = (re.search(r'id="Name" type="LSString" value="([^"]*)"', b) or [None, ""])[1]
+        u = (re.search(r'id="UUID" type="guid" value="([^"]+)"', b) or [None, ""])[1]
+        if nm in BASE_MODULE_NAMES or u in keep:
+            return b
+        removed.append({"name": nm, "uuid": u})
+        return ""
+    new = re.sub(r'[ \t]*<node id="ModuleShortDesc">.*?</node>[ \t]*\r?\n?', trim, text, flags=re.S)
+    open(ms, "w", encoding="utf-8", newline="").write(new)
+    prev = (state or {}).get("removed", [])
+    allremoved = prev + [r for r in removed if r["uuid"] not in {x["uuid"] for x in prev}]
+    json.dump({"backup": backup, "layer": layer, "removed": allremoved, "standalone": standalone}, open(ISOLATION, "w", encoding="utf-8"))
+    kept = sorted(keep - {""})
+    return [f"isolated the mod list for {layer}{' (standalone)' if standalone else ''}: kept {len(kept)} mod(s) beyond the base game, "
+            f"removed {', '.join(r['name'] or r['uuid'] for r in removed) or 'nothing'} (original backed up; restored when the run ends)"]
+
+
+def restore_isolation(layer=None):
+    """Put the original modsettings.lsx back (and re-enable the layer if it was added meanwhile). Safe to call when not isolated."""
+    state = isolation_state()
+    if not state:
+        return []
+    cfg, _, _, _ = mod_info(state.get("layer") or layer)
+    _, _, ms = _paths(cfg)
+    lines = []
+    if os.path.exists(state["backup"]):
+        shutil.copy2(state["backup"], ms)
+        lines.append("restored the original mod list (modsettings.lsx)")
+    try:
+        os.remove(ISOLATION)
+    except OSError:
+        pass
+    try:
+        lines += enable(state["layer"])
+    except Exception as e:  # restoring is the point; a failed re-enable is only a note
+        lines.append(f"note: couldn't re-check {state['layer']} in modsettings.lsx ({e})")
+    return lines
 
 
 def _changed(path):

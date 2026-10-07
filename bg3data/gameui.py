@@ -1332,7 +1332,10 @@ def _save_only_lacks_mods(name):
         if not prob.startswith("differs: "):
             return True
         return bool(set(prob[len("differs: "):].split(", ")) - {"MD5", "PublishHandle", "Name"})
-    bad = [f"{(m.get('Name') or m.get('Folder'))}: {prob}" for m, prob, _ in rows if serious(prob)]
+    from . import deploy
+    isolated = {r["uuid"] for r in (deploy.isolation_state() or {}).get("removed", [])}   # mods a test run took out on purpose
+    bad = [f"{(m.get('Name') or m.get('Folder'))}: {prob}" for m, prob, _ in rows
+           if serious(prob) and m.get("UUID") not in isolated]
     return "; ".join(bad) if bad else None
 
 
