@@ -356,6 +356,8 @@ def test_offer_gaps():
     check("offer_gaps: only level 7 at Sorcerer 13 still fails", len(s13) == 1 and s13[0].startswith("FAIL"), s13)
     check("offer_gaps: a pick entirely above the slots (Mystic Arcanum) is exempt",
           g.offer_gaps([{"key": N, "levels": {"6": 5}, "i": 1}], 5) == [])
+    sav = g.offer_gaps([{"key": S, "levels": {"7": 9}, "i": 1}], 7)
+    check("offer_gaps: Evocation Savant 13 (subclass pick, level 7 only) is a WARN", len(sav) == 1 and sav[0].startswith("WARN"), sav)
     gap = g.offer_gaps([{"key": N, "levels": {"1": 3, "3": 2}, "i": 1}], 3)
     check("offer_gaps: a skipped level within the slots fails", len(gap) == 1 and "no level 2" in gap[0], gap)
 

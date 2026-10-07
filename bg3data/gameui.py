@@ -1070,10 +1070,11 @@ return out""")
 
 def offer_gaps(offers, top_slot, lists=None):
     """Problems with the spell choices a level-up screen offered, as "FAIL ..." / "WARN ..." lines.
-    FAIL: a level-up's spell picks (class picks and subclass picks separately), taken together, skip a spell level the
+    FAIL: a level-up's class spell picks, taken together, skip a spell level the
     character can cast - leveled spells offered, but not every level from 1 to the highest offered one within the slots
     (Apotheosis Sorcerer 13 offered only level 7, 2026-10-05). Taken together because dnd55e often splits one level-up's
-    picks by spell level (Divine Soul 3: two from the level 1 Cleric list, two from the level 2 one).
+    picks by spell level. Subclass picks get WARN for the same gap: they're feature lists (Evocation Savant 13 offers only
+    level 7 by the rules; Divine Soul 3 picks from the level 1 and level 2 Cleric lists).
     WARN: one pick that offers castable spells and spells above the character's highest slot (dnd55e's Ritual Caster Feat
     list offers 3rd-level rituals at Wizard 4, 2026-10-06). A pick entirely above the slots (slot-free, e.g. Mystic
     Arcanum) or of cantrips only is exempt from both.
@@ -1096,7 +1097,10 @@ def offer_gaps(offers, top_slot, lists=None):
     for key, (lv, names) in groups.items():
         missing = [x for x in range(1, max(lv) + 1) if x not in lv] if lv else []
         if missing:
-            bad.append(f"FAIL {key} picks offer spell levels {sorted(lv)}: no level {', '.join(map(str, missing))} spells "
+            # subclass picks are feature-shaped by design (Evocation Savant: one spell of the NEW slot level only; Divine Soul's
+            # per-level Cleric picks), so a gap there is a WARN; class picks are learn lists and must cover every level
+            sev = "WARN" if key == "SubSpellSelectors" else "FAIL"
+            bad.append(f"{sev} {key} picks offer spell levels {sorted(lv)}: no level {', '.join(map(str, missing))} spells "
                        f"({'; '.join(names)})")
     return bad
 
