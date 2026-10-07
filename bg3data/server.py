@@ -916,14 +916,17 @@ def bg3_test_build_status(lines: int = 60) -> str:
 @mcp.tool()
 @guarded
 def bg3_gate(layer: str, action: str = "plan", builds: str = "affected", ingame: bool = True, post: bool = False,
-             sha: str | None = None, since: str | None = None) -> str:
+             sha: str | None = None, since: str | None = None, start: int | None = None) -> str:
     """Local release gate for a mod layer (bg3data/gate.py): clean git tree -> static XML checks -> regen changes nothing -> the
     four lints clean -> deploy + the in-game builds the commit owes. A build is owed when it never passed or when the changes
     since the commit it last passed at reach its footprint (stats/list/progression nodes/cases reachable from its class and
     subclass); Script Extender code, meta.lsx and unplaceable files owe every build. action: "plan" (what would run, no game),
     "run" (detached, hours; progress with bg3_gate_status; refuses while a background build batch runs), "status" (HEAD green/red,
     per-build records), "seed" (record a runbuilds log's results as run at `sha`, batches started at/after `since`), "post"
-    (GitHub commit status "bg3data/gate" for `sha` or HEAD). builds: affected | all | id,id. post=True posts when a run ends."""
+    (GitHub commit status "bg3data/gate" for `sha` or HEAD). builds: affected | all | id,id. post=True posts when a run ends.
+    Each owed build re-takes levels from the lowest level the changes touch, resuming from its newest checkpoint below it
+    ("<build> L5/10/15/18..." saves); start= overrides that level for every build (you assert nothing below it changed - e.g.
+    Script Extender code that only acts at level 19, which the matcher can't place)."""
     from . import gate
     if action == "run":
         import subprocess, sys
@@ -932,7 +935,7 @@ def bg3_gate(layer: str, action: str = "plan", builds: str = "affected", ingame:
         log = os.path.join(sources.CACHE, "gate", "gate.log")
         os.makedirs(os.path.dirname(log), exist_ok=True)
         args = [sys.executable, "-m", "bg3data.gate", "run", layer, "--builds", builds, "--out", log] + \
-               (["--no-ingame"] if not ingame else []) + (["--post"] if post else [])
+               (["--no-ingame"] if not ingame else []) + (["--post"] if post else []) + (["--start", str(start)] if start else [])
         subprocess.Popen(args, cwd=os.path.dirname(os.path.dirname(__file__)), stdout=subprocess.DEVNULL,
                          stderr=open(log + ".err", "a"), start_new_session=True)
         return f"gate started in the background; progress: bg3_gate_status (log {log})"
@@ -941,8 +944,8 @@ def bg3_gate(layer: str, action: str = "plan", builds: str = "affected", ingame:
         _, m, _, _ = deploy.mod_info(layer)
         head = gate._git(m["path"], "rev-parse", "HEAD").strip()
         s, active = _testing_store(None)
-        todo, notes = gate.plan(s, active, layer, m["path"], head, gate.load_state(layer), builds)
-        return (f"{len(todo)} build(s) owed at {head[:10]}:" + "".join(f"\n  {b}: {'; '.join(w)}" for b, w in todo)
+        todo, notes = gate.plan(s, active, layer, m["path"], head, gate.load_state(layer), builds, start)
+        return (f"{len(todo)} build(s) owed at {head[:10]}:" + "".join(f"\n  {b} (from L{lv}): {'; '.join(w)}" for b, w, lv in todo)
                 + "".join(f"\n  note: {n}" for n in notes))
     if action == "status":
         return gate.status(layer)

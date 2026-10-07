@@ -1528,6 +1528,16 @@ class _Log(list):
     __iadd__ = extend
 
 
+# Extra checkpoint levels besides every checkpoint_every(): 18, the last level before the capstones (19 Epic Boon, 20), so a
+# change to levels 19-20 re-tests two levels instead of five (added 2026-10-06).
+EXTRA_CHECKPOINTS = (18,)
+
+
+def is_checkpoint(level):
+    ce = checkpoint_every()
+    return bool(ce) and (level % ce == 0 or level in EXTRA_CHECKPOINTS)
+
+
 def checkpoint_name(build_id, level):
     return f"{build_id} L{level}"
 
@@ -1653,10 +1663,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     cl = gameui.class_levels() or {}
     resumed = None
     if start_level:
-        ce = checkpoint_every() or 5
-        for k in range((start_level - 1) // ce * ce, lo - 1, -ce):
-            if k < lo or k < 1:
-                break
+        for k in sorted((k for k in range(max(lo, 1), start_level) if is_checkpoint(k)), reverse=True):
             if lv == k and cl == {b["class"]: k}:
                 resumed = f"host already at checkpoint level {k}"
                 break
@@ -1751,7 +1758,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
             if ec["in_combat"]:
                 out.append("    host is still in combat after the tests - stopping (a level-up can't open in combat)")
                 break
-        if checkpoint_every() and L % checkpoint_every() == 0:   # a checkpoint for later re-tests (start_level)
+        if is_checkpoint(L):   # a checkpoint for later re-tests (start_level)
             try:
                 ok_, info_ = gameui.save_game(checkpoint_name(build_id, L))
                 out.append(f"    checkpoint {checkpoint_name(build_id, L)!r} " + ("saved" if ok_ else f"NOT saved: {info_}"))

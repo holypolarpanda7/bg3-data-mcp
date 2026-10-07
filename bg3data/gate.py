@@ -192,17 +192,29 @@ class Footprints:
                 keys |= {n, u}
                 if at.get("ProgressionTableUUID"):
                     tables.add(at["ProgressionTableUUID"])
-        seeds = set()
+        by_level = {}
         for t in tables:
             for at in self.prog.get(t, []):
                 txt = " ".join(str(v) for v in at.values())
-                seeds |= {x for x in IDENT.findall(txt) if x in self.names}
-                seeds |= {x for x in GUID.findall(txt) if x in self.lists}
+                lv = int(at.get("Level") or 1)
+                by_level.setdefault(lv, set()).update({x for x in IDENT.findall(txt) if x in self.names},
+                                                      {x for x in GUID.findall(txt) if x in self.lists})
+        # first level that reaches each entry (a change to it can't matter below that level - the re-test starts there)
+        first = {}
+        for lv in sorted(by_level):
+            for x in self._expand(by_level[lv]):
+                first.setdefault(x, lv)
+        seeds = set()
         cases = self.assigned.get(bid, [])
+        lo, hi = b.get("levels", [1, 20])
         for c in cases:
             txt = json.dumps(c)
-            seeds |= {x for x in IDENT.findall(txt) if x in self.names}
-        fp = {"refs": self._expand(seeds) | keys | tables, "cases": {c["id"] for c in cases}}
+            got = self._expand({x for x in IDENT.findall(txt) if x in self.names})
+            seeds |= got
+            for x in got:
+                first.setdefault(x, int(c.get("level") or lo))
+        fp = {"refs": set(first) | seeds | keys | tables, "cases": {c["id"]: int(c.get("level") or hi) for c in cases},
+              "first": first, "tables": tables}
         self._fp[bid] = fp
         return fp
 
@@ -240,7 +252,7 @@ def _lsx_nodes(text):
             continue
         sig = ET.tostring(node, encoding="unicode")
         sig = re.sub(r"\s+", " ", sig)
-        ids = {k: attrs[k] for k in ("UUID", "MapKey", "TableUUID", "Name", "ParentGuid", "MergedInto") if attrs.get(k)}
+        ids = {k: attrs[k] for k in ("UUID", "MapKey", "TableUUID", "Name", "ParentGuid", "MergedInto", "Level") if attrs.get(k)}
         out[f"{node.get('id')}:{key}"] = (sig, ids)
     return out
 
@@ -314,24 +326,32 @@ def _reached(names, refs):
 
 
 def owed(fps, ch, bid):
-    """Why build bid must run for changes ch ([] = it needn't)."""
+    """(why, start): why build bid must run for changes ch ([] = it needn't), and the lowest level those changes touch
+    (1 = from the start; a later level lets the run resume from the newest checkpoint below it)."""
     if ch["all"]:
-        return ["every build: " + ch["all"][0] + (f" (+{len(ch['all']) - 1} more)" if len(ch["all"]) > 1 else "")]
+        return ["every build: " + ch["all"][0] + (f" (+{len(ch['all']) - 1} more)" if len(ch["all"]) > 1 else "")], 1
     fp = fps.footprint(bid)
-    why = []
+    first, why, start = fp["first"], [], []
     hit = sorted(_reached(ch["stats"], fp["refs"]))
     if hit:
         why.append("stats " + ", ".join(hit[:4]) + ("..." if len(hit) > 4 else ""))
-    for ids in ch["nodes"] + ch["progression_nodes"]:
+        start += [first.get(n, first.get(re.sub(r"_\d+$", "", n), 1)) for n in hit]
+    for ids in ch["nodes"]:
         if set(ids.values()) & fp["refs"]:
-            why.append(f"node {ids.get('Name') or ids.get('UUID')}")
-            break
+            why.append(f"list {ids.get('Name') or ids.get('UUID')}")
+            start.append(min([first[v] for v in ids.values() if v in first] or [1]))
+    for ids in ch["progression_nodes"]:
+        if set(ids.values()) & fp["refs"]:
+            why.append(f"node {ids.get('Name')} L{ids.get('Level', '?')}")
+            start.append(int(ids.get("Level") or 1) if ids.get("TableUUID") in fp["tables"] else 1)
     if bid in ch["builds"]:
         why.append("build definition")
-    hit = sorted(ch["cases"] & fp["cases"])
+        start.append(1)
+    hit = sorted(set(ch["cases"]) & set(fp["cases"]))
     if hit:
         why.append("cases " + ", ".join(hit[:3]) + ("..." if len(hit) > 3 else ""))
-    return why
+        start += [fp["cases"][c] for c in hit]
+    return why, (min(start) if start else 1)
 
 
 def unplaced(fps, ch, bids):
@@ -385,21 +405,22 @@ def step_lint(store, active, layer):
 
 # ---------------------------------------------------------------- plan + run
 
-def plan(store, active, layer, path, head, st, which="affected"):
-    """[(build id, [reasons])] the commit needs, plus notes."""
+def plan(store, active, layer, path, head, st, which="affected", start=None):
+    """[(build id, [reasons], start level)] the commit needs, plus notes. start overrides the computed start level (the caller
+    asserts nothing below it changed - e.g. Script Extender code that only acts at level 19, which the matcher can't place)."""
     fps = Footprints(store, active, layer)
     runnable = [b for b, d in fps.builds.items() if d.get("from")]  # base builds only make start saves
     notes = []
     if which == "all":
-        return [(b, ["all requested"]) for b in runnable], notes
+        return [(b, ["all requested"], start or 1) for b in runnable], notes
     if which != "affected":
         ids = [x.strip() for x in which.split(",") if x.strip()]
-        return [(b, ["requested"]) for b in ids], notes
+        return [(b, ["requested"], start or 1) for b in ids], notes
     todo, cache = [], {}
     for b in runnable:
         rec = st["builds"].get(b)
         if not rec or not rec.get("pass_sha"):
-            todo.append((b, ["never passed"]))
+            todo.append((b, ["never passed"], 1))   # a full run: there's no passing run to resume from
             continue
         sha = rec["pass_sha"]
         if sha == head:
@@ -412,9 +433,9 @@ def plan(store, active, layer, path, head, st, which="affected"):
                     cache[sha]["all"].append(f"progression node {up[0].get('Name') or up[0].get('UUID')} that no build reaches (race/background?)")
             except RuntimeError as e:
                 cache[sha] = {"all": [f"can't diff from {sha[:8]}: {e}"]}
-        why = owed(fps, cache[sha], b) if "stats" in cache[sha] else cache[sha]["all"]
+        why, lv = owed(fps, cache[sha], b) if "stats" in cache[sha] else (cache[sha]["all"], 1)
         if why:
-            todo.append((b, why))
+            todo.append((b, why, start or lv))
     for sha, ch in cache.items():
         if "stats" in ch:
             reached = set()
@@ -436,7 +457,7 @@ def post_status(path, sha, state, desc):
     return "posted" if r.returncode == 0 else f"not posted ({r.stderr.strip()[:120]}) - push the commit, then run `post`"
 
 
-def run(layer, which="affected", ingame=True, post=False, log=print):
+def run(layer, which="affected", ingame=True, post=False, log=print, start=None):
     from . import deploy, server, testing
     cfg, m, info, _ = deploy.mod_info(layer)
     path = m["path"]
@@ -481,11 +502,11 @@ def run(layer, which="affected", ingame=True, post=False, log=print):
     s, active = server._testing_store(None)
     if not step("lint", step_lint(s, active, layer)):
         return finish(False, "lint findings")
-    todo, notes = plan(s, active, layer, path, head, st, which)
+    todo, notes = plan(s, active, layer, path, head, st, which, start)
     rep.append(f"## plan: {len(todo)} build(s)")
-    rep.extend(f"- {b}: {'; '.join(w)}" for b, w in todo)
+    rep.extend(f"- {b} (from L{lv}): {'; '.join(w)}" for b, w, lv in todo)
     rep.extend(f"- note: {n}" for n in notes)
-    log(f"plan: {len(todo)} build(s)" + "".join(f"\n  {b}: {'; '.join(w)}" for b, w in todo[:40]) + "".join(f"\n  note: {n}" for n in notes))
+    log(f"plan: {len(todo)} build(s)" + "".join(f"\n  {b} (from L{lv}): {'; '.join(w)}" for b, w, lv in todo[:40]) + "".join(f"\n  note: {n}" for n in notes))
     if not ingame:
         owing = len(todo)
         return finish(False if owing else True, f"static/regen/lint clean; {owing} build(s) not run (--no-ingame)" if owing else "clean, no builds owed")
@@ -496,12 +517,14 @@ def run(layer, which="affected", ingame=True, post=False, log=print):
             step("ingame", [f"restart/deploy failed: {r.splitlines()[-1] if r else ''}"])
             return finish(False, "couldn't deploy and start the game")
     fps_top = {d["id"]: d["levels"][1] for d in testing.load_builds(layer)}
+    fps_lo = {d["id"]: d["levels"][0] for d in testing.load_builds(layer)}
     failed = []
-    for b, why in todo:
+    for b, why, lv in todo:
         t = time.time()
-        log(f"build {b} ({'; '.join(why)})")
+        resume = lv if lv > fps_lo.get(b, 1) else None   # from the newest checkpoint below lv (run_build falls back to the start)
+        log(f"build {b}{f' from L{lv}' if resume else ''} ({'; '.join(why)})")
         try:
-            r = testing.run_build(s, active, layer, b)
+            r = testing.run_build(s, active, layer, b, start_level=resume)
         except Exception as e:
             r = f"ERROR {type(e).__name__}: {e}"
         ok = build_passed(r, fps_top.get(b))
@@ -575,6 +598,7 @@ def main(argv):
     ap.add_argument("--log", default=os.path.join(sources.CACHE, "test_builds.log"))
     ap.add_argument("--since")
     ap.add_argument("--out")
+    ap.add_argument("--start", type=int, help="first level to re-take for every owed build (asserts nothing below changed)")
     a = ap.parse_args(argv)
     out = open(a.out, "a", encoding="utf-8") if a.out else None
 
@@ -586,15 +610,15 @@ def main(argv):
     if a.cmd == "run":
         if out:
             log(f"started {time.strftime('%Y-%m-%d %H:%M:%S')}: gate {a.layer}")
-        ok = run(a.layer, a.builds, not a.no_ingame, a.post, log)
+        ok = run(a.layer, a.builds, not a.no_ingame, a.post, log, a.start)
         sys.exit(0 if ok else 1)
     if a.cmd == "plan":
         from . import deploy, server
         _, m, _, _ = deploy.mod_info(a.layer)
         head = _git(m["path"], "rev-parse", "HEAD").strip()
         s, active = server._testing_store(None)
-        todo, notes = plan(s, active, a.layer, m["path"], head, load_state(a.layer), a.builds)
-        log(f"{len(todo)} build(s) owed at {head[:10]}:" + "".join(f"\n  {b}: {'; '.join(w)}" for b, w in todo) + "".join(f"\n  note: {n}" for n in notes))
+        todo, notes = plan(s, active, a.layer, m["path"], head, load_state(a.layer), a.builds, a.start)
+        log(f"{len(todo)} build(s) owed at {head[:10]}:" + "".join(f"\n  {b} (from L{lv}): {'; '.join(w)}" for b, w, lv in todo) + "".join(f"\n  note: {n}" for n in notes))
     elif a.cmd == "status":
         log(status(a.layer))
     elif a.cmd == "seed":
