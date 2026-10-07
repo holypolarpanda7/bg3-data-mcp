@@ -1488,36 +1488,47 @@ RESPEC_OATHBREAKER_ACCEPT = (1180, 1004)
 def respec_oathbreaker(timeout=25.0):
     """Turn the host Paladin into an Oathbreaker the way the game does once an oath is broken and the Oathbreaker Knight's offer is
     taken (base Shared GLO_PaladinOathbreaker: StartRespecToOathbreaker). The subclass picker never offers Oathbreaker (it's tagged
-    OATHBREAKER), so a test build picks another oath and switches here. The screen comes pre-filled (subclass + prepared spells,
-    verified 2026-10-07 at Paladin 5); fill anything left, Accept, and check the subclass. Returns (ok, message)."""
+    OATHBREAKER), so a test build picks another oath and switches here. The screen (CharacterFullRespec) comes pre-filled (subclass
+    + prepared spells, verified 2026-10-07 at Paladin 5); fill anything left, Accept, and check the subclass. Straight after a
+    level-up the first try once didn't take, so it waits for the level-up screen to go and retries. Returns (ok, message)."""
+    sub_lua = ("local c = Ext.Entity.Get(Osi.GetHostCharacter()).Classes.Classes[1] local s = c.SubClassUUID and "
+               "Ext.StaticData.Get(c.SubClassUUID, 'ClassDescription') return s and s.Name or ''")
+    t = time.time()
+    while time.time() - t < timeout and "CharacterLevelUp" in (screen() or []):
+        timing.wait(0.5)
     _close_menus()
-    r = se.eval_lua("local ok = pcall(function() Osi.StartRespecToOathbreaker(Osi.GetHostCharacter()) end) return ok", "server",
-                    timeout=10)
-    if not (r.get("ok") and r.get("result")):
-        return False, "Osi.StartRespecToOathbreaker failed"
-    t = time.time()
-    while time.time() - t < timeout and "CharacterFullRespec" not in (screen() or []):
-        timing.wait(0.5)
-    if "CharacterFullRespec" not in (screen() or []):
-        return False, f"the Oathbreaker respec screen didn't open (screen: {screen()})"
-    timing.wait(1.5)
-    log = []
-    for _ in range(6):
-        rows = pending_rows() or []
-        if not rows:
-            break
-        _fill_row(rows[0], log)
-    if pending_rows():
-        return False, f"the Oathbreaker respec choices couldn't all be filled (rows {pending_rows()}; {log}) - not accepted"
-    _rclick(*RESPEC_OATHBREAKER_ACCEPT)
-    t = time.time()
-    while time.time() - t < timeout and "CharacterFullRespec" in (screen() or ["CharacterFullRespec"]):
-        timing.wait(0.5)
     timing.wait(1.0)
-    r = se.eval_lua("local c = Ext.Entity.Get(Osi.GetHostCharacter()).Classes.Classes[1] local s = c.SubClassUUID and "
-                    "Ext.StaticData.Get(c.SubClassUUID, 'ClassDescription') return s and s.Name or ''", "server", timeout=10)
-    sub = r.get("result")
-    return sub == "Oathbreaker", f"subclass now {sub or 'none'}"
+    sub, log = "", []
+    for attempt in range(3):
+        if "CharacterFullRespec" not in (screen() or []):
+            r = se.eval_lua("local ok = pcall(function() Osi.StartRespecToOathbreaker(Osi.GetHostCharacter()) end) return ok",
+                            "server", timeout=10)
+            if not (r.get("ok") and r.get("result")):
+                return False, "Osi.StartRespecToOathbreaker failed"
+            t = time.time()
+            while time.time() - t < timeout and "CharacterFullRespec" not in (screen() or []):
+                timing.wait(0.5)
+            if "CharacterFullRespec" not in (screen() or []):
+                log.append(f"try {attempt + 1}: the respec screen didn't open")
+                continue
+        timing.wait(3.0)  # the screen fades in; an early click is lost
+        for _ in range(6):
+            rows = pending_rows() or []
+            if not rows:
+                break
+            _fill_row(rows[0], log)
+        if pending_rows():
+            return False, f"the Oathbreaker respec choices couldn't all be filled (rows {pending_rows()}; {log}) - not accepted"
+        _rclick(*RESPEC_OATHBREAKER_ACCEPT)
+        t = time.time()
+        while time.time() - t < 10 and "CharacterFullRespec" in (screen() or ["CharacterFullRespec"]):
+            timing.wait(0.5)
+        timing.wait(1.5)
+        sub = se.eval_lua(sub_lua, "server", timeout=10).get("result")
+        if sub == "Oathbreaker":
+            return True, "subclass now Oathbreaker" + (f" (after {attempt + 1} tries)" if attempt else "")
+        log.append(f"try {attempt + 1}: subclass {sub or 'none'}")
+    return False, f"subclass now {sub or 'none'} ({'; '.join(log)})"
 
 
 # ---------------------------------------------------------------- fast input: one long-lived PowerShell helper
