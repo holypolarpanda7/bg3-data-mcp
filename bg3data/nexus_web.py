@@ -80,6 +80,19 @@ class Browser:
                 pass   # the context is being replaced mid-navigation
         time.sleep(settle)
 
+    def go_ready(self, url, selector, tries=6):
+        """Open an edit page and wait for `selector`; reload when Nexus answers "Failed to load mod details (403)" (its
+        settings call is rate-limited or Cloudflare-checked at times and works on a later try - seen 2026-10-07)."""
+        for n in range(tries):
+            self.go(url, settle=1 + 2 * n)
+            try:
+                self.wait(selector, timeout=12.0 + 6 * n)
+                return
+            except RuntimeError:
+                if n == tries - 1:
+                    raise
+                time.sleep(3 * (n + 1))
+
     def wait(self, selector, timeout=30.0):
         """Wait until `selector` matches (the edit pages render client-side after load)."""
         t = time.time()
@@ -173,12 +186,10 @@ _READ_REQS = """(() => {
 
 
 def read_page(b, nx):
-    b.go(edit_url(nx, "general"), settle=1)
-    b.wait("#mod-name")
+    b.go_ready(edit_url(nx, "general"), "#mod-name")
     b.wait("textarea.nxm-text-area")
     g = b.js(_READ_GENERAL)
-    b.go(edit_url(nx, "requirements"), settle=1)
-    b.wait("[role=radio]")
+    b.go_ready(edit_url(nx, "requirements"), "[role=radio]")
     b.js(_OPEN_DETAILS)   # the legacy lists sit in collapsed <details> whose rows only render once opened
     time.sleep(2)
     g["requirements"] = b.js(_READ_REQS)
@@ -244,8 +255,9 @@ def diff(layer, b=None):
         if own:
             b.close()
     spec = _load_spec(layer)
+    norm = lambda v: (v or "").replace("[/*]", "").replace("\r\n", "\n").strip()   # the editor closes list items with [/*]
     changes = {k: (live.get(k), spec[k]) for k in ("name", "version", "author", "summary", "description")
-               if spec.get(k) is not None and (spec[k] or "").strip() != (live.get(k) or "").strip()}
+               if spec.get(k) is not None and norm(spec[k]) != norm(live.get(k))}
     lr, sr = live["requirements"], spec.get("requirements", {})
     req = {}
     if sr.get("method") and sr["method"] != lr["method"]:
@@ -288,8 +300,7 @@ def push(layer, apply=False):
         spec = _load_spec(layer)
         log = []
         if d["fields"]:
-            b.go(edit_url(nx, "general"), settle=1)
-            b.wait("#mod-name")
+            b.go_ready(edit_url(nx, "general"), "#mod-name")
             js = [f"const setValue = {_SET};"]
             for k, sel in (("name", "#mod-name"), ("version", "#mod-version"), ("author", "#author-name")):
                 if k in d["fields"]:
@@ -324,8 +335,7 @@ def _click_save(b):
 
 def _apply_requirements(b, nx, req):
     out = []
-    b.go(edit_url(nx, "requirements"), settle=1)
-    b.wait("[role=radio]")
+    b.go_ready(edit_url(nx, "requirements"), "[role=radio]")
     if "method" in req:
         idx = 1 if req["method"][1] == "legacy" else 0
         b.js(f"document.querySelectorAll('[role=radio]')[{idx}].click()")
