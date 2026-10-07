@@ -62,7 +62,7 @@ def find_save(cfg, query):
         if not saves:
             raise ValueError("no saves found")
         return saves[0][2]
-    hits = [s for s in saves if query.lower() in s[1].lower()]
+    hits = [s for s in saves if s[1].lower() == query.lower()] or [s for s in saves if query.lower() in s[1].lower()]
     if len(hits) != 1:
         raise ValueError(f"{len(hits)} saves match {query!r}" + (": " + ", ".join(h[1] for h in hits[:8]) if hits else ""))
     return hits[0][2]

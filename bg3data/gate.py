@@ -527,7 +527,7 @@ def _run(layer, which="affected", ingame=True, post=False, log=print, start=None
         owing = len(todo)
         return finish(False if owing else True, f"static/regen/lint clean; {owing} build(s) not run (--no-ingame)" if owing else "clean, no builds owed")
     if todo:
-        for line in deploy.isolate(layer, standalone=standalone):
+        for line in deploy.isolate(layer, standalone=standalone) + deploy.isolate_saves(layer):
             log(line)
         r = testing.restart(layer, True)
         log(r)

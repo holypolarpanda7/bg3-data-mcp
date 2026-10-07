@@ -213,6 +213,31 @@ def isolate(layer, standalone=False):
             f"removed {', '.join(r['name'] or r['uuid'] for r in removed) or 'nothing'} (original backed up; restored when the run ends)"]
 
 
+def isolate_saves(layer):
+    """The game refuses to load a save whose mods are missing (Mod Verification box, Start Game disabled), so the saves an
+    isolated run loads - the newest (what Continue loads) and the layer's build start/checkpoint saves - get the removed mods
+    dropped from their mod list (save_backups keeps the originals; a later normal load only sees 'new mods', which is tolerated)."""
+    from . import saves, testing
+    state = isolation_state() or {}
+    removed = [r["uuid"] for r in state.get("removed", [])]
+    if not removed:
+        return []
+    cfg = sources.load_config()
+    names = {b["id"] for b in testing.load_builds(layer)} | {b["from"] for b in testing.load_builds(layer) if b.get("from")}
+    targets = {d for _, d, _ in saves.list_saves(cfg, 1)}
+    for _, d, _ in saves.list_saves(cfg, 10_000):
+        if any(n.lower() in d.lower() for n in names):
+            targets.add(d)
+    out = []
+    for d in sorted(targets):
+        try:
+            r = saves.fix_mods(cfg, d, remove=removed, sync=False, apply=True)
+            out.append(f"save {d}: " + ("dropped the isolated mods" if "rewrote" in r else r.splitlines()[-1]))
+        except Exception as e:
+            out.append(f"save {d}: not fixed ({e})")
+    return out
+
+
 def restore_isolation(layer=None):
     """Put the original modsettings.lsx back (and re-enable the layer if it was added meanwhile). Safe to call when not isolated."""
     state = isolation_state()
