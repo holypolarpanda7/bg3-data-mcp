@@ -845,6 +845,8 @@ Osi.LeaveCombat(h) return true""")
             post.append(f"BG3T.apply({_who(st_)}, {se._lua_string(st_['status'])}, {int(st_.get('turns', 10))}{by_})")
         if st_.get("boost"):
             post.append(f"BG3T.grant({_who(st_)}, {se._lua_string(st_['boost'])})")
+        if st_.get("toggle_off"):  # a toggled passive switched off for the case, back on at cleanup
+            post.append(f"BG3T.toggleOff({_who(st_)}, {se._lua_string(st_['toggle_off'])})")
         if st_.get("dead"):  # e.g. a corpse for revive spells
             post.append(f"pcall(Osi.Die, {_who(st_)}, 0, 'NULL_00000000-0000-0000-0000-000000000000', 0, 1)")
     # a case that deliberately starts you at low HP mustn't trip the safety watch by itself

@@ -13,6 +13,7 @@ T.spawns = T.spawns or {}      -- alias -> guid
 T.grants = T.grants or {}      -- { {guid, boost} }
 T.applied = T.applied or {}    -- { {guid, status} }
 T.added_passives = T.added_passives or {}  -- { {guid, passive} } added by tests (T.passives() is the snapshot function)
+T.toggled = T.toggled or {}  -- { {guid, passive} } toggled passives a test switched off (switched back on at cleanup)
 T.events = T.events or {}
 T.seq = T.seq or 0
 T.recording = T.recording or false
@@ -458,6 +459,20 @@ function T.drain(since)
     return out
 end
 
+-- Switch a toggled passive off for a case (e.g. dnd55e Baleful Interdict spends a seal on every weapon hit, which would
+-- muddle a case counting another feature's seal cost); cleanup switches it back on. Returns the state it found.
+function T.toggleOff(g, passive)
+    g = uuid(g)
+    local on
+    pcall(function() for _, p in ipairs(Ext.Entity.Get(g).PassiveContainer.Passives) do
+        if p.Passive.PassiveId == passive then on = p.Passive.ToggledOn end end end)
+    if on then
+        Osi.TogglePassive(g, passive)
+        T.toggled[#T.toggled + 1] = { g, passive }
+    end
+    return on
+end
+
 function T.cleanup()
     T.aiClear, T.seenRolls, T.aiLocks = {}, {}, {}
     local report = { spawns = 0, grants = 0, statuses = 0, passives = 0, cooldowns = T.clearCooldowns(T.host()) }
@@ -466,6 +481,8 @@ function T.cleanup()
         report.passives = report.passives + 1
     end
     T.added_passives = {}
+    for _, tp in ipairs(T.toggled) do pcall(Osi.TogglePassive, tp[1], tp[2]) end
+    T.toggled = {}
     report.borrowed = giveBack()
     for _, g in pairs(T.spawns) do
         if Osi.IsDead(g) == 0 then pcall(Osi.Die, g, 0, NULL, 0, 1) end
