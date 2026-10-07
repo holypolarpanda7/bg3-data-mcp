@@ -1308,6 +1308,26 @@ def _lua_str(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+MODVERIFY_START = (844, 954)   # the Mod Verification box's Start Game button (full-res px, verified 2026-10-07)
+
+
+def _save_only_lacks_mods(name):
+    """None when every mod the save `name` lists is in the load order unchanged (the box only reports new mods), else what's
+    wrong."""
+    from . import saves, sources
+    import tempfile
+    from . import platform as _plat
+    try:
+        cfg = sources.load_config()
+        lsv = saves.find_save(cfg, name)
+        with tempfile.TemporaryDirectory(dir=_plat.windows_temp()) as work:
+            rows = saves.compare(saves.mods_in(saves.read_meta(cfg, lsv, work)), saves.current_mods(cfg))
+    except Exception as e:
+        return f"couldn't read the save's mod list ({e})"
+    bad = [f"{(m.get('Name') or m.get('Folder'))}: {prob}" for m, prob, _ in rows if prob]
+    return "; ".join(bad) if bad else None
+
+
 def load_save(index=0, timeout=90.0, name=None):
     """Load a save from the pause menu of the RUNNING game (no restart): Esc until the pause menu (GameMenu) is confirmed open,
     Load Game, the save, Load Game. `name`: the save's title (exact, else a unique substring, e.g. "Barbarian L1 Base"), selected
@@ -1374,12 +1394,20 @@ return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true
         _rclick(1068, 1005)           # Load Game button
     # the running session has to go away first: until it does, a host still answers (the old one). No Enter before that - a Mod
     # Verification box (the save's mod versions differ from the load order) takes Enter as Start Game with its Downgrade ticked
-    gone = False
+    gone, accepted = False, False
     while time.time() - t0 < 40:
         timing.wait(1.0)
         if host_level() is None:
             gone = True
             break
+        # a Mod Verification box that only lists NEW mods (the save predates a mod now in the load order - every test layer's
+        # first run, 2026-10-07): Start Game is safe. A missing or changed mod stays a failure (fix it with bg3_save_fix_mods).
+        if name and not accepted and "ModVerification" in (screen() or []):
+            why = _save_only_lacks_mods(name)
+            if why is not None:
+                return None, f"Mod Verification box: {why} - fix the save with bg3_save_fix_mods (nothing was clicked)"
+            _rclick(*MODVERIFY_START)
+            accepted = True
     if not gone:
         shown = screen() or []
         return None, (f"the load didn't start - the old session is still running (screen: {', '.join(shown)}); a Mod Verification "
