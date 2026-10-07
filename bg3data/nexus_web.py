@@ -52,7 +52,13 @@ class Browser:
     def js(self, expr, timeout_note=""):
         if not self.tab:
             self.ensure_tab()
-        r = self.cmd(op="eval", tab=self.tab, expr=expr)
+        for attempt in range(3):
+            r = self.cmd(op="eval", tab=self.tab, expr=expr)
+            # the page can stall for a minute (Cloudflare's check, a heavy render): a timed-out read is retried, never a write
+            if "error" in r and "Timeout" in str(r["error"]) and attempt < 2:
+                time.sleep(5)
+                continue
+            break
         if "error" in r:
             raise RuntimeError(f"page script failed{timeout_note}: {r['error']}")
         return r.get("value")
@@ -142,10 +148,10 @@ _READ_GENERAL = """(() => {
           description: inst ? inst.val() : null};
 })()"""
 
-_READ_REQS = """(async () => {
-  // the legacy lists sit in collapsed <details> sections whose rows only render once opened (2026-10-07)
-  document.querySelectorAll('main details').forEach(d => { d.open = true; });
-  await new Promise(r => setTimeout(r, 1500));
+# no timers in page scripts: a background window throttles setTimeout to once a minute (the 60 s bridge timeouts, 2026-10-07)
+_OPEN_DETAILS = "document.querySelectorAll('main details').forEach(d => { d.open = true; }); true"
+
+_READ_REQS = """(() => {
   const radios = [...document.querySelectorAll('[role=radio]')].slice(0, 2).map(r => r.getAttribute('aria-checked') === 'true');
   const method = radios[1] ? 'legacy' : 'file-to-file';
   const out = {method, nexus: [], external: [], files: []};
@@ -173,6 +179,8 @@ def read_page(b, nx):
     g = b.js(_READ_GENERAL)
     b.go(edit_url(nx, "requirements"), settle=1)
     b.wait("[role=radio]")
+    b.js(_OPEN_DETAILS)   # the legacy lists sit in collapsed <details> whose rows only render once opened
+    time.sleep(2)
     g["requirements"] = b.js(_READ_REQS)
     return g
 
