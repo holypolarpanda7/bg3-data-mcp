@@ -1542,6 +1542,24 @@ def checkpoint_name(build_id, level):
     return f"{build_id} L{level}"
 
 
+def _offer_lists(store, active, tables, L):
+    """{(screen key, i): (list uuid, selector id, list name)} for the level's SelectSpells, in the order the level-up screen
+    lists them: NotSubSpellSelectors from the class table, SubSpellSelectors from the subclass table (1-based)."""
+    out = {}
+    for key, table in (("NotSubSpellSelectors", tables.get("class")), ("SubSpellSelectors", tables.get("sub"))):
+        if not table:
+            continue
+        i = 0
+        for a in _level_nodes(store, active, table, L):
+            for args in re.findall(r"SelectSpells\(([^)]*)\)", a.get("Selectors") or ""):
+                p = [x.strip() for x in args.split(",")]
+                i += 1
+                row = store.spell_list(p[0], active)   # (node, uuid, name, source, attrs) or None
+                name = row[2] if row else None
+                out[(key, i)] = (p[0], p[3] if len(p) > 3 and p[3] else None, name)
+    return out
+
+
 def _level_nodes(store, active, table, L):
     """The attrs of a progression table's nodes at level L (first-class nodes; exact duplicates counted once)."""
     out, seen = [], set()
@@ -1731,7 +1749,8 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
         top = lua("local m = 0 for u, es in pairs(Ext.Entity.Get(Osi.GetHostCharacter()).ActionResources.Resources) do "
                   "local def = Ext.StaticData.Get(u, 'ActionResource') if def and (def.Name == 'SpellSlot' or def.Name == 'WarlockSpellSlot') "
                   "then for _, e in ipairs(es) do if e.MaxAmount > 0 and e.ResourceId > m then m = e.ResourceId end end end end return m")
-        bad += [f"FAIL level-up {x}" for x in gameui.offer_gaps(r.get("offers"), int(top) if isinstance(top, (int, float)) else 0)]
+        lists = _offer_lists(store, active, tables, me["level"]) if me else {}
+        bad += [f"{x[:4]} level-up {x[5:]}" for x in gameui.offer_gaps(r.get("offers"), int(top) if isinstance(top, (int, float)) else 0, lists)]
         # a build's known_fails (e.g. an upstream bug already reported) are shown but don't stop the run
         known = [k for k in (b.get("known_fails") or [])]
         bad = [("KNOWN " + l[5:] if l.startswith("FAIL") and any(k in l for k in known) else l) for l in bad]

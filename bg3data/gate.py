@@ -524,7 +524,7 @@ def run(layer, which="affected", ingame=True, post=False, log=print, start=None)
         resume = lv if lv > fps_lo.get(b, 1) else None   # from the newest checkpoint below lv (run_build falls back to the start)
         log(f"build {b}{f' from L{lv}' if resume else ''} ({'; '.join(why)})")
         try:
-            r = testing.run_build(s, active, layer, b, start_level=resume)
+            r = testing.run_build(s, active, layer, b, start_level=resume, progress=lambda m: log("    " + m))
         except Exception as e:
             r = f"ERROR {type(e).__name__}: {e}"
         ok = build_passed(r, fps_top.get(b))

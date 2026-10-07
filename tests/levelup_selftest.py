@@ -342,7 +342,26 @@ def live():
     print("   log:", r.get("log"))
 
 
+def test_offer_gaps():
+    """A level's spell picks judged together (2026-10-06): dnd55e splits picks by spell level, fixed feature lists may reach
+    above the slots."""
+    from bg3data import gameui as g
+    N, S = "NotSubSpellSelectors", "SubSpellSelectors"
+    w4 = g.offer_gaps([{"key": N, "levels": {"0": 24}, "i": 1}, {"key": N, "levels": {"2": 35, "1": 24}, "i": 2},
+                       {"key": N, "levels": {"3": 2, "1": 5}, "i": 3}], 2)
+    check("offer_gaps: Wizard 4 ritual list above the slots is a WARN, not a gap", len(w4) == 1 and w4[0].startswith("WARN"), w4)
+    ds = g.offer_gaps([{"key": S, "levels": {"1": 12}, "i": 2}, {"key": S, "levels": {"2": 12}, "i": 3}], 2)
+    check("offer_gaps: picks split by spell level (Divine Soul 3) are fine together", ds == [], ds)
+    s13 = g.offer_gaps([{"key": N, "levels": {"7": 5}, "i": 1}], 7)
+    check("offer_gaps: only level 7 at Sorcerer 13 still fails", len(s13) == 1 and s13[0].startswith("FAIL"), s13)
+    check("offer_gaps: a pick entirely above the slots (Mystic Arcanum) is exempt",
+          g.offer_gaps([{"key": N, "levels": {"6": 5}, "i": 1}], 5) == [])
+    gap = g.offer_gaps([{"key": N, "levels": {"1": 3, "3": 2}, "i": 1}], 3)
+    check("offer_gaps: a skipped level within the slots fails", len(gap) == 1 and "no level 2" in gap[0], gap)
+
+
 if __name__ == "__main__":
+    test_offer_gaps()
     test_pure()
     test_stable_rows()
     test_enter_only_when_dark()

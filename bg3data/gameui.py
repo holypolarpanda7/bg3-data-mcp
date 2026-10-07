@@ -1068,17 +1068,36 @@ return out""")
     return res if isinstance(res, dict) else None
 
 
-def offer_gaps(offers, top_slot):
-    """Spell choices that skip spell levels: leveled spells offered, but not every level from 1 to the highest offered. A choice
-    entirely above the character's highest slot (slot-free, e.g. Mystic Arcanum) or of cantrips only is exempt."""
-    bad = []
+def offer_gaps(offers, top_slot, lists=None):
+    """Problems with the spell choices a level-up screen offered, as "FAIL ..." / "WARN ..." lines.
+    FAIL: a level-up's spell picks (class picks and subclass picks separately), taken together, skip a spell level the
+    character can cast - leveled spells offered, but not every level from 1 to the highest offered one within the slots
+    (Apotheosis Sorcerer 13 offered only level 7, 2026-10-05). Taken together because dnd55e often splits one level-up's
+    picks by spell level (Divine Soul 3: two from the level 1 Cleric list, two from the level 2 one).
+    WARN: one pick that offers castable spells and spells above the character's highest slot (dnd55e's Ritual Caster Feat
+    list offers 3rd-level rituals at Wizard 4, 2026-10-06). A pick entirely above the slots (slot-free, e.g. Mystic
+    Arcanum) or of cantrips only is exempt from both.
+    lists: {(key, i): (list uuid, selector id, list name)} from the level's SelectSpells, to name the picks."""
+    bad, groups = [], {}
+    def label(o):
+        uuid_, sid, lname = (lists or {}).get((o["key"], o["i"]), (None, None, None))
+        return f"{o['key']}[{o['i']}]" + (f" ({lname or uuid_}{', ' + sid if sid else ''})" if uuid_ else "")
     for o in offers or []:
         lv = sorted(int(k) for k in (o.get("levels") or {}) if str(k).lstrip("-").isdigit() and int(k) > 0)
         if not lv or (top_slot and min(lv) > top_slot):
             continue
-        missing = [x for x in range(1, max(lv) + 1) if x not in lv]
+        castable = [x for x in lv if not top_slot or x <= top_slot]
+        above = [x for x in lv if top_slot and x > top_slot]
+        if above:
+            bad.append(f"WARN {label(o)} offers spell levels {lv}: {', '.join(map(str, above))} above the highest slot ({top_slot})")
+        g = groups.setdefault(o["key"], [set(), []])
+        g[0].update(castable)
+        g[1].append(label(o))
+    for key, (lv, names) in groups.items():
+        missing = [x for x in range(1, max(lv) + 1) if x not in lv] if lv else []
         if missing:
-            bad.append(f"{o['key']}[{o['i']}] offers spell levels {lv}: no level {', '.join(map(str, missing))} spells")
+            bad.append(f"FAIL {key} picks offer spell levels {sorted(lv)}: no level {', '.join(map(str, missing))} spells "
+                       f"({'; '.join(names)})")
     return bad
 
 
