@@ -29,4 +29,26 @@ Validation (2026-09-30): exporting dnd55e's game-ready files reproduces its hand
 8107 objects with 19 differences, which are drift between dnd55e's own two copies (a `Using` that points at
 a different parent, a TargetCeiling).
 
-Not yet: round-trip into the Toolkit itself (open, save, package) - planned with a small test mod.
+## Driving the Toolkit: packaging and mod.io publishing (2026-10-07)
+
+`bg3_toolkit_ui(action, layer, apply)` / `python -m bg3data.toolkit_ui` drives `Glasses.exe` (Toolkit 4.1.1.6931813):
+
+| action | does |
+| --- | --- |
+| `state` | Toolkit running, the open project (window title), the Project Settings window rectangle |
+| `projects` | the project picker's list (names = each mod's meta.lsx Name) |
+| `open` | launch through Steam (app 2934770) if needed and open the layer's project; waits for the title to show it |
+| `publish_local` | Project Settings -> **Publish Local**: the Toolkit packs `<Mods>/<Folder>.pak` (checked by its mtime) and opens Explorer there (closed again) |
+| `publish` | Project Settings -> **Publish** (mod.io). Dry run with a screenshot unless `apply=True`; apply needs a GREEN gate on HEAD and waits for the browser to open on the mod's mod.io File Manager page |
+
+How: the picker (RadioButton rows, `m_OpenButton`) and menus (Project > Project Settings...) are WPF and driven through UI
+Automation. The Project Settings window and the Message Log draw their own controls (no UIA children), so their buttons are
+clicked at offsets from the window's bottom edge and the result is checked outside the Toolkit (files, browser windows).
+Screenshots of every step land in `<cache>/toolkit/`.
+
+Packing **rewrites meta.lsx**: dependency MD5s / versions / names are refreshed, and with Auto-increment ticked the mod's
+own build number goes +1 per Publish Local / Publish. Both actions report the diff (`meta_changed`): commit it after a real
+publish, revert it after a test run. Set the version with `bg3data.release prepare` before publishing.
+
+After a publish (mod.io's side, not automated): wait for the scan, fill in the profile and media for a new mod, set
+dependencies, then **Go live**.

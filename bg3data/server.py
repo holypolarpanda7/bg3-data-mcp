@@ -1293,6 +1293,37 @@ def bg3_toolkit_export(layer: str, dest: str = "toolkit", write: bool = False) -
     return toolkit.export(s, s.active(None), layer, dest, dry_run=not write)
 
 
+
+@mcp.tool()
+@guarded
+def bg3_toolkit_ui(action: str = "state", layer: str | None = None, apply: bool = False) -> str:
+    """Drive the Larian Toolkit (Glasses.exe) - packaging and mod.io publishing. action:
+    state (running? open project? Project Settings window), projects (the picker's list), open (launch the Toolkit via
+    Steam if needed and open `layer`'s project), screenshot, publish_local (Project Settings -> Publish Local: the Toolkit
+    packs <Mods>/<Folder>.pak; checked by the file's mtime), publish (Project Settings -> Publish to mod.io: a dry run with a
+    screenshot of name/description/version/thumbnail unless apply=True; apply needs a GREEN gate on the mod's HEAD and waits
+    for the browser to open on mod.io). Packing rewrites meta.lsx (dependency MD5s/versions, build +1 with Auto-increment):
+    the result's meta_changed shows it - commit after a real publish, revert after a test. Outward-facing: publish with
+    apply=True only when the user asked to publish that mod."""
+    from . import toolkit_ui as tk
+    if action == "state":
+        r = tk.state()
+    elif action == "projects":
+        r = tk._ps("projects")
+    elif action == "screenshot":
+        r = {"screenshot": tk.screenshot("screen")}
+    elif action in ("open", "publish_local", "publish") and not layer:
+        return f"{action} needs a layer"
+    elif action == "open":
+        r = tk.open_project(layer)
+    elif action == "publish_local":
+        r = tk.publish_local(layer)
+    elif action == "publish":
+        r = tk.publish(layer, apply=apply)
+    else:
+        return f"unknown action {action!r}"
+    return json.dumps(r, indent=1)
+
 def main():
     mcp.run(transport="stdio")
 
