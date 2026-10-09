@@ -57,6 +57,11 @@ def game_order(cfg, limit=60):
 
 
 def find_save(cfg, query):
+    if query and query != "latest":                  # exact folder name: no need to stat every save (hundreds on /mnt)
+        full = os.path.join(save_root(cfg), query)
+        lsv = [f for f in os.listdir(full) if f.endswith(".lsv")] if os.path.isdir(full) else []
+        if lsv:
+            return os.path.join(full, lsv[0])
     saves = list_saves(cfg, 10_000)
     if not query or query == "latest":
         if not saves:

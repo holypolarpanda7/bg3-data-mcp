@@ -213,19 +213,22 @@ def isolate(layer, standalone=False):
             f"removed {', '.join(r['name'] or r['uuid'] for r in removed) or 'nothing'} (original backed up; restored when the run ends)"]
 
 
-def isolate_saves(layer):
+def isolate_saves(layer, only=None):
     """The game refuses to load a save whose mods are missing (Mod Verification box, Start Game disabled), so the saves an
     isolated run loads - the newest (what Continue loads) and the layer's build start/checkpoint saves - get the removed mods
-    dropped from their mod list (save_backups keeps the originals; a later normal load only sees 'new mods', which is tolerated)."""
+    dropped from their mod list (save_backups keeps the originals; a later normal load only sees 'new mods', which is tolerated).
+    only = build ids the run will actually take (their start/checkpoint saves); None = every build of the layer. A layer with
+    hundreds of checkpoint saves (apotheosis) took 20+ minutes to rewrite them all, so the gate passes the builds it runs."""
     from . import saves, testing
     state = isolation_state() or {}
     removed = [r["uuid"] for r in state.get("removed", [])]
     if not removed:
         return []
     cfg = sources.load_config()
-    names = {b["id"] for b in testing.load_builds(layer)} | {b["from"] for b in testing.load_builds(layer) if b.get("from")}
+    builds = [b for b in testing.load_builds(layer) if only is None or b["id"] in only]
+    names = {b["id"] for b in builds} | {b["from"] for b in builds if b.get("from")}
     _, m, _, _ = mod_info(layer)
-    for f in glob.glob(os.path.join(m["path"], "tests", "bg3", "*.toml")):   # `save_as` names of the layer's start saves
+    for f in ([] if only is not None else glob.glob(os.path.join(m["path"], "tests", "bg3", "*.toml"))):   # `save_as` names of the layer's start saves
         names |= set(re.findall(r'^save_as\s*=\s*"([^"]+)"', open(f, encoding="utf-8").read(), flags=re.M))
     targets = {d for _, d, _ in saves.list_saves(cfg, 1)}
     for _, d, _ in saves.list_saves(cfg, 10_000):
