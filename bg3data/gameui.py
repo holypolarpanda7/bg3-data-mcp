@@ -1447,9 +1447,9 @@ def save_game(name, timeout=40.0):
     if not _pause_menu():
         return False, "the pause menu didn't open (nothing was clicked)"
     _rclick(960, 524)                 # Save Game
-    timing.wait(2.5)
+    timing.wait(4.0)                  # the dialog and its screenshot preview load slowly right after a new game (seen 2026-10-08)
     _rclick(608, 200)                 # New Save
-    timing.wait(1.2)
+    timing.wait(2.5)
     _rclick(958, 738)                 # the description field
     timing.wait(0.4)
     _fast("chord 29 30")              # Ctrl+A: replace the default description

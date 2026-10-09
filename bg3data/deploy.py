@@ -178,39 +178,121 @@ def isolation_state():
         return None
 
 
-def isolate(layer, standalone=False):
-    """Trim modsettings.lsx to the base game's modules + the layer + its dependencies + its test_mods (none when standalone).
-    Returns report lines. Idempotent: an earlier isolation's backup is kept, never overwritten by a trimmed file."""
+REGISTRY = os.path.join(sources.CACHE, "mods_registry.json")
+_NODE = re.compile(r'[ \t]*<node id="ModuleShortDesc">.*?</node>[ \t]*\r?\n?', re.S)
+_ATTR = re.compile(r'<attribute id="(\w+)" type="\w+" value="([^"]*)"')
+
+
+def _nodes(text):
+    """[(UUID, entry dict)] of the ModuleShortDesc nodes of a modsettings.lsx, in file order."""
+    out = []
+    for blk in _NODE.findall(text):
+        d = dict(_ATTR.findall(blk))
+        if d.get("UUID"):
+            out.append((d["UUID"], d))
+    return out
+
+
+def _registry():
+    try:
+        return json.load(open(REGISTRY, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def remember(text):
+    """Keep every mod entry the game / a mod manager wrote (Folder, Name, Version64, PublishHandle; MD5 is recomputed from the pak
+    when a list is built), so a later list can be rebuilt for mods that are no longer in the current modsettings.lsx."""
+    reg = _registry()
+    for u, d in _nodes(text):
+        if d.get("Folder"):
+            reg[u] = {k: d.get(k, "") for k in ("Folder", "Name", "PublishHandle", "Version64", "MD5")}
+    os.makedirs(os.path.dirname(REGISTRY), exist_ok=True)
+    json.dump(reg, open(REGISTRY, "w", encoding="utf-8"), indent=1)
+    return reg
+
+
+def _entry_xml(u, d):
+    pad = " " * 28
+    return ("                        <node id=\"ModuleShortDesc\">\n"
+            f"{pad}<attribute id=\"Folder\" type=\"LSString\" value=\"{d['Folder']}\"/>\n"
+            f"{pad}<attribute id=\"MD5\" type=\"LSString\" value=\"{d.get('MD5', '')}\"/>\n"
+            f"{pad}<attribute id=\"Name\" type=\"LSString\" value=\"{d['Name']}\"/>\n"
+            f"{pad}<attribute id=\"PublishHandle\" type=\"uint64\" value=\"{d.get('PublishHandle') or 0}\"/>\n"
+            f"{pad}<attribute id=\"UUID\" type=\"guid\" value=\"{u}\"/>\n"
+            f"{pad}<attribute id=\"Version64\" type=\"int64\" value=\"{d['Version64']}\"/>\n"
+            "                        </node>\n")
+
+
+def desired_mods(layer, standalone=False, extra=()):
+    """Ordered UUIDs a test of `layer` needs beyond the base game: its dependencies (meta.lsx order, base modules excluded), the
+    layer's layers.json test_mods (none when standalone, loaded before the layer), the layer and `extra` (uuids, e.g. Mod Configuration Menu for an MCM test)."""
     cfg, m, info, deps = mod_info(layer)
-    _, _, ms = _paths(cfg)
+    order = [d["UUID"] for d in deps if d.get("Folder") not in BASE_MODULE_NAMES and d.get("Name") not in BASE_MODULE_NAMES]
+    if not standalone:       # before the layer: a mod that replaces another's content (Bigby over dnd55e) loads after it
+        order += [(t["uuid"] if isinstance(t, dict) else t) for t in (m.get("test_mods") or [])]
+    order.append(info["UUID"])
+    order += list(extra)
+    seen, out = set(), []
+    for u in order:
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def isolate(layer, standalone=False, extra=()):
+    """Rebuild modsettings.lsx for a test: the base game's modules as they are + exactly the mods the test needs (desired_mods:
+    dependencies, the layer, test_mods, extra), each entry written the way the game writes it (real MD5 of the pak on disk,
+    Version64 / PublishHandle from the registry or the layer's meta.lsx). Nothing else the profile has enabled is loaded - a retired
+    mod or another project's pak can mask or cause a result, and every extra mod slows the launch. The original is backed up
+    once (restore_isolation puts it back); mods that were removed are recorded for the saves tolerance in gameui.
+    Returns report lines."""
+    from . import saves
+    cfg, m, info, deps = mod_info(layer)
+    _, mods_dir, ms = _paths(cfg)
     if not os.path.exists(ms):
         return [f"modsettings.lsx not found at {ms}; nothing isolated"]
-    keep = {info["UUID"]} | {d["UUID"] for d in deps}
-    if not standalone:
-        keep |= {(t["uuid"] if isinstance(t, dict) else t) for t in (m.get("test_mods") or [])}
     state = isolation_state()
     backup = state["backup"] if state and os.path.exists(state.get("backup", "")) else ms + ".pre-isolate"
     if not (state and os.path.exists(backup)):
         shutil.copy2(ms, backup)
     text = open(ms, encoding="utf-8").read()
-    removed = []
-
-    def trim(mm):
-        b = mm.group(0)
-        nm = (re.search(r'id="Name" type="LSString" value="([^"]*)"', b) or [None, ""])[1]
-        u = (re.search(r'id="UUID" type="guid" value="([^"]+)"', b) or [None, ""])[1]
-        if nm in BASE_MODULE_NAMES or u in keep:
-            return b
-        removed.append({"name": nm, "uuid": u})
-        return ""
-    new = re.sub(r'[ \t]*<node id="ModuleShortDesc">.*?</node>[ \t]*\r?\n?', trim, text, flags=re.S)
+    reg = remember(open(backup, encoding="utf-8").read())
+    reg = remember(text)
+    # the layer's own entry always comes from its meta.lsx (the Toolkit changes Version64 per publish)
+    reg[info["UUID"]] = {"Folder": info["Folder"], "Name": info["Name"], "PublishHandle": info.get("PublishHandle", "0"),
+                         "Version64": info["Version64"], "MD5": ""}
+    want = desired_mods(layer, standalone, extra)
+    current = _nodes(text)
+    base = [(u, d) for u, d in current if d.get("Name") in BASE_MODULE_NAMES or d.get("Folder") in BASE_MODULE_NAMES]
+    notes, entries = [], []
+    for u in want:
+        d = dict(reg.get(u) or {})
+        if not d.get("Folder"):
+            notes.append(f"{u} is needed but unknown (no entry ever seen) - skipped")
+            continue
+        real = saves._pak_md5(mods_dir, d["Folder"]) or saves._pak_md5(mods_dir, d["Name"])   # e.g. Vortex names MCM's pak by its title
+        if real:
+            d["MD5"] = real
+        elif not any(os.path.exists(os.path.join(mods_dir, x + ".pak")) for x in (d["Folder"], d["Name"])):
+            notes.append(f"{d['Name']}: no {d['Folder']}.pak in the Mods folder - deploy it first")
+        entries.append((u, d))
+    xml = "".join(_entry_xml(u, d) for u, d in base + entries)
+    mods = re.search(r'(<node id="Mods">\s*<children>\n)(.*?)(\s*</children>\s*</node>)', text, re.S)
+    if not mods:
+        return ["modsettings.lsx has no Mods node; nothing isolated"]
+    new = text[:mods.start(2)] + xml.rstrip("\n") + text[mods.end(2):]
     open(ms, "w", encoding="utf-8", newline="").write(new)
+    keep = {u for u, _ in base + entries}
+    removed = [{"name": d.get("Name", ""), "uuid": u} for u, d in current if u not in keep]
     prev = (state or {}).get("removed", [])
     allremoved = prev + [r for r in removed if r["uuid"] not in {x["uuid"] for x in prev}]
-    json.dump({"backup": backup, "layer": layer, "removed": allremoved, "standalone": standalone}, open(ISOLATION, "w", encoding="utf-8"))
-    kept = sorted(keep - {""})
-    return [f"isolated the mod list for {layer}{' (standalone)' if standalone else ''}: kept {len(kept)} mod(s) beyond the base game, "
-            f"removed {', '.join(r['name'] or r['uuid'] for r in removed) or 'nothing'} (original backed up; restored when the run ends)"]
+    json.dump({"backup": backup, "layer": layer, "removed": allremoved, "standalone": standalone,
+               "loaded": [d["Name"] for _, d in entries]}, open(ISOLATION, "w", encoding="utf-8"))
+    return [f"modsettings.lsx rebuilt for {layer}{' (standalone)' if standalone else ''}: {', '.join(d['Name'] for _, d in entries)} "
+            f"(+ {len(base)} base modules); removed {', '.join(r['name'] or r['uuid'] for r in removed) or 'nothing'}; "
+            "original backed up, restored when the run ends"] + notes
 
 
 def isolate_saves(layer, only=None):

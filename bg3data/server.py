@@ -880,18 +880,56 @@ def bg3_new_character(cls: str, save_as: str | None = None) -> str:
 @mcp.tool()
 @guarded
 def bg3_new_game(race: str | None = None, cls: str | None = None, background: str | None = None, subclass: str | None = None,
-                 subrace: str | None = None, deploy_layer: str | None = None, save_as: str | None = None) -> str:
-    """A REAL new game through the game's own character creation, hands-free: quits the game, optionally deploys `deploy_layer`,
-    launches a fresh process at the main menu (mods only load into a new game this way), New Game -> Start Game, picks race /
-    subrace / class / subclass / background through the creation screen's view model (name or IDString or Guid; the options depend
-    on the loaded mods - bg3_new_game_options lists them), the game pre-fills abilities/skills/spells, then Proceed x3 and Esc
-    through every cinematic until the host is in the world (the opening region, level 1; ~3 minutes). A choice that matches
-    nothing aborts and lists what was available. save_as saves it (the opening sequence may not allow saving)."""
-    from . import newgame
+                 subrace: str | None = None, abilities: dict[str, int] | None = None, skills: list[str] | None = None,
+                 name: str | None = None, deploy_layer: str | None = None, save_as: str | None = None) -> str:
+    """A REAL new game through the game's own character creation, hands-free: quits the game, optionally deploys `deploy_layer` (its
+    modsettings.lsx is then rebuilt with only that layer's dependencies and test mods, restored afterwards), launches a fresh process
+    at the main menu (mods only load into a new game this way), New Game -> Start Game, picks race / subrace / class / subclass /
+    background on the creation screen (name, IDString or Guid; the options depend on the loaded mods - bg3_new_game_options lists
+    them), optional abilities ({"Strength": 15, ...} base scores, point buy, all 27 points spent) and skills (names), fills any choice
+    the game leaves pending, types `name` (lowercase letters/digits/spaces), Proceed x3 and Esc through every cinematic until the host is
+    in the world (the opening region, level 1; ~3 minutes). A choice that matches nothing aborts and lists what was available.
+    save_as saves it as a start save (spells and cantrips keep the game's pre-fills)."""
+    from . import deploy, newgame
     spec = {k: v for k, v in (("race", race), ("class", cls), ("background", background), ("subclass", subclass),
-                              ("subrace", subrace), ("save_as", save_as)) if v}
-    ok, msg = newgame.start(spec, log=lambda m: None, fresh=True, deploy_layer=deploy_layer)
+                              ("subrace", subrace), ("abilities", abilities), ("skills", skills), ("name", name),
+                              ("save_as", save_as)) if v}
+    try:
+        ok, msg = newgame.start(spec, log=lambda m: None, fresh=True, deploy_layer=deploy_layer, isolate_layer=deploy_layer)
+    finally:
+        if deploy_layer:
+            deploy.restore_isolation(deploy_layer)
     return ("new game: " if ok else "new game failed: ") + msg
+
+
+@mcp.tool()
+@guarded
+def bg3_new_game_generate(layer: str, kind: str = "backgrounds", write: bool = False) -> str:
+    """[[newgame]] cases generated from data. kind "backgrounds": one per background the layer's own Backgrounds.lsx defines, checking
+    every passive it grants (no game needed). kind "classes": one per class and level-1 subclass the creation screen offers with
+    the loaded mods (opens the game, ~3 minutes), checking the host's class / subclass. write=True stores
+    <layer>/tests/bg3/newgame-<kind>.toml. Run them with bg3_test_newgame."""
+    from . import newgame
+    return newgame.generate(layer, kind, write=write, log=lambda m: None)
+
+
+@mcp.tool()
+@guarded
+def bg3_mod_state(action: str = "status", layer: str | None = None, extra: list[str] | None = None) -> str:
+    """The active profile's mod list (modsettings.lsx) as the test tools manage it. action: "status" (is an isolation active, what is
+    loaded, what the backup is), "isolate" (rebuild the list for `layer`: its dependencies, its layers.json test_mods and nothing
+    else, each entry with the pak's real MD5; `extra` = more mod UUIDs, e.g. Mod Configuration Menu), "restore" (put the original list
+    back). Tests that isolate restore it themselves; use restore after an interrupted run."""
+    import json
+    from . import deploy
+    if action == "restore":
+        return "\n".join(deploy.restore_isolation(layer) or ["no isolation was active"])
+    if action == "isolate":
+        if not layer:
+            return "isolate needs a layer"
+        return "\n".join(deploy.isolate(layer, extra=tuple(extra or ())))
+    st = deploy.isolation_state()
+    return json.dumps(st, indent=1) if st else "no isolation active: modsettings.lsx is the user's own list"
 
 
 @mcp.tool()

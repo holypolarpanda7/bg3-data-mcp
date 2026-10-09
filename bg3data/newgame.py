@@ -20,6 +20,9 @@ TAMPER_ACCEPT = (480 / 960, 292 / 540)
 NEW_GAME = (280 / 960, 224 / 540)          # main menu button; then the difficulty page's Start Game
 START_GAME = (532 / 960, 502 / 540)
 DONT_RESET = (537 / 960, 303 / 540)
+NAME_FIELD = (478 / 960, 444 / 540)
+SCAN = {**dict(zip('qwertyuiop', range(0x10, 0x1A))), **dict(zip('asdfghjkl', range(0x1E, 0x27))),
+        **dict(zip('zxcvbnm', range(0x2C, 0x33))), **dict(zip('1234567890', range(0x02, 0x0C))), ' ': 0x39}
 
 
 def _names():
@@ -55,17 +58,21 @@ def in_world():
     return bool(r) and not str(r).startswith("SYS_CC")    # SYS_CC_* is the creation room itself
 
 
-def launch_menu(deploy_layer=None, timeout=300, log=print):
+def launch_menu(deploy_layer=None, timeout=300, log=print, isolate_layer=None):
     """A fresh game process at the main menu with every mod of modsettings.lsx loaded (the new-game path: unlike Continue, the
     mod list isn't taken from a save, and coming back to the menu from a loaded game drops the mods - seen 2026-10-08).
     Quits the game, optionally deploys `deploy_layer`, launches without -continueGame, and handles the splash screen and the
-    no-mods safe mode (clean quit + relaunch) like bg3_game_restart. Returns (ok, message)."""
-    from . import platform, testing
+    no-mods safe mode (clean quit + relaunch) like bg3_game_restart. isolate_layer: modsettings.lsx is rebuilt for that layer
+    (deploy.isolate: its dependencies, test_mods and nothing else) before the launch. Returns (ok, message)."""
+    from . import deploy, platform, testing
     msgs = []
     r = testing._restart(deploy_layer, launch=False)
     msgs.append(r)
     if deploy_layer and "failed" in r:
         return False, r
+    if isolate_layer:
+        msgs += deploy.isolate(isolate_layer)
+        log(msgs[-1] if len(msgs) < 3 else " | ".join(msgs[-2:]))
     _, g = testing.game_cfg()
     args = [a for a in g["launch_args"] if a.lower() != "-continuegame"]
 
@@ -217,12 +224,156 @@ return {{ok = false, seen = seen}}"""
     return True, out
 
 
-def finish(timeout=180):
-    """Proceed x3 (name prompt, dream guardian, Venture Forth), then Esc through the cutscenes until the host is in the world."""
-    for _ in range(3):
+def _lua_list(items):
+    return "{" + ",".join(repr(str(x)) for x in items) + "}"
+
+
+_ROWS = f"""
+local cc = {CC}
+local dc = cc.DataContext
+local rows = {{}}
+local function walk(n, d)
+  if d > 30 then return end
+  local ok, c = pcall(function() return n.DataContext end)
+  if ok and c then local okp, v = pcall(function() return c.CanIncrease ~= nil and tonumber(tostring(c.BaseValue)) >= 8 end) if okp and v then rows[tostring(c.Ability)] = c end end
+  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+  if okc and cnt then for i = 1, cnt do walk(n:VisualChild(i), d + 1) end end
+end
+walk(cc, 0)
+"""
+
+
+def _abilities():
+    """{ability: (base score, can increase, can decrease)} of the creation screen's ability rows (stale duplicate rows have base 0
+    and are ignored: commanding them leaves the real ones untouched)."""
+    r, _ = _client(_ROWS + 'local out = {} for k, c in pairs(rows) do out[k] = {tonumber(tostring(c.BaseValue)), c.CanIncrease == true, c.CanDecrease == true} end return out')
+    return {k: tuple(v) for k, v in (r or {}).items()}
+
+
+def _ability_step(name, cmd):
+    _client(_ROWS + f'local c = rows["{name}"] if c then dc.{cmd}:Execute(c) end return true')
+
+
+def set_abilities(want):
+    """Point-buy to `want` ({"Strength": 15, ...} base scores before racial / background bonuses, 8..15, 27 points)."""
+    for _ in range(60):
+        cur = _abilities()
+        todo = [(n, "IncreaseAbility" if cur[n][0] < w else "DecreaseAbility") for n, w in want.items()
+                if n in cur and cur[n][0] != w and (cur[n][1] if cur[n][0] < w else cur[n][2])]
+        if not todo:
+            break
+        # lower first: points are freed before they are spent
+        todo.sort(key=lambda t: t[1] != "DecreaseAbility")
+        _ability_step(*todo[0])
+        timing.wait(0.25)
+    cur = _abilities()
+    return all(cur.get(n, (None,))[0] == int(w) for n, w in want.items()), {n: v[0] for n, v in cur.items()}
+
+
+def _skill_groups():
+    r, _ = _client(f"""
+local dc = {CC}.DataContext
+local out = {{}}
+for _, g in ipairs({{"ClassSkills", "RaceSkills"}}) do
+  local grp = dc[g]
+  local max = tonumber(tostring(grp.MaxSelectedSkillCount)) or 0
+  local sk = {{}}
+  for i = 1, #grp.Skills do local it = grp.Skills[i] sk[#sk + 1] = {{tostring(it.Skill), it.Selected == true, it.Enabled == true}} end
+  out[g] = {{max = max, selected = tonumber(tostring(grp.SelectedSkillCount)) or 0, skills = sk}}
+end
+return out""")
+    return r or {}
+
+
+def _toggle_skill(group, skill):
+    _client(f"""
+local dc = {CC}.DataContext
+local grp = dc["{group}"]
+for i = 1, #grp.Skills do if tostring(grp.Skills[i].Skill) == "{skill}" then dc.ToggleSkill:Execute(grp.Skills[i]) break end end
+return true""")
+
+
+def set_skills(wanted=()):
+    """Skill proficiency groups (ClassSkills, RaceSkills): the wanted skills first (an unwanted, enabled pick makes room), then any
+    enabled skill until each group is full. One toggle per step, state re-read each time (the view model lags a command)."""
+    wanted = [w.lower() for w in wanted]
+    for _ in range(24):
+        groups = _skill_groups()
+        act = None
+        for g, d in groups.items():
+            if d["max"] <= 0:
+                continue
+            skills = d["skills"]
+            for name, sel, en in skills:
+                if name.lower() in wanted and en and not sel:
+                    if d["selected"] >= d["max"]:      # make room first
+                        drop = next((n for n, s2, e2 in skills if s2 and e2 and n.lower() not in wanted), None)
+                        act = (g, drop) if drop else None
+                    else:
+                        act = (g, name)
+                    break
+            if act:
+                break
+            if d["selected"] < d["max"]:
+                nxt = next((n for n, s2, e2 in skills if e2 and not s2 and n.lower() not in wanted), None) or \
+                    next((n for n, s2, e2 in skills if e2 and not s2), None)
+                if nxt:
+                    act = (g, nxt)
+                    break
+        if not act:
+            break
+        _toggle_skill(*act)
+        timing.wait(0.3)
+    groups = _skill_groups()
+    return all(d["max"] <= 0 or d["selected"] >= d["max"] for d in groups.values()), \
+        {g: [n for n, s2, _ in d["skills"] if s2] for g, d in groups.items()}
+
+
+def character_complete():
+    r, _ = _client(f'return {CC}.DataContext.IsCharacterCompleteExceptName == true')
+    return bool(r)
+
+
+def complete(spec, log=print):
+    """After the selections: abilities / skills / cantrips / spells from the spec, then fill whatever the game still marks pending
+    (a skill clash between class and background is the usual one) until the character is complete except for the name."""
+    out = {}
+    if spec.get("abilities"):
+        out["abilities"] = set_abilities(spec["abilities"])
+    out["skills"] = set_skills(spec.get("skills") or ())
+    if not character_complete() and not spec.get("abilities"):
+        _client(f"{CC}.DataContext.UseRecommendedAbilities:Execute(nil) return true")   # a leftover unspent ability point
+        timing.wait(1.0)
+        out["skills"] = set_skills(spec.get("skills") or ())
+    out["complete"] = character_complete()
+    if not out["complete"]:
+        r, _ = _client(f"local dc = {CC}.DataContext return {{unused = tostring(dc.UnusedAbilityPoints), classSkills = tostring(dc.ClassSkills.IsComplete)}}")
+        out["pending"] = r      # e.g. unused ability points: a spec's abilities must spend all 27 points
+    return out["complete"], out
+
+
+def type_name(name):
+    """Type into the name prompt: letters, digits and spaces only, lowercase (the key helper presses one key at a time, no Shift)."""
+    gameui.click_frac(*NAME_FIELD)
+    timing.wait(0.4)
+    for _ in range(24):
+        gameui.send_key(0x0E, 60)
+        timing.wait(0.04)
+    for ch in name.lower():
+        if ch in SCAN:
+            gameui.send_key(SCAN[ch], 60)
+            timing.wait(0.07)
+
+
+def finish(timeout=180, name=None):
+    """Proceed x3 (name prompt, dream guardian, Venture Forth), then Esc through the cutscenes until the host is in the world.
+    name: typed into the prompt instead of the default "Tav"."""
+    for i in range(3):
         _answer_dialog()
         gameui.click_frac(*PROCEED)
         timing.wait(2.5)
+        if i == 0 and name:
+            type_name(name)
     end = time.time() + timeout
     while time.time() < end:
         names = _names()
@@ -247,11 +398,11 @@ local cls = {} for _, c in ipairs(e.Classes.Classes) do cls[#cls + 1] = {class =
 return {host = h, level = Osi.GetLevel(h), region = Osi.GetRegion(h), race = tostring(e.Race and e.Race.Race), classes = cls, background = tostring(e.Background and e.Background.Background)}""")
 
 
-def start(spec, log=print, fresh=True, deploy_layer=None):
+def start(spec, log=print, fresh=True, deploy_layer=None, isolate_layer=None):
     """A new game with `spec` -> in the world. Returns (ok, message). fresh=True (default) launches a new game process first:
     the mods only load into a new game when it is started from a fresh launch's menu, not after coming back from a loaded game."""
     if fresh:
-        ok, msg = launch_menu(deploy_layer)
+        ok, msg = launch_menu(deploy_layer, log=log, isolate_layer=isolate_layer)
         log(msg)
         if not ok:
             return False, msg
@@ -265,11 +416,16 @@ def start(spec, log=print, fresh=True, deploy_layer=None):
     log(f"selections: {sel}")
     if not ok:
         return False, f"selection failed: {sel}"
-    ok, msg = finish()
+    ok, info = complete(spec, log)
+    log(f"completion: {info}")
+    if not ok:
+        return False, f"the character isn't complete: {info}"
+    ok, msg = finish(name=spec.get("name"))
     log(msg)
     if not ok:
         return False, msg
     if spec.get("save_as"):
+        timing.wait(10.0)               # the opening sequence needs a moment before its save dialog loads
         saved, info = gameui.save_game(spec["save_as"])
         log(f"save: {info}")
     return True, str(host_summary())
@@ -326,27 +482,116 @@ def run_cases(layer, only=None, log=print):
     cases = [c for c in cases if not only or c["id"] in only]
     if not cases:
         return f"no [[newgame]] cases for {layer}" + (f" matching {only}" if only else "")
+    from . import deploy
     report = []
-    for i, c in enumerate(cases):
-        log(f"== {c['id']}: {c.get('title', '')}")
-        ok, msg = start({k: c[k] for k in ("race", "subrace", "class", "subclass", "background") if k in c}, log,
-                        fresh=True, deploy_layer=layer if i == 0 else None)
-        if not ok:
-            report.append(f"FAIL {c['id']}: {msg}")
-            continue
-        fails = []
-        for chk in c.get("checks", []):
-            if "passive" in chk:
-                r = _server(f"return Osi.HasPassive(Osi.GetHostCharacter(), {chk['passive']!r}) == 1")
-                if r is not True:
-                    fails.append(f"passive {chk['passive']} missing")
-            elif "spell" in chk:
-                r = _server(f"local e = Ext.Entity.Get(Osi.GetHostCharacter()) for _, s in ipairs(e.SpellBook.Spells) do if tostring(s.Id.OriginatorPrototype) == {chk['spell']!r} then return true end end return false")
-                if r is not True:
-                    fails.append(f"spell {chk['spell']} missing")
-            elif "lua" in chk:
-                r = _server(chk["lua"])
-                if r is not True:
-                    fails.append(f"lua check returned {r!r}: {chk['lua'][:80]}")
-        report.append(("PASS " if not fails else "FAIL ") + c["id"] + ("" if not fails else ": " + "; ".join(fails)))
+    try:
+        for n, c in enumerate(cases):
+            log(f"== {c['id']}: {c.get('title', '')}")
+            report.append(_run_case(c, layer, n == 0, log))
+    finally:
+        for line in deploy.restore_isolation(layer):
+            log(line)
     return "\n".join(report)
+
+
+SPEC_KEYS = ("race", "subrace", "class", "subclass", "background", "abilities", "skills", "name")
+
+
+def _run_case(c, layer, first, log):
+    ok, msg = start({k: c[k] for k in SPEC_KEYS if k in c}, log, fresh=True, deploy_layer=layer if first else None,
+                    isolate_layer=layer)
+    if not ok:
+        return f"FAIL {c['id']}: {msg}"
+    fails = []
+    for chk in c.get("checks", []):
+        if "passive" in chk:
+            r = _server(f"return Osi.HasPassive(Osi.GetHostCharacter(), {chk['passive']!r}) == 1")
+            if r is not True:
+                fails.append(f"passive {chk['passive']} missing")
+        elif "spell" in chk:
+            r = _server(f"local e = Ext.Entity.Get(Osi.GetHostCharacter()) for _, s in ipairs(e.SpellBook.Spells) do if tostring(s.Id.OriginatorPrototype) == {chk['spell']!r} then return true end end return false")
+            if r is not True:
+                fails.append(f"spell {chk['spell']} missing")
+        elif "lua" in chk:
+            r = _server(chk["lua"])
+            if r is not True:
+                fails.append(f"lua check returned {r!r}: {chk['lua'][:80]}")
+    return ("PASS " if not fails else "FAIL ") + c["id"] + ("" if not fails else ": " + "; ".join(fails))
+
+
+# ------------------------------------------------------------------ case generator
+def _slug(text):
+    import re
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def _loca_names(mod_path):
+    """handle -> English text from the mod's own Localization/English/*.xml."""
+    import glob
+    import os
+    import re
+    names = {}
+    for f in glob.glob(os.path.join(mod_path, "Mods", "*", "Localization", "English", "*.xml")):
+        for h, v in re.findall(r'<content contentuid="([^"]+)"[^>]*>(.*?)</content>', open(f, encoding="utf-8").read(), re.S):
+            names[h] = re.sub(r"<[^>]+>", "", v).strip()
+    return names
+
+
+def _toml_case(c):
+    lines = ["[[newgame]]"]
+    for k in ("id", "title", "race", "subrace", "class", "subclass", "background"):
+        if k in c:
+            lines.append(f'{k} = "{c[k]}"')
+    chk = ", ".join("{ " + " , ".join(f'{k} = "{v}"' for k, v in x.items()) + " }" for x in c["checks"])
+    lines.append(f"checks = [{chk}]")
+    return "\n".join(lines)
+
+
+def generate(layer, kind="backgrounds", race="Human", cls="Fighter", write=False, log=print):
+    """[[newgame]] cases from data. kind:
+      backgrounds - one case per background the layer's own Public/*/Backgrounds/Backgrounds.lsx defines (no game needed): the
+                    background is picked on a `race` `cls` character and every passive the background grants is checked;
+      classes     - one case per class and per level-1 subclass the creation screen offers with the loaded mods (opens the game,
+                    see options()): the host's class / subclass is checked against the ClassDescription names.
+    Returns the TOML text; write=True stores it as <layer>/tests/bg3/newgame-<kind>.toml."""
+    import glob
+    import os
+    import re
+    from . import testing
+    m = testing.mod_entry(layer)
+    cases = []
+    if kind == "backgrounds":
+        names = _loca_names(m["path"])
+        for f in glob.glob(os.path.join(m["path"], "Public", "*", "Backgrounds", "Backgrounds.lsx")):
+            for blk in re.findall(r'<node id="Background">(.*?)</node>\s*(?=<node id="Background">|</children>)', open(f, encoding="utf-8").read(), re.S):
+                dn = re.search(r'id="DisplayName"[^>]*handle="([^"]+)"', blk)
+                passives = re.search(r'id="Passives"[^>]*value="([^"]*)"', blk)
+                if not (dn and dn.group(1) in names):
+                    continue
+                name = names[dn.group(1)]
+                cases.append({"id": "newgame-bg-" + _slug(name), "title": f"{name} background at character creation grants its passives",
+                              "race": race, "class": cls, "background": name,
+                              "checks": [{"passive": p} for p in (passives.group(1).split(";") if passives else []) if p]})
+    elif kind == "classes":
+        opts = options(log)
+        if "error" in opts:
+            return "error: " + opts["error"]
+        for entry in opts.get("classes", []):
+            cid, _, cname = entry.partition("/")
+            cases.append({"id": "newgame-class-" + _slug(cid), "title": f"{cname} at character creation",
+                          "race": race, "class": cid,
+                          "checks": [{"lua": f"local e = Ext.Entity.Get(Osi.GetHostCharacter()) local c = Ext.StaticData.Get(e.Classes.Classes[1].ClassUUID, 'ClassDescription') return c ~= nil and c.Name == '{cid}'"}]})
+            for sub in opts.get("subclasses", {}).get(cid, []):
+                sid, _, sname = sub.partition("/")
+                cases.append({"id": "newgame-sub-" + _slug(cid) + "-" + _slug(sid), "title": f"{cname}, {sname} at character creation",
+                              "race": race, "class": cid, "subclass": sid,
+                              "checks": [{"lua": f"local e = Ext.Entity.Get(Osi.GetHostCharacter()) local c = Ext.StaticData.Get(e.Classes.Classes[1].SubClassUUID, 'ClassDescription') return c ~= nil and c.Name == '{sid}'"}]})
+    else:
+        return f"unknown kind {kind!r} (backgrounds, classes)"
+    text = ("# Generated by bg3data.newgame.generate(" + repr(layer) + ", " + repr(kind) + ") - regenerate after the data changes.\n\n"
+            + "\n\n".join(_toml_case(c) for c in cases) + "\n")
+    if write:
+        out = os.path.join(m["path"], "tests", "bg3", f"newgame-{kind}.toml")
+        open(out, "w", encoding="utf-8", newline="\n").write(text)
+        log(f"wrote {out} ({len(cases)} cases)")
+    return text
