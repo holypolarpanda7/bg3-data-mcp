@@ -63,8 +63,24 @@ come from `mods_registry.json` (every entry the game or a manager ever wrote, re
 still be put back. The original is backed up once and `restore_isolation` puts it back; `bg3_new_game`, `bg3_test_newgame` and the gate restore
 in a finally block, `bg3_mod_state restore` fixes an interrupted run. New-game launches isolate the layer by default.
 
+## Spells, cantrips, feat-style picks, origins, capitals (verified 2026-10-08)
+- `cantrips = ["Fire Bolt", ...]`, `spells = [...]` (the class's pickers, English display names): the picker step is opened through the
+  left checklist (row icons detected in a screenshot: ring pairs at x ~ 12), then REAL clicks - the view model's SelectSpell /
+  DeselectSpell commands execute without effect from Lua (CanExecute true, state unchanged). The open step's grid: Selected row centred
+  on x = 240 at y = 195, Available grid from (162, 238), 8 columns 22.2 px, rows 22.4 px apart (960x540 screenshot pixels). A picker is
+  recognised as open when its tiles report IsVisible (the tree also holds hidden ones). State is re-read after every click.
+- `picks = { Versatile = "Lucky", Skillful = "Stealth" }`: passive pickers (a human's origin feat, Skillful's skill, weapon mastery ...)
+  by the step's title and a substring of the entry. The entries' `Value` is read-only; the checkbox column is found in the screenshot
+  (thin bright left edge, steady ~13.2 px, rows fitted to a lattice so a missed row doesn't matter) and the step is recognised by its
+  extent matching the picker's entry count. `set_picker` returns the entries that are then selected.
+- `origin = "Gale"`: one of the creation screen's origin characters (locked race / class); applied before everything else.
+- Names keep their capitals (Shift + letter chord).
+
+## Mod-dependent layout
+The main menu's buttons move with the loaded mods (Mod Configuration Menu adds one), so New Game is found relative to the teal Continue
+pill (one pill, 32 px, below it) in a screenshot instead of at a fixed position; Start Game on the difficulty page is fixed. Esc is only
+sent while neither the menu nor creation is up (on a menu page it means Back).
+
 ## Not done
-- Picking specific cantrips / spells / a feat: the game's pre-fills are used. The creation screen builds each picker's tiles only while its
-  step is open and the same spell appears in several pickers (class, race), so selecting by name changed nothing in a probe; it needs
-  step navigation (clicking the left checklist) and per-picker identification.
-- Capital letters in names, multiplayer origins, hirelings.
+- Hirelings (a different creation flow), multiplayer origins with a second player, the "Prepare Spells" step.
+- Picks of race / subrace cantrips (a sub-progression picker) - the class pickers are done.

@@ -17,8 +17,7 @@ CC = 'find(Ext.UI.GetRoot(), "CharacterCreation", 0)'
 # click targets as fractions of the window (measured on a 960x540 screenshot)
 PROCEED = (535 / 960, 500 / 540)
 TAMPER_ACCEPT = (480 / 960, 292 / 540)
-NEW_GAME = (280 / 960, 224 / 540)          # main menu button; then the difficulty page's Start Game
-START_GAME = (532 / 960, 502 / 540)
+START_GAME = (532 / 960, 502 / 540)        # the difficulty page's Start Game button (that page's layout is fixed)
 DONT_RESET = (537 / 960, 303 / 540)
 NAME_FIELD = (478 / 960, 444 / 540)
 SCAN = {**dict(zip('qwertyuiop', range(0x10, 0x1A))), **dict(zip('asdfghjkl', range(0x1E, 0x27))),
@@ -129,6 +128,36 @@ def _cc_ready():
     return bool(r)
 
 
+def _menu_anchor():
+    """(x, y) in 960x540 screenshot pixels of the main menu's highlighted (teal) Continue pill, or None. The menu's position changes with
+    the loaded mods (Mod Configuration Menu adds a button and moves everything), so New Game is found relative to it."""
+    import numpy as np
+    from PIL import Image
+    path = gameui.screenshot()
+    if not path:
+        return None
+    a = np.asarray(Image.open(path).convert("RGB").resize((960, 540))).astype(int)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    mask = (g - r > 25) & (b - r > 35) & (b < 150)
+    mask[:, :100] = False
+    mask[:, 330:] = False
+    mask[:120] = False
+    ys, xs = np.nonzero(mask)
+    if len(ys) < 200:
+        return None
+    return float(np.median(xs)), float(np.median(ys))
+
+
+def click_new_game():
+    """Click the main menu's New Game button (one pill below Continue; the first pill when there is no save to continue)."""
+    anchor = _menu_anchor()
+    if not anchor:
+        return False
+    has_saves, _ = _client('return find(Ext.UI.GetRoot(), "MainMenu", 0).DataContext.HasSaveGames == true')
+    x, y = anchor[0], anchor[1] + (32 if has_saves is not False else 0)
+    return gameui.click_frac(x / 960, y / 540)
+
+
 def _answer_dialog():
     """Clear a box over the creation screen: the 2-action "Reset Tutorials?" gets Don't Reset, an acknowledge box its one action."""
     info = gameui.dialog_info()
@@ -149,7 +178,8 @@ def start_cc(timeout=240):
             return False, "not at the main menu"
         # The real New Game button path (New Game -> difficulty -> Start Game). The view model's StartCharacterCreationCommand
         # starts a VANILLA creation: no mod is loaded in that session (verified 2026-10-08, Rune Carver absent).
-        gameui.click_frac(*NEW_GAME)
+        if not click_new_game():
+            return False, "couldn't find the main menu's New Game button"
         timing.wait(4.0)
         gameui.click_frac(*START_GAME)
     end = time.time() + timeout
@@ -165,7 +195,7 @@ def start_cc(timeout=240):
                 timing.wait(1.0)
                 continue
             return True, "character creation is open"
-        if "CharacterCreation" not in names:
+        if "CharacterCreation" not in names and "MainMenu" not in names:     # Esc on a menu page would go Back
             gameui.click_frac(*TAMPER_ACCEPT)        # the modded-save "tampering" warning is not a message box
             gameui.send_key(0x01, 80)                 # Esc skips the intro cinematic (and does nothing while loading)
         timing.wait(1.5)
@@ -209,7 +239,7 @@ return {{ok = false, seen = seen}}"""
         r, raw = _client(code, timeout=30)
         return r if r is not None else {"ok": False, "error": str(raw)[:300]}
     out = {}
-    for key, lst, setter in (("race", "SelectableRaces", "SelectedRace"), ("subrace", "SelectableSubRaces", "SelectedSubRace"),
+    for key, lst, setter in (("origin", "SelectableOrigins", "SelectedOrigin"), ("race", "SelectableRaces", "SelectedRace"), ("subrace", "SelectableSubRaces", "SelectedSubRace"),
                              ("class", "SelectableClasses", "SelectedClass"), ("background", "SelectableBackgrounds", "SelectedBackground")):
         if spec.get(key):
             timing.wait(1.0)                       # a race / class change refreshes the dependent lists
@@ -329,6 +359,267 @@ def set_skills(wanted=()):
         {g: [n for n, s2, _ in d["skills"] if s2] for g, d in groups.items()}
 
 
+def _step_rows():
+    """Centre y (960x540 screenshot pixels) of every row of the creation screen's left checklist: each row has a ring icon at x ~ 12
+    whose top and bottom edges are bright and 10 px apart (the label layout varies with race / class / mods, so rows are detected,
+    not hardcoded)."""
+    import numpy as np
+    from PIL import Image
+    path = gameui.screenshot()
+    if not path:
+        return []
+    a = np.asarray(Image.open(path).convert("RGB").resize((960, 540))).astype(int)
+    bright = ((a[:, 4:22, :].sum(axis=2)) > 450).sum(axis=1) >= 3
+    ys = [y for y in range(60 if False else 0, 500) if bright[y]]
+    groups = []
+    for y in ys:
+        if groups and y - groups[-1][-1] <= 2:
+            groups[-1].append(y)
+        else:
+            groups.append([y])
+    tops = [int(np.mean(g)) for g in groups]
+    rows, i = [], 0
+    while i < len(tops):
+        if i + 1 < len(tops) and 7 <= tops[i + 1] - tops[i] <= 13:      # a ring: top and bottom edge
+            rows.append((tops[i] + tops[i + 1]) // 2)
+            i += 2
+        else:
+            i += 1
+    return rows
+
+
+_SECTIONS = f"""
+local cc = {CC}
+local secs, vis = {{}}, {{}}
+local function walk(n, d)
+  if d > 40 then return end
+  local ok, c = pcall(function() return n.DataContext end)
+  if ok and c then
+    local o, v = pcall(function() return c.AddedCount ~= nil and c.Available ~= nil end)
+    if o and v then secs[tostring(c)] = c end
+    local o2, v2 = pcall(function() return c.NotAvailable ~= nil and c.Spell ~= nil end)
+    if o2 and v2 then local okv, iv = pcall(function() return n.IsVisible end) if okv and iv then vis[tostring(c)] = true end end
+  end
+  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+  if okc and cnt then for i = 1, cnt do walk(n:VisualChild(i), d + 1) end end
+end
+walk(cc, 0)
+local dc = cc.DataContext
+local function nm(it) local ok, t = pcall(function() return Ext.Loca.GetTranslatedString(tostring(it.Spell.Name)) end) return ok and t or "?" end
+"""
+
+
+def _sections():
+    """The picker sections in the creation screen's tree: [{cantrips, actions, sub, added, complete, visible (its tiles are on screen:
+    the open step), selected: [names in order], available: [names in tile order, "*" selected, "!" unavailable]}]."""
+    r, _ = _client(_SECTIONS + """
+local out = {}
+for _, s in pairs(secs) do
+  local sel, av, shown = {}, {}, false
+  for i = 1, #s.Additions do sel[#sel + 1] = nm(s.Additions[i]) end
+  for i = 1, #s.Available do
+    local it = s.Available[i]
+    av[#av + 1] = nm(it) .. (it.Selected and "*" or "") .. (it.NotAvailable and "!" or "")
+    if vis[tostring(it)] then shown = true end
+  end
+  out[#out + 1] = {cantrips = s.IsCantrips == true, actions = s.IsActions == true, sub = s.IsSubProgression == true,
+                   added = tonumber(tostring(s.AddedCount)) or 0, selected = sel, available = av, complete = s.IsComplete == true, visible = shown}
+end
+return out""", timeout=30)
+    return r or []
+
+
+def _class_picker(kind):
+    for x in _sections():
+        if not x["sub"] and not x["actions"] and x["cantrips"] == (kind == "cantrips"):
+            return x
+    return None
+
+
+def _open_picker(kind):
+    """Click the left checklist rows top to bottom until the class's `kind` ("cantrips" / "spells") picker is the step on screen."""
+    sec = _class_picker(kind)
+    if sec and sec["visible"]:
+        return True
+    for y in _step_rows():
+        gameui.click_frac(45 / 960, y / 540)
+        timing.wait(0.8)
+        sec = _class_picker(kind)
+        if sec and sec["visible"]:
+            return True
+    return False
+
+
+# The open picker's tiles on a 960x540 screenshot (measured 2026-10-08, cantrips and spells panels alike): the Selected row is centred on
+# x = 240 at y = 195, the Available grid starts at (162, 238) with 8 columns 22.2 px and rows 22.4 px apart.
+def _selected_xy(k, n):
+    return (240 + 22.0 * (k - (n - 1) / 2)) / 960, 195 / 540
+
+
+def _available_xy(i):
+    return (162 + 22.2 * (i % 8)) / 960, (238 + 22.4 * (i // 8)) / 540
+
+
+def set_spell_picks(kind, wanted):
+    """Pick the class's `kind` ("cantrips" / "spells") by English display name ("Fire Bolt"): opens that step, then real clicks - a
+    selected tile is clicked to drop it, an available tile to take it - because the view model's SelectSpell / DeselectSpell
+    commands run without effect from Lua. State is re-read after every click. Returns (ok, details)."""
+    want = [w.lower() for w in wanted]
+    if not _open_picker(kind):
+        return False, {"error": f"the {kind} step wasn't found in the checklist"}
+    for _ in range(30):
+        sec = _class_picker(kind)
+        have = [n.lower() for n in sec["selected"]]
+        missing = [w for w in want if w not in have]
+        extra = [n for n in sec["selected"] if n.lower() not in want]
+        if not missing:
+            break
+        offered = [a.rstrip("*!") for a in sec["available"]]
+        target = next((m for m in missing if m in [o.lower() for o in offered]), None)
+        if target is None:
+            return False, {"selected": sec["selected"], "not offered": missing, "offered": sorted(offered)}
+        if sec["complete"] and extra:           # full: drop an unwanted pick first
+            k = sec["selected"].index(extra[0])
+            gameui.click_frac(*_selected_xy(k, len(sec["selected"])))
+        else:
+            i = [o.lower() for o in offered].index(target)
+            if sec["available"][i].endswith("!"):
+                return False, {"error": f"{offered[i]} is not available to this character"}
+            gameui.click_frac(*_available_xy(i))
+        timing.wait(0.9)
+    sec = _class_picker(kind)
+    got = sec["selected"] if sec else []
+    return all(w in [g.lower() for g in got] for w in want), {"selected": got}
+
+
+def _checkbox_rows(n):
+    """(x, [centre y of each of n checkboxes]) when the open step shows a list of n checkboxes, else (x, []): a column of small squares
+    whose left edge is a thin bright line (dark on both sides) at a steady ~13 px; the x depends on the list (they are centred) and the
+    detector misses a row now and then, so the rows are fitted to a lattice: the longest steady chain gives the step, every detected run
+    on that lattice gives the extent, and the list matches when its extent is n rows (+-1). All coordinates are 960x540 screenshot pixels."""
+    import numpy as np
+    from PIL import Image
+    path = gameui.screenshot()
+    if not path:
+        return 0, []
+    a = np.asarray(Image.open(path).convert("RGB").resize((960, 540))).astype(int)
+    r = a[..., 0]
+    best = (0, 0, [], [])
+    for x in range(150, 262):
+        col = (r[:, x] > 55) & (r[:, x] < 200) & (r[:, x - 2] < 45) & (r[:, x + 2] < 45)
+        runs, cur = [], []
+        for y in range(95, 345):
+            if col[y]:
+                cur.append(y)
+            elif cur:
+                runs.append(cur)
+                cur = []
+        ys = [int(np.mean(g)) for g in runs if 2 <= len(g) <= 10]
+        chain, chains = [], []
+        for y in ys:
+            if chain:
+                gap = (y - chain[-1]) / 13.2
+                k = round(gap)
+                if not (1 <= k <= 3 and abs(gap - k) < 0.2):      # one to three missed rows are fine
+                    chains.append(chain)
+                    chain = []
+            chain.append(y)
+        chains.append(chain)
+        top = max(chains, key=len)
+        if len(top) > best[0]:
+            best = (len(top), x, top, ys)
+    cnt, x, chain, ys = best
+    if cnt < 3:
+        return x, []
+    nrows = max(1, round((chain[-1] - chain[0]) / 13.15))
+    step = (chain[-1] - chain[0]) / nrows
+    ks = sorted({round((y - chain[0]) / step) for y in ys if abs((y - chain[0]) / step - round((y - chain[0]) / step)) < 0.2})
+    span = ks[-1] - ks[0] + 1
+    if abs(span - n) > 1:
+        return x, []
+    y0 = chain[0] + step * ks[0]
+    return x, [int(round(y0 + step * k)) for k in range(n)]
+
+
+_PICKERS = f"""
+local cc = {CC}
+local found = {{}}
+local function walk(n, d)
+  if d > 40 then return end
+  local ok, c = pcall(function() return n.DataContext end)
+  if ok and c then
+    local o, v = pcall(function() return c.MaxSelectedPassiveCount ~= nil and c.Passives ~= nil end)
+    if o and v then
+      local okv, iv = pcall(function() return n.IsVisible end)
+      local okt, t = pcall(function() return Ext.Loca.GetTranslatedString(tostring(c.Name)) end)
+      local names = {{}}
+      for i = 1, #c.Passives do
+        local it = c.Passives[i]
+        local okn, nmv = pcall(function() return Ext.Loca.GetTranslatedString(tostring(it.Name)) end)
+        names[#names + 1] = {{(okn and nmv or tostring(it.Name)), tonumber(tostring(it.Value)) or 0, it.Enabled == true}}
+      end
+      found[#found + 1] = {{title = okt and t or "?", visible = okv and iv == true, max = tonumber(tostring(c.MaxSelectedPassiveCount)) or 0,
+                            selected = tonumber(tostring(c.SelectedPassiveCount)) or 0, items = names}}
+    end
+  end
+  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+  if okc and cnt then for i = 1, cnt do walk(n:VisualChild(i), d + 1) end end
+end
+walk(cc, 0)
+return found"""
+
+
+def _pickers():
+    """The passive pickers in the tree (race / class choices such as Versatile's origin feat, Skillful, weapon mastery): [{title,
+    visible, max, selected, items: [[name, 0|1, enabled]]}]. Duplicates of the same picker are merged."""
+    r, _ = _client(_PICKERS, timeout=30)
+    out, seen = [], set()
+    for p in r or []:
+        key = (p["title"], p["visible"], tuple(i[0] for i in p["items"]))
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def _picker_by_title(title):
+    for p in _pickers():
+        if p["title"].lower() == title.lower():
+            return p
+    return None
+
+
+def set_picker(title, choice):
+    """Choose `choice` (a substring of the entry's name, e.g. "Lucky" in "Origin Feat: Lucky") in the passive picker called `title`
+    ("Versatile", "Skillful", ...). The tree holds stale duplicates that all report visible, so the open step is recognised by its
+    checkbox count on screen matching the picker's entry count: the checklist rows are clicked top to bottom until it does. Then the
+    entry's checkbox is clicked and the picker's state re-read. Returns (ok, details)."""
+    pk = _picker_by_title(title)
+    if not pk:
+        return False, {"error": f"no picker called {title!r}", "pickers": sorted({p['title'] for p in _pickers()})}
+    names = [i[0] for i in pk["items"]]
+    idx = next((k for k, n in enumerate(names) if choice.lower() in n.lower()), None)
+    if idx is None:
+        return False, {"error": f"{choice!r} not offered", "offered": names}
+    if pk["items"][idx][1]:
+        return True, {"selected": names[idx], "already": True}
+    xcol, rows = _checkbox_rows(len(names))
+    if not rows:
+        for y in _step_rows():
+            gameui.click_frac(45 / 960, y / 540)
+            timing.wait(0.8)
+            xcol, rows = _checkbox_rows(len(names))
+            if rows:
+                break
+    if not rows:
+        return False, {"error": f"no step showing a list of {len(names)} checkboxes found"}
+    gameui.click_frac((xcol + 5) / 960, rows[idx] / 540)
+    timing.wait(0.9)
+    pk = _picker_by_title(title)
+    ok = bool(pk and pk["items"][idx][1])
+    return ok, {"selected": [i[0] for i in (pk or {"items": []})["items"] if i[1]]}
+
+
 def character_complete():
     r, _ = _client(f'return {CC}.DataContext.IsCharacterCompleteExceptName == true')
     return bool(r)
@@ -340,6 +631,15 @@ def complete(spec, log=print):
     out = {}
     if spec.get("abilities"):
         out["abilities"] = set_abilities(spec["abilities"])
+    for kind in ("cantrips", "spells"):
+        if spec.get(kind):
+            out[kind] = set_spell_picks(kind, spec[kind])
+            if not out[kind][0]:
+                return False, out
+    for title, choice in (spec.get("picks") or {}).items():
+        out["pick " + title] = set_picker(title, choice)
+        if not out["pick " + title][0]:
+            return False, out
     out["skills"] = set_skills(spec.get("skills") or ())
     if not character_complete() and not spec.get("abilities"):
         _client(f"{CC}.DataContext.UseRecommendedAbilities:Execute(nil) return true")   # a leftover unspent ability point
@@ -353,16 +653,19 @@ def complete(spec, log=print):
 
 
 def type_name(name):
-    """Type into the name prompt: letters, digits and spaces only, lowercase (the key helper presses one key at a time, no Shift)."""
+    """Type into the name prompt: letters (capitals with a Shift chord), digits and spaces."""
     gameui.click_frac(*NAME_FIELD)
     timing.wait(0.4)
     for _ in range(24):
         gameui.send_key(0x0E, 60)
         timing.wait(0.04)
-    for ch in name.lower():
-        if ch in SCAN:
-            gameui.send_key(SCAN[ch], 60)
-            timing.wait(0.07)
+    for ch in name:
+        if ch.lower() in SCAN:
+            if ch.isupper():
+                gameui._fast(f"chord 42 {SCAN[ch.lower()]}")      # Shift + letter
+            else:
+                gameui.send_key(SCAN[ch], 60)
+            timing.wait(0.08)
 
 
 def finish(timeout=180, name=None):
@@ -468,7 +771,7 @@ return t""", timeout=20)
 
 def run_cases(layer, only=None, log=print):
     """Run the layer's [[newgame]] cases (tests/bg3/*.toml): each is a fresh launch, a real new game with the case's choices,
-    then its checks on the host. Returns a report. [[newgame]] keys: id, title, race, subrace, class, subclass, background,
+    then its checks on the host. Returns a report. [[newgame]] keys: id, title, origin, race, subrace, class, subclass, background, abilities, skills, cantrips, spells, picks, name,
     checks = [{passive = "X"} | {spell = "X"} | {lua = "code returning true"}]."""
     import glob
     import os
@@ -494,7 +797,7 @@ def run_cases(layer, only=None, log=print):
     return "\n".join(report)
 
 
-SPEC_KEYS = ("race", "subrace", "class", "subclass", "background", "abilities", "skills", "name")
+SPEC_KEYS = ("origin", "race", "subrace", "class", "subclass", "background", "abilities", "skills", "cantrips", "spells", "picks", "name")
 
 
 def _run_case(c, layer, first, log):

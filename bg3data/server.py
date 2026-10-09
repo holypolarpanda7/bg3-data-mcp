@@ -881,19 +881,23 @@ def bg3_new_character(cls: str, save_as: str | None = None) -> str:
 @guarded
 def bg3_new_game(race: str | None = None, cls: str | None = None, background: str | None = None, subclass: str | None = None,
                  subrace: str | None = None, abilities: dict[str, int] | None = None, skills: list[str] | None = None,
-                 name: str | None = None, deploy_layer: str | None = None, save_as: str | None = None) -> str:
+                 cantrips: list[str] | None = None, spells: list[str] | None = None, picks: dict[str, str] | None = None,
+                 origin: str | None = None, name: str | None = None, deploy_layer: str | None = None,
+                 save_as: str | None = None) -> str:
     """A REAL new game through the game's own character creation, hands-free: quits the game, optionally deploys `deploy_layer` (its
     modsettings.lsx is then rebuilt with only that layer's dependencies and test mods, restored afterwards), launches a fresh process
     at the main menu (mods only load into a new game this way), New Game -> Start Game, picks race / subrace / class / subclass /
     background on the creation screen (name, IDString or Guid; the options depend on the loaded mods - bg3_new_game_options lists
-    them), optional abilities ({"Strength": 15, ...} base scores, point buy, all 27 points spent) and skills (names), fills any choice
-    the game leaves pending, types `name` (lowercase letters/digits/spaces), Proceed x3 and Esc through every cinematic until the host is
-    in the world (the opening region, level 1; ~3 minutes). A choice that matches nothing aborts and lists what was available.
-    save_as saves it as a start save (spells and cantrips keep the game's pre-fills)."""
+    them), optional origin character ("Gale"), abilities ({"Strength": 15, ...} base scores, point buy, all 27 points spent), skills
+    (names), the class's cantrips and spells (English display names; real clicks on the picker tiles), picks ({"Versatile": "Lucky",
+    "Skillful": "Stealth"}: passive pickers by step title and entry substring), fills any choice the game leaves pending, types `name`
+    (letters, digits, spaces; capitals ok), Proceed x3 and Esc through every cinematic until the host is in the world (the opening
+    region, level 1; ~3-4 minutes). A choice that matches nothing aborts and lists what was available. save_as saves it as a start
+    save."""
     from . import deploy, newgame
-    spec = {k: v for k, v in (("race", race), ("class", cls), ("background", background), ("subclass", subclass),
-                              ("subrace", subrace), ("abilities", abilities), ("skills", skills), ("name", name),
-                              ("save_as", save_as)) if v}
+    spec = {k: v for k, v in (("origin", origin), ("race", race), ("class", cls), ("background", background), ("subclass", subclass),
+                              ("subrace", subrace), ("abilities", abilities), ("skills", skills), ("cantrips", cantrips),
+                              ("spells", spells), ("picks", picks), ("name", name), ("save_as", save_as)) if v}
     try:
         ok, msg = newgame.start(spec, log=lambda m: None, fresh=True, deploy_layer=deploy_layer, isolate_layer=deploy_layer)
     finally:
