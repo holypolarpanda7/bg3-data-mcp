@@ -878,6 +878,43 @@ def bg3_new_character(cls: str, save_as: str | None = None) -> str:
 
 
 @mcp.tool()
+@guarded
+def bg3_new_game(race: str | None = None, cls: str | None = None, background: str | None = None, subclass: str | None = None,
+                 subrace: str | None = None, deploy_layer: str | None = None, save_as: str | None = None) -> str:
+    """A REAL new game through the game's own character creation, hands-free: quits the game, optionally deploys `deploy_layer`,
+    launches a fresh process at the main menu (mods only load into a new game this way), New Game -> Start Game, picks race /
+    subrace / class / subclass / background through the creation screen's view model (name or IDString or Guid; the options depend
+    on the loaded mods - bg3_new_game_options lists them), the game pre-fills abilities/skills/spells, then Proceed x3 and Esc
+    through every cinematic until the host is in the world (the opening region, level 1; ~3 minutes). A choice that matches
+    nothing aborts and lists what was available. save_as saves it (the opening sequence may not allow saving)."""
+    from . import newgame
+    spec = {k: v for k, v in (("race", race), ("class", cls), ("background", background), ("subclass", subclass),
+                              ("subrace", subrace), ("save_as", save_as)) if v}
+    ok, msg = newgame.start(spec, log=lambda m: None, fresh=True, deploy_layer=deploy_layer)
+    return ("new game: " if ok else "new game failed: ") + msg
+
+
+@mcp.tool()
+@guarded
+def bg3_new_game_options() -> str:
+    """What the character creation offers with the mods now loaded (fresh launch -> New Game): races and their subraces, classes
+    and their subclasses, backgrounds. Options change with the mod list, so ask before writing a [[newgame]] case."""
+    import json
+    from . import newgame
+    return json.dumps(newgame.options(), indent=1)
+
+
+@mcp.tool()
+@guarded
+def bg3_test_newgame(layer: str, only: list[str] | None = None) -> str:
+    """Run a layer's [[newgame]] cases (tests/bg3/*.toml): per case a fresh launch and a real new game with the case's choices
+    (race, subrace, class, subclass, background), then its checks on the host (passive / spell / lua). Deploys the layer first.
+    About 3 minutes per case. Returns PASS/FAIL per case."""
+    from . import newgame
+    return newgame.run_cases(layer, only, log=lambda m: None)
+
+
+@mcp.tool()
 @se_guarded
 def bg3_test_build(layer: str, build: str, to_level: int | None = None, wait: float = 4.0, layers: list[str] | None = None,
                    background: bool = False, start_level: int | None = None) -> str:

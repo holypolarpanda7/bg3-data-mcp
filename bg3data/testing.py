@@ -2606,7 +2606,7 @@ def kill_game(graceful=True):
     return killed
 
 
-def _unstick_menu(log, relaunched):
+def _unstick_menu(log, relaunched, menu_only=False):
     """The game is up but no save is loaded: dismiss the splash, continue from the main menu, and get out of the
     no-mods safe mode (clean quit + relaunch, once) that follows a killed or hung load."""
     from . import deploy, gameui, sources as src
@@ -2647,6 +2647,8 @@ def _unstick_menu(log, relaunched):
             log.append(f"main menu in no-mods safe mode (not loaded: {', '.join(missing)}): quitting cleanly to relaunch")
             _, g = game_cfg()
             return "relaunch" if gameui.quit_game(g["processes"], _tasklist) else None
+        if menu_only:                      # a new game (bg3data.newgame) starts from the menu with every mod loaded
+            return "menu"
         gameui.main_menu_command("ContinueGameCommand")
         log.append("main menu: pressed Continue")
         return "continue"
