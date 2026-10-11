@@ -34,6 +34,9 @@ def main(argv=None):
         print(sources.divine(sources.load_config(), "-a", "convert-resource", "-s", platform.to_win(src),
                              "-d", platform.to_win(dst), "-i", ext(src), "-o", ext(dst)).strip())
         return
+    if a.cmd == "watch-dnd55e":  # scheduled: breaking dnd55e changes for the Apotheosis mod -> Discord (see watch.py)
+        from . import watch
+        return sys.exit(watch.main(a.args))
     if a.cmd == "refresh":
         force = None if not a.args else (a.args[0] if a.args[0] == "all" else [a.args[0]])
         index.refresh(force=force, log=log)
