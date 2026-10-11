@@ -1147,11 +1147,11 @@ def bg3_game_dialog(dismiss: bool = True) -> str:
 
 @mcp.tool()
 @guarded
-def bg3_screenshot() -> str:
-    """Capture the running game's window to a PNG (half size) and return its file path - open it with an image-capable
+def bg3_screenshot(full: bool = False) -> str:
+    """Capture the running game's window to a PNG (half size; full=True: full client size, e.g. 1920x1080, for gallery images) and return its file path - open it with an image-capable
     Read to see what is on screen (dialogs, the HUD, a level-up screen). Needs the game running; it brings the game to the front first (a capture only sees what is visible), so use it while nobody is typing."""
     from . import gameui
-    return gameui.screenshot()
+    return gameui.screenshot(full=full)
 
 
 @mcp.tool()

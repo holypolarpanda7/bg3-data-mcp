@@ -4,6 +4,7 @@
 #   key SCAN [HOLD_MS]          SendInput hardware scan code (game focused first)
 #   click FX FY [L|R] [COUNT]   mouse click at fractions (0..1) of the client area
 #   clickpx X Y [L|R] [COUNT]   mouse click at client pixels
+#   shotfull PATH               PNG of the game window at full client size (for gallery images)
 #   shot PATH                   PNG of the game window, half size (game focused first); replies "ok WxH SWxSH"
 #   lum FX FY FW FH             mean brightness (0-255) of a region (fractions of the client area), no focus change
 #   rgb FX FY FW FH             mean R G B of a region (fractions of the client area)
@@ -133,6 +134,15 @@ while ($true) {
                       $small.Save($line.Substring(5).Trim(), [System.Drawing.Imaging.ImageFormat]::Png)
                       $g.Dispose(); $bmp.Dispose(); $small.Dispose()
                       $r = "ok $($s[0])x$($s[1]) ${sw}x${sh}" }
+            "shotfull" { Set-Focus; Start-Sleep -Milliseconds 80
+                      $h = Get-Game; $s = Client-Size
+                      $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
+                      $bmp = New-Object System.Drawing.Bitmap $s[0], $s[1]
+                      $g = [System.Drawing.Graphics]::FromImage($bmp)
+                      $g.CopyFromScreen($pt.X, $pt.Y, 0, 0, (New-Object System.Drawing.Size $s[0], $s[1]))
+                      $bmp.Save($line.Substring(9).Trim(), [System.Drawing.Imaging.ImageFormat]::Png)
+                      $g.Dispose(); $bmp.Dispose()
+                      $r = "ok $($s[0])x$($s[1]) $($s[0])x$($s[1])" }
             "lum"   { $h = Get-Game; $s = Client-Size
                       $pt = New-Object ID+PT; [ID]::ClientToScreen($h, [ref]$pt) | Out-Null
                       $w = [int]($s[0] * [double]$a[3]); $hh = [int]($s[1] * [double]$a[4])

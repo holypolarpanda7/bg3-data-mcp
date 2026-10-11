@@ -1692,12 +1692,13 @@ def click_many(points, shot=True, gap=0.15, right=False):
     return sent
 
 
-def screenshot(out=None):
-    """Capture the game window to a PNG (half size, ~1.5 MB) and return its path (Read it to see the screen)."""
+def screenshot(out=None, full=False):
+    """Capture the game window to a PNG (half size, ~1.5 MB; full=True: the whole client area, e.g. 1920x1080, for gallery
+    images) and return its path (Read it to see the screen)."""
     import tempfile
-    path = os.path.join(platform.windows_temp(), "bg3_screenshot.png") if platform.IS_WSL else \
-        (out or os.path.join(tempfile.gettempdir(), "bg3_screenshot.png"))
-    ok, r = _fast(f"shot {platform.to_win(path)}", 20)
+    path = os.path.join(platform.windows_temp(), "bg3_screenshot_full.png" if full else "bg3_screenshot.png") if platform.IS_WSL else \
+        (out or os.path.join(tempfile.gettempdir(), "bg3_screenshot_full.png" if full else "bg3_screenshot.png"))
+    ok, r = _fast(f"{'shotfull' if full else 'shot'} {platform.to_win(path)}", 20)
     if ok and os.path.exists(path):
         m = re.search(r"(\d+)x(\d+) (\d+)x(\d+)", r)
         if m:
