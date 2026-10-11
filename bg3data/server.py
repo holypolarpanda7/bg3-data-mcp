@@ -32,7 +32,7 @@ MAX_OUTPUT = 24_000  # characters; keeps a single answer from flooding the calle
 # Hot reload: tool modules are re-imported when their source changes, so MCP code edits apply on the next call
 # without a client reconnect. Not reloaded: the stores and connections that hold live state (query, index,
 # sources, se) and this module itself - those still need a reconnect.
-HOT = ("format", "lint", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex")
+HOT = ("format", "lint", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex", "vortex_order")
 _mtimes = {}
 
 
@@ -1078,6 +1078,19 @@ def bg3_vortex_bridge_install() -> str:
     start; listens on 127.0.0.1 only and requires a token stored beside it."""
     from . import vortex
     return vortex.install_bridge()
+
+
+@mcp.tool()
+@guarded
+def bg3_vortex_sort(apply: bool = False, remove: list[str] | None = None, deploy: bool = True, profile: str | None = None) -> str:
+    """Put Vortex's BG3 mods and the game into a ready-to-play state. Sorts the enabled mods: each after the mods it depends
+    on (read from the paks' meta.lsx), then libraries -> standalone content -> mods built on others -> patches, keeping your
+    order wherever no rule applies; reports missing/disabled dependencies and files two mods both ship. Pins via layers.json
+    vortex.order {first, last, after}. apply=False is a dry run. apply=True (needs the Vortex bridge, BG3 closed): removes the
+    `remove` mods (ids or unique parts), deploys, sorts, sets the order in Vortex, deploys again and verifies the game's
+    modsettings.lsx (READY / NOT READY)."""
+    from . import vortex_order
+    return vortex_order.report(profile, apply, remove or (), deploy)
 
 
 @mcp.tool()

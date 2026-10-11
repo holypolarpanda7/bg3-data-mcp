@@ -151,13 +151,23 @@ def bridge_call(method, endpoint, body=None, cfg=None, timeout=120):
     url = f"http://127.0.0.1:{b.get('port', 17846)}{endpoint}"
     data = json.dumps(body or {})
     if platform.IS_WSL:  # WSL2's 127.0.0.1 is not Windows' localhost: ask Windows to make the request
-        ps = ("$ErrorActionPreference='Stop'; try { $r = Invoke-RestMethod -Uri '%s' -Method %s -TimeoutSec %d "
-              "-Headers @{'x-bridge-token'='%s'} -ContentType 'application/json' -Body '%s'; "
-              "$r | ConvertTo-Json -Depth 6 -Compress } catch { @{error=$_.Exception.Message} | ConvertTo-Json -Compress }"
-              % (url, method, timeout, b["token"], data.replace("'", "''") if method != "GET" else ""))
-        if method == "GET":
-            ps = ps.replace(" -ContentType 'application/json' -Body ''", "")
-        r = platform.run_win(["powershell.exe", "-NoProfile", "-Command", ps], timeout=timeout + 15)
+        import tempfile
+        tmpdir = platform.to_native(platform.win_env("TEMP") or r"C:\Windows\Temp")
+        fd, bodyfile = tempfile.mkstemp(suffix=".json", prefix="bg3bridge_", dir=tmpdir)  # a big body would overflow the command line
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data if method != "GET" else "")
+            body_arg = "" if method == "GET" else (" -ContentType 'application/json; charset=utf-8' -Body ([IO.File]::ReadAllText('%s', "
+                                                  "[Text.Encoding]::UTF8))" % platform.to_win(bodyfile))
+            ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $ErrorActionPreference='Stop'; try { $r = Invoke-RestMethod "
+                  "-Uri '%s' -Method %s -TimeoutSec %d -Headers @{'x-bridge-token'='%s'}%s; $r | ConvertTo-Json -Depth 8 -Compress } "
+                  "catch { @{error=$_.Exception.Message} | ConvertTo-Json -Compress }" % (url, method, timeout, b["token"], body_arg))
+            r = platform.run_win(["powershell.exe", "-NoProfile", "-Command", ps], timeout=timeout + 15, encoding="utf-8", errors="replace")
+        finally:
+            try:
+                os.remove(bodyfile)
+            except OSError:
+                pass
         try:
             return json.loads(r.stdout.strip() or "{}")
         except ValueError:
@@ -184,7 +194,7 @@ def action(name, mod=None, enabled=True):
               "remove": ("POST", "/remove", {"mod": mod}),
               "check-updates": ("POST", "/check-updates", {"mod": mod} if mod else {}),
               "update": ("POST", "/update", {"mod": mod}),
-              "downloads": ("GET", "/downloads", None),
+              "downloads": ("GET", "/downloads", None), "loadorder": ("GET", "/loadorder", None),
               "install": ("POST", "/install", {"download": mod})}
     if name not in routes:  # (the token travels on a local PowerShell command line under WSL - local user only)
         return {"error": f"unknown action {name!r}; one of {sorted(routes)}"}

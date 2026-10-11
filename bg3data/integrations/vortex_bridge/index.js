@@ -92,6 +92,14 @@ function main(context) {
         api.events.emit('mod-update', g, String(n.modId), String(fileId), 'nexus');
         return { mod: id, modId: n.modId, fileId, note: 'download started (or the Nexus page opened for a free account)' };
       },
+      // the file-based load order Vortex's BG3 extension keeps (what it writes modsettings.lsx from)
+      'GET /loadorder': async () => ({ profile: profileId(), loadOrder: ((state().persistent.loadOrder || {})[profileId()]) || [] }),
+      'POST /loadorder': async (b) => {
+        if (!actions || !actions.setFBLoadOrder) throw new Error('this Vortex does not expose setFBLoadOrder');
+        if (!Array.isArray(b.loadOrder)) throw new Error('loadOrder must be an array');
+        api.store.dispatch(actions.setFBLoadOrder(profileId(), b.loadOrder));
+        return { profile: profileId(), count: b.loadOrder.length };
+      },
       'GET /downloads': async () => ({ downloads: downloads() }),
       // install a finished download as a new staged mod (not enabled: the MCP switches versions explicitly)
       'POST /install': async (b) => {
@@ -109,12 +117,13 @@ function main(context) {
     };
 
     const server = http.createServer((req, res) => {
-      const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
       if (req.headers['x-bridge-token'] !== cfg.token) return send(403, { error: 'bad token' });
       const h = handlers[`${req.method} ${req.url.split('?')[0]}`];
       if (!h) return send(404, { error: 'unknown endpoint', endpoints: Object.keys(handlers) });
       let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 65536) req.destroy(); });
+      req.setEncoding('utf8');
+      req.on('data', (c) => { body += c; if (body.length > 16 * 1024 * 1024) req.destroy(); });
       req.on('end', async () => {
         try { send(200, await h(body ? JSON.parse(body) : {})); }
         catch (e) { send(500, { error: String((e && e.message) || e) }); }
