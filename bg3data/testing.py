@@ -2637,7 +2637,13 @@ def _unstick_menu(log, relaunched, menu_only=False):
             except (ValueError, OSError):
                 pass
         iso = {r["uuid"] for r in (deploy.isolation_state() or {}).get("removed", [])}   # taken out on purpose by a test run
-        missing = [n for n, u in want.items() if u and u not in loaded and u not in iso]
+        try:  # only mods the profile enables can be expected: a retired / undeployed layer (no pak, not in modsettings) isn't "missing"
+            ms = deploy._paths(src.load_config())[2]
+            enabled = {u.lower() for u, _ in deploy._nodes(open(ms, encoding="utf-8").read())}
+        except (OSError, RuntimeError):
+            enabled = None
+        missing = [n for n, u in want.items() if u and u not in loaded and u not in iso
+                   and (enabled is None or u.lower() in enabled)]
         if missing and loaded:
             if relaunched:
                 msg = f"main menu without mods {', '.join(missing)} again - check the in-game mod manager"
