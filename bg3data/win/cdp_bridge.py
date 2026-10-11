@@ -7,6 +7,10 @@ Windows side. One JSON command per stdin line, one JSON reply per stdout line:
   {"op": "navigate", "tab": ID, "url": URL}        -> {"ok": true}
   {"op": "screenshot", "tab": ID, "path": P}       -> {"path": P}
   {"op": "new", "url": URL}                        -> {"id": ...}
+  {"op": "click", "tab": ID, "x": X, "y": Y}       -> {"ok": true}   (a real, trusted mouse click in viewport CSS px)
+  {"op": "type", "tab": ID, "text": T}             -> {"ok": true}   (Input.insertText into the focused element)
+  {"op": "key", "tab": ID, "key": K}               -> {"ok": true}   (Enter, ArrowDown, Escape, Tab, Backspace)
+  {"op": "files", "tab": ID, "selector": S, "paths": [P]} -> {"ok": true}   (set an <input type=file>'s files, Windows paths)
 Needs websocket-client (a venv under %LOCALAPPDATA%\\bg3-data-mcp\\winpy).
 """
 import base64
@@ -70,6 +74,28 @@ def handle(c):
         r = _call(c["tab"], "Page.captureScreenshot", {"format": "png"})
         open(c["path"], "wb").write(base64.b64decode(r["data"]))
         return {"path": c["path"]}
+    if op == "click":
+        for typ in ("mouseMoved", "mousePressed", "mouseReleased"):
+            _call(c["tab"], "Input.dispatchMouseEvent", {"type": typ, "x": c["x"], "y": c["y"], "button": "left", "clickCount": 1,
+                                                          "buttons": 1 if typ == "mousePressed" else 0})
+        return {"ok": True}
+    if op == "type":
+        _call(c["tab"], "Input.insertText", {"text": c["text"]})
+        return {"ok": True}
+    if op == "key":
+        k = c["key"]
+        codes = {"Enter": 13, "ArrowDown": 40, "ArrowUp": 38, "Escape": 27, "Tab": 9, "Backspace": 8}
+        base = {"key": k, "code": k, "windowsVirtualKeyCode": codes.get(k, 0), "nativeVirtualKeyCode": codes.get(k, 0)}
+        _call(c["tab"], "Input.dispatchKeyEvent", {"type": "rawKeyDown", **base, **({"text": "\r"} if k == "Enter" else {})})
+        _call(c["tab"], "Input.dispatchKeyEvent", {"type": "keyUp", **base})
+        return {"ok": True}
+    if op == "files":
+        doc = _call(c["tab"], "DOM.getDocument", {"depth": 0})
+        node = _call(c["tab"], "DOM.querySelector", {"nodeId": doc["root"]["nodeId"], "selector": c["selector"]})
+        if not node.get("nodeId"):
+            return {"error": f"no element matches {c['selector']}"}
+        _call(c["tab"], "DOM.setFileInputFiles", {"nodeId": node["nodeId"], "files": c["paths"]})
+        return {"ok": True}
     return {"error": f"unknown op {op}"}
 
 

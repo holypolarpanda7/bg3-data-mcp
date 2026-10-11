@@ -103,6 +103,29 @@ class Browser:
             time.sleep(0.5)
         raise RuntimeError(f"{selector} never appeared - signed out, or the page layout changed? (screenshot: {self.shot('wait-failed')})")
 
+    def click(self, selector, nth=0):
+        """A REAL (trusted) mouse click at the centre of the element - for widgets that ignore synthetic el.click() (headless UI
+        comboboxes and menus). Scrolls it into view first."""
+        pos = self.js("(()=>{const e=document.querySelectorAll(%s)[%d]; if(!e) return null; e.scrollIntoView({block:'center'}); "
+                      "const r=e.getBoundingClientRect(); return [r.x+r.width/2, r.y+r.height/2];})()" % (json.dumps(selector), nth))
+        if not pos:
+            raise RuntimeError(f"nothing matches {selector}")
+        time.sleep(0.3)
+        pos = self.js("(()=>{const e=document.querySelectorAll(%s)[%d]; const r=e.getBoundingClientRect(); return [r.x+r.width/2, r.y+r.height/2];})()"
+                      % (json.dumps(selector), nth))
+        self.cmd(op="click", tab=self.tab, x=pos[0], y=pos[1])
+
+    def type_text(self, text):
+        self.cmd(op="type", tab=self.tab, text=text)
+
+    def key(self, key):
+        self.cmd(op="key", tab=self.tab, key=key)
+
+    def files(self, selector, paths):
+        r = self.cmd(op="files", tab=self.tab, selector=selector, paths=[platform.to_win(p) for p in paths])
+        if "error" in r:
+            raise RuntimeError(r["error"])
+
     def shot(self, tag):
         d = os.path.join(sources.CACHE, "nexus_web")
         os.makedirs(d, exist_ok=True)
