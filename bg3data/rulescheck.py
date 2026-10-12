@@ -83,6 +83,8 @@ def _granted(store, active, nodes, layer):
         g["ours"] |= src == layer or src.startswith(layer)
         for p in filter(None, (a.get("PassivesAdded") or "").split(";")):
             r = store.resolve(p, active)
+            if r and "IsHidden" in (r["fields"].get("Properties") or ("",))[0]:
+                continue   # plumbing the player never sees as a feature (e.g. 13-20 Hit Point Dice), not a rules feature
             g["passives"].append((p, store.display_name((r or {}).get("fields", {}), active) if r else ""))
         g["removed"] += [p for p in (a.get("PassivesRemoved") or "").split(";") if p]
         for kind, args in re.findall(r"(\w+)\(([^)]*)\)", a.get("Selectors") or ""):
