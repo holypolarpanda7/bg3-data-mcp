@@ -54,7 +54,12 @@ redistributed - data is read from your own install.
 | `bg3_spell_visuals(name)` | a spell's effects, animations, sounds and icon |
 | `bg3_similar_spells(damage_type, school, spell_type, level, keyword)` | spells like X, with visual kits to borrow |
 | `bg3_effect(guid)` | a MultiEffectInfo (or effect resource): component VFX names, bones, duration, looping, `.lsfx`, and who uses it |
-| `bg3_search_effects(text)` | find effects by name, every word in any order ("necrotic beam") -> GUIDs ready for `*Effect` fields |
+| `bg3_search_effects(text, color=None)` | find effects by name, every word in any order ("necrotic beam") -> GUIDs ready for `*Effect` fields; `color` (red, green, purple, white...) keeps effects whose keyframes are mostly that colour |
+| `bg3_fx_index()` | fingerprint every vanilla `.lsfx` (component IDs, colour/value hashes, dominant colour) for the tools below; ~6 min, again after a game patch |
+| `bg3_fx_diff(a, b)` | compare two effects component by component, float noise ignored: colours, timing, other properties, added/removed parts |
+| `bg3_fx_provenance(layer, effect=None, against=None)` | trace a mod's effects to vanilla through component IDs (they survive copying): copy, recolour, recolour + edits, combined, new; non-vanilla assets; `against` flags anything identical to another mod and not to vanilla |
+| `bg3_fx_build(layer, apply=False)` | recolour vanilla effects per `<mod>/Scripts/data/vfx.toml` (palette presets or custom): writes `.lsfx`, a Content bank and MultiEffectInfos with stable UUIDs, plus `vfx_generated.json` (name -> UUID for stats) |
+| `bg3_lint_effects(layer)` | stats `*Effect` GUIDs that resolve nowhere or only in a mod loaded after the layer, and bank entries whose `.lsfx` is missing |
 | `bg3_game_restart(deploy_layer)` | kill the game, run the layer's `deploy` command, relaunch via Steam into the newest save, wait until loaded |
 | `bg3_level_up(levels)` / `bg3_level_check` | grant exactly the XP for the next level; compare the host with its class/subclass progressions |
 | `bg3_test_list` / `bg3_test_script` / `bg3_test_run` / `bg3_test_stage` / `bg3_test_verify` / `bg3_test_cleanup` | data-driven in-game test cases (TOML in the mod repo) run as real encounters - scripted, real-roll or AI-driven: see [docs/TESTING.md](docs/TESTING.md) |

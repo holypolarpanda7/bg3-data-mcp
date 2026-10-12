@@ -7,7 +7,7 @@ Steps, stopping at the first that fails:
   clean    the mod's git tree has no changes (the result belongs to a commit)
   static   every .lsx/.xml under Mods/ and Public/ parses; no XML comments in Localization (they crash the Toolkit)
   regen    the layer's `regen` commands (layers.json) change nothing (generated files are current)
-  lint     bg3_lint_stats / bg3_lint_progressions / bg3_lint_rules / bg3_lint_container_tests are clean
+  lint     bg3_lint_stats / bg3_lint_progressions / bg3_lint_rules / bg3_lint_container_tests / bg3_lint_effects are clean
   ingame   deploy + restart, then the builds the commit needs (see below), each stopping at its first failure
 Result: <cache>/gate/<layer>.json (per-build pass records), a report <cache>/gate/<layer>-<sha>.md, and with --post a GitHub
 commit status "bg3data/gate" on the commit (posted later with `post` if the commit wasn't pushed yet).
@@ -390,7 +390,7 @@ def step_regen(m):
 
 
 def step_lint(store, active, layer):
-    from . import lint, rulescheck, testing
+    from . import fx, lint, rulescheck, testing
     out = []
     # the rules lint checks class/subclass levels against the books' class tables; a layer without its own class progression
     # (feats, backgrounds, a subclass tweak) sets "rules": false in layers.json (2026-10-07: Bigby, Bladesinger)
@@ -398,7 +398,8 @@ def step_lint(store, active, layer):
     for name, fn in (("stats", lambda: lint.lint_stats(store, active, layer)),
                      ("progressions", lambda: testing.lint_progressions(store, active, layer)),
                      ("rules", (lambda: rulescheck.lint_rules(store, active, layer)) if rules else None),
-                     ("container tests", lambda: testing.lint_container_tests(store, active, layer))):
+                     ("container tests", lambda: testing.lint_container_tests(store, active, layer)),
+                     ("effects", lambda: fx.lint(store, layer, active))):
         if fn is None:
             continue
         r = fn()

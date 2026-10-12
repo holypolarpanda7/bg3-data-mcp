@@ -32,7 +32,7 @@ MAX_OUTPUT = 24_000  # characters; keeps a single answer from flooding the calle
 # Hot reload: tool modules are re-imported when their source changes, so MCP code edits apply on the next call
 # without a client reconnect. Not reloaded: the stores and connections that hold live state (query, index,
 # sources, se) and this module itself - those still need a reconnect.
-HOT = ("format", "lint", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex", "vortex_order")
+HOT = ("format", "lint", "fx", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex", "vortex_order")
 _mtimes = {}
 
 
@@ -365,19 +365,94 @@ def bg3_effect(guid: str, layers: list[str] | None = None) -> str:
 
 @mcp.tool()
 @guarded
-def bg3_search_effects(text: str, layers: list[str] | None = None, limit: int = 20) -> str:
+def bg3_search_effects(text: str, layers: list[str] | None = None, limit: int = 20, color: str | None = None) -> str:
     """Find effects by what they're called (e.g. 'Necrotic', 'Impact_BodyFX', 'Radiant_Beam'):
     MultiEffectInfos whose name, or any component effect's name, matches. Returns the GUID to put in a
-    stats *Effect field, what matched, and sample spells/statuses already using it."""
+    stats *Effect field, what matched, and sample spells/statuses already using it.
+    color: keep only effects whose dominant keyframe colour is this bucket (red, orange, yellow, green, cyan, blue,
+    purple, magenta, white = colour comes from the texture); needs bg3_fx_index. Each hit then shows its colour."""
     if not text or len(text.strip()) < 3:
         return "error: `text` needs at least 3 characters"
     _text(text)
     s = store()
-    rows = s.search_effects(text.strip(), s.active(layers), _limit(limit, 20, 100))
+    active = s.active(layers)
+    n = _limit(limit, 20, 100)
+    # with a colour: scan every name match without the (slow) users lookup, keep the colour hits, then look users up
+    rows = s.search_effects(text.strip(), active, 5000 if color else n, users=not color)
     out = []
+    if color:
+        from . import fx
+        fx._need_index(None)
     for uuid, name, source, why, users in rows:
-        out.append(f"{uuid}  {name}  [{source}, matched {why}]" + (("\n    used by: " + ", ".join(n for n, _ in users)) if users else ""))
+        tag = ""
+        if color:
+            e = s.effect(uuid, active)
+            c = fx.colour_of(s, e["effects"], active) if e else None
+            if c != color.strip().lower():
+                continue
+            tag = f", {c}"
+            users = s.effect_users(uuid, active, limit=5)
+        out.append(f"{uuid}  {name}  [{source}, matched {why}{tag}]" + (("\n    used by: " + ", ".join(n for n, _ in users)) if users else ""))
+        if len(out) >= n:
+            break
     return "\n".join(out) or "no matching effects"
+
+
+@mcp.tool()
+@guarded
+def bg3_fx_index(force: bool = False) -> str:
+    """Build the vanilla effect fingerprints (every .lsfx in the game: component IDs, colour/value hashes, dominant colour)
+    that bg3_fx_provenance, bg3_search_effects(color=...) and the effect colour lines use. About 6 minutes; only needed
+    again after a game patch (other tools say so)."""
+    from . import fx
+    return fx.build_index(force=force, log=_log)
+
+
+@mcp.tool()
+@guarded
+def bg3_fx_provenance(layer: str, effect: str | None = None, against: list[str] | None = None, limit: int = 60) -> str:
+    """Where a mod layer's effects (.lsfx) come from, traced through component IDs (they survive copying): identical
+    copy, recolour, recolour + edits, combined (parts of several vanilla effects), vanilla base + new parts, or new;
+    and whether they use non-vanilla materials/textures. `effect` (part of a file name) gives one effect's detail with a
+    diff against its vanilla source. `against`: other layers (e.g. ['vlads_grimoire']) - flags any component identical
+    to theirs and not to vanilla, to prove our effects derive only from vanilla."""
+    from . import fx
+    s = store()
+    return fx.provenance(s, layer, effect=effect, against=against, limit=_limit(limit, 60, 400))
+
+
+@mcp.tool()
+@guarded
+def bg3_fx_diff(a: str, b: str, layers: list[str] | None = None, limit: int = 60) -> str:
+    """Compare two effects component by component (effect resource GUID/name or MultiEffectInfo GUID/name; a
+    MultiEffectInfo's effects are paired by position). Float noise from re-saving is ignored; colours, timing and other
+    property changes are listed, plus added/removed components."""
+    from . import fx
+    s = store()
+    return fx.diff(s, a, b, s.active(layers), limit=_limit(limit, 60, 400))
+
+
+@mcp.tool()
+@guarded
+def bg3_fx_build(layer: str, apply: bool = False) -> str:
+    """Recolour build: new effects derived from vanilla ones, per <mod>/Scripts/data/vfx.toml (palettes: blood,
+    crimson, necrotic, radiant, arcane, psychic, frost, fire, acid, shadow, or custom). Writes .lsfx files, one Content
+    bank and MultiEffectInfos into the mod with stable UUIDs, and Scripts/data/vfx_generated.json (name -> UUID for
+    stats *Effect fields). Lights get the colour and their template override; brightness and alpha are kept.
+    Dry run unless apply=True. Without a spec it prints the format."""
+    from . import fx
+    return fx.build(store(), layer, apply=apply, log=_log)
+
+
+@mcp.tool()
+@guarded
+def bg3_lint_effects(layer: str, layers: list[str] | None = None, limit: int = 100) -> str:
+    """Effect references of a mod layer: stats *Effect GUIDs (and its MultiEffectInfos' effects) that resolve nowhere,
+    or only in a layer loaded after it (a mod it doesn't depend on, e.g. a VFX library), and effect bank entries
+    whose .lsfx isn't in the mod."""
+    from . import fx
+    s = store()
+    return fx.lint(s, layer, s.active(layers), limit=_limit(limit, 100, 1000))
 
 
 # ---------------------------------------------------------------------------- Script Extender

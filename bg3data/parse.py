@@ -122,8 +122,10 @@ def list_node_ids(path):
 def parse_multieffect(path):
     """A MultiEffectInfos .lsx -> (uuid, name, [ {resource, start, target_bones, source_bones} ])."""
     root = ET.parse(path).getroot()
-    for node in root.iter("node"):
-        if node.get("id") != "MultiEffectInfos":
+    region = next((r for r in root.iter("region") if r.get("id") == "MultiEffectInfos"), root)
+    for node in region.iter("node"):
+        # newer files name the top node MultiEffectInfos, older ones (version 4.0.8, e.g. Fireball_HitEffect) "root"
+        if node.get("id") not in ("MultiEffectInfos", "root"):
             continue
         a = _attrs(node)
         effects = []
