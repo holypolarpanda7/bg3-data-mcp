@@ -212,15 +212,21 @@ def _listing(cfg):
             return d["files"]
     except (OSError, ValueError, KeyError):
         pass
-    files = {}
+    files, sizes = {}, {}
     for pak in _paks(cfg):
         for line in sources.divine(cfg, "-a", "list-package", "-s", sources.winpath(pak)).splitlines():
-            name = line.split("\t")[0]
-            if name.lower().endswith(".lsfx"):
-                files[name] = pak
+            parts = line.split("\t")
+            if parts[0].lower().endswith(".lsfx"):
+                files[parts[0]] = pak
+                sizes[parts[0]] = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
     os.makedirs(FX, exist_ok=True)
-    json.dump({"sig": sig, "files": files}, open(path, "w"))
+    json.dump({"sig": sig, "files": files, "sizes": sizes}, open(path, "w"))
     return files
+
+
+def _sizes(cfg):
+    _listing(cfg)
+    return json.load(open(os.path.join(FX, "listing.json"))).get("sizes") or {}
 
 
 def _convert(cfg, src, lsx):
@@ -675,13 +681,23 @@ def _target(pal):
     return h, min(1.0, s * float(pal.get("saturation", 1.0))), pal.get("mode", "hue"), float(pal.get("brightness", 1.0))
 
 
-def recolour_text(text, pal, keep=KEEP_DEFAULT):
-    """Rewrite every colour keyframe of an effect .lsx to the palette's hue; brightness (incl. HDR) and alpha are kept.
-    mode 'hue': white/grey keys stay (the texture's colour shows); 'tint': they get the hue too. Lights always get the
-    colour and their light-template override switched on. -> (text, stats)."""
-    th, ts, mode, bright = _target(pal)
+# size knobs per component type (Type 6 = keyed floats, Type 4 = one float); Particle.Appearance.Uniform Scale is left alone
+# because the system's scale already applies to its particles
+SCALE_PROPS = {"System.Appearance.Uniform Scale": None, "Scale And Rotation.Uniform Scale": None,
+               "Appearance.Uniform Scale": None, "Appearance.Radius": "Light"}
+
+
+def transform_text(text, pal=None, scale=1.0, keep=KEEP_DEFAULT):
+    """Recolour and/or rescale an effect .lsx.
+    Colour (pal): every colour key takes the palette's hue; brightness (incl. HDR) and alpha are kept. mode 'hue': white/grey
+    keys stay (the texture's colour shows); 'tint': they get the hue too. Lights always get the colour and their
+    light-template override switched on.
+    Scale: multiplies each component's uniform scale (particle systems, models, billboards, decals) and light radii.
+    -> (text, stats)."""
+    if pal:
+        th, ts, mode, bright = _target(pal)
     out, prop, ctype = [], None, None
-    st = {"keys": 0, "white_kept": 0, "lights": 0}
+    st = {"keys": 0, "white_kept": 0, "lights": 0, "scaled": 0}
     for line in text.splitlines(keepends=True):
         if '<node id="EffectComponent"' in line:
             ctype, prop = None, None
@@ -694,6 +710,11 @@ def recolour_text(text, pal, keep=KEEP_DEFAULT):
                 ctype = v
             elif k == "FullName":
                 prop = v
+            elif scale != 1.0 and k == "Value" and t == "float" and prop in SCALE_PROPS and SCALE_PROPS[prop] in (None, ctype):
+                line = line.replace(f'value="{v}"', f'value="{_fmt_f(float(v) * scale)}"')
+                st["scaled"] += 1
+            elif not pal:
+                pass
             elif k == "Value" and t == "bool" and prop == LIGHT_OVERRIDE and v == "False":
                 line = line.replace('value="False"', 'value="True"')
                 st["lights"] += 1
@@ -713,6 +734,31 @@ def recolour_text(text, pal, keep=KEEP_DEFAULT):
                         st["keys"] += 1
         out.append(line)
     return "".join(out), st
+
+
+def recolour_text(text, pal, keep=KEEP_DEFAULT):
+    return transform_text(text, pal, 1.0, keep)
+
+
+def _blocks(t, node_id, start=0):
+    """[(start, end)] of every <node id=node_id> element (with children) in t."""
+    out, i = [], start
+    opener = f'<node id="{node_id}"'
+    while True:
+        s0 = t.find(opener, i)
+        if s0 < 0:
+            return out
+        depth, j = 0, s0
+        for m in re.finditer(r"<node\b[^>]*?(/?)>|</node>", t[s0:]):
+            if m.group(0).startswith("</"):
+                depth -= 1
+            elif not m.group(1):
+                depth += 1
+            if depth == 0:
+                j = s0 + m.end()
+                break
+        out.append((s0, j))
+        i = j
 
 
 def _fmt_f(x):
@@ -765,8 +811,57 @@ BANK_HEAD = '<?xml version="1.0" encoding="utf-8"?>\n<save>\n\t<version major="4
 BANK_TAIL = '\t\t\t</children>\n\t\t</node>\n\t</region>\n</save>\n'
 
 
+_vocab = {}
+
+
+def player_vocab(store):
+    """Animation text keys and bones that the effects of player spells (spells in the base game's spell lists) use. A
+    monster's effect keyed to a text key or bone outside these may never start, or float at the root, on a player."""
+    if not _vocab:
+        listed = set()
+        for (a,) in store.db.execute("SELECT attrs FROM lists WHERE layer='base'"):
+            listed.update(re.findall(r"[A-Z][A-Za-z]+_[A-Za-z0-9_]+", a))
+        meis = set()
+        for n, d in store.db.execute("SELECT name, data FROM stats WHERE layer='base' AND type='SpellData'"):
+            if n in listed:
+                for k, v in json.loads(d).items():
+                    if k.endswith("Effect") and isinstance(v, str):
+                        meis.update(GUID_ANY.findall(v))
+        keys, bones = {""}, set()
+        for u, e in store.db.execute("SELECT uuid, effects FROM mei WHERE layer='base'"):
+            if u in meis:
+                for x in json.loads(e):
+                    keys.add(x.get("start") or "")
+                    bones.update(b.strip() for b in x.get("target_bones", []) + x.get("source_bones", []))
+        _vocab.update(keys=keys, bones=bones)
+    return _vocab
+
+
+def _playability(store, blk):
+    """Warnings for one EffectInfo block: a start text key or bone no player spell's effect uses."""
+    v = player_vocab(store)
+    out = []
+    key = (re.search(r'id="StartTextKey" type="\w+" value="([^"]*)"', blk) or [None, ""])[1]
+    if key not in v["keys"]:
+        out.append(f"text key {key!r}")
+    for b in re.findall(r'<node id="(?:TargetBone|SourceBone)">\s*<attribute id="Value" type="\w+" value="([^"]*)"', blk):
+        if b.strip() and b.strip() not in v["bones"]:
+            out.append(f"bone {b.strip()!r}")
+    return out
+
+
+def _scale_entry(entry, scale):
+    """Grow a bank entry's culling bounds with its effect."""
+    if scale == 1.0:
+        return entry
+    def mul(m):
+        return m.group(1) + " ".join(_fmt_f(float(x) * scale) for x in m.group(2).split()) + '"'
+    return re.sub(r'(id="(?:BoundsMax|BoundsMin|Radius)" type="(?:fvec3|float)" value=")([^"]+)"', mul, entry)
+
+
 def build(store, layer, apply=False, log=print):
-    """Recolour build from <mod>/Scripts/data/vfx.toml (see module doc). Dry run unless apply."""
+    """Effect build from <mod>/Scripts/data/vfx.toml (see SPEC_HELP): new MultiEffectInfos composed of one or more vanilla
+    ones (parts), each part optionally recoloured and/or rescaled. Dry run unless apply."""
     from . import toolkit
     cfg, m, pub, folder = toolkit._mod_dirs(layer)
     spec_path = os.path.join(m["path"], "Scripts", "data", "vfx.toml")
@@ -775,7 +870,6 @@ def build(store, layer, apply=False, log=print):
     spec = tomllib.load(open(spec_path, "rb"))
     palettes = {**PRESETS, **spec.get("palettes", {})}
     allowed = ["base"] + list(spec.get("allow_sources", []))   # never another mod's effects unless listed (licences)
-    active = store.active(None)
     tag = spec.get("bank", "VFX")
     bank_dir = os.path.join(pub, "Content", f"[PAK]_{tag}")
     gen_path = os.path.join(m["path"], "Scripts", "data", "vfx_generated.json")
@@ -783,76 +877,106 @@ def build(store, layer, apply=False, log=print):
     out, written, entries, generated, made = [f"VFX build for {layer} from {os.path.relpath(spec_path, m['path'])}"], [], [], {}, {}
     work = os.path.join(FX, "build", layer)
     shutil.rmtree(work, ignore_errors=True)
+    w, p = store._where(allowed)
+    names = set()
     for e in spec.get("effect", []):
-        name, frm, pname = e["name"], e["from"], e.get("palette")
-        if pname not in palettes:
-            raise ValueError(f"{name}: unknown palette {pname!r} (presets: {', '.join(PRESETS)})")
-        pal = palettes[pname]
-        w, p = store._where(allowed)
-        src = store.db.execute(f"SELECT uuid, name, effects, layer FROM mei WHERE {w} AND (uuid=? OR name=?) ORDER BY rank DESC LIMIT 1",
-                               p + [frm.lower(), frm]).fetchone()
-        if not src:
-            raise ValueError(f"{name}: no MultiEffectInfo {frm!r} in {allowed} (other mods' effects need allow_sources)")
-        mei_path = _mei_file(cfg, store, src[0], src[3])
-        if not mei_path:
-            raise FileNotFoundError(f"{name}: MultiEffectInfo file for {src[0]} not found")
-        mapping = {}
-        only = e.get("only")   # optional 1-based EffectInfo positions to recolour; others keep the original resource
-        for i, info in enumerate(json.loads(src[2]), 1):
-            rid = info.get("resource")
-            if not rid or (only and i not in only):
-                continue
-            r = store.db.execute(f"SELECT layer, name, source_file FROM fx WHERE id=? AND {w} ORDER BY rank DESC LIMIT 1", [rid] + p).fetchone()
-            if not r:
-                out.append(f"  {name}: resource {rid} not indexed - left as is")
-                continue
-            key = (rid, pname)
-            if key not in made:
-                new_name = f"{r[1]}_{pname.capitalize()}"
-                new_id = _uid(layer, "res", rid, pname)
-                text, st = recolour_text(open(effect_lsx(cfg, r[0], r[2]), encoding="utf-8").read(), pal, tuple(e.get("keep", KEEP_DEFAULT)))
-                rel = f"Public/{folder}/Assets/Effects/Effects_Banks/{e.get('folder', tag)}/{new_name}.lsfx"
-                made[key] = (new_id, new_name, rel, text, st, r)
-            mapping[rid] = made[key][0]
-        if not mapping:
-            out.append(f"  {name}: nothing to recolour")
+        name = e["name"]
+        if name in names:
+            raise ValueError(f"effect name {name!r} is used twice")
+        names.add(name)
+        parts = e.get("parts") or [{k: v for k, v in e.items() if k in ("from", "palette", "scale", "only", "keep", "folder")}]
+        blocks, template, desc, nres = [], None, [], 0
+        for pi, part in enumerate(parts):
+            frm, pname, scale = part["from"], part.get("palette"), float(part.get("scale", 1.0))
+            if pname and pname not in palettes:
+                raise ValueError(f"{name}: unknown palette {pname!r} (presets: {', '.join(PRESETS)})")
+            src = store.db.execute(f"SELECT uuid, name, effects, layer FROM mei WHERE {w} AND (uuid=? OR name=?) ORDER BY rank DESC LIMIT 1",
+                                   p + [frm.lower(), frm]).fetchone()
+            if not src:
+                raise ValueError(f"{name}: no MultiEffectInfo {frm!r} in {allowed} (other mods' effects need allow_sources)")
+            mei_path = _mei_file(cfg, store, src[0], src[3])
+            if not mei_path:
+                raise FileNotFoundError(f"{name}: MultiEffectInfo file for {src[0]} not found")
+            t = open(mei_path, encoding="utf-8-sig").read()
+            if template is None:
+                template = t
+            only = part.get("only")   # 1-based EffectInfo positions to take; default all
+            spans = _blocks(t, "EffectInfo")
+            for i, (b0, b1) in enumerate(spans, 1):
+                if only and i not in only:
+                    continue
+                blk = t[b0:b1]
+                rid = (re.search(r'id="EffectResourceGuid" type="guid" value="([^"]+)"', blk) or [None, None])[1]
+                if rid and (pname or scale != 1.0):
+                    r = store.db.execute(f"SELECT layer, name, source_file FROM fx WHERE id=? AND {w} ORDER BY rank DESC LIMIT 1",
+                                         [rid] + p).fetchone()
+                    if not r:
+                        out.append(f"  {name}: resource {rid} not indexed - used as is")
+                    else:
+                        key = (rid, pname or "", scale)
+                        if key not in made:
+                            suffix = (f"_{pname.capitalize()}" if pname else "") + (f"_S{round(scale * 100)}" if scale != 1.0 else "")
+                            new_name = f"{r[1]}{suffix}"
+                            new_id = _uid(layer, "res", rid, pname or "", f"{scale:g}")
+                            text, st = transform_text(open(effect_lsx(cfg, r[0], r[2]), encoding="utf-8").read(),
+                                                      palettes[pname] if pname else None, scale, tuple(part.get("keep", KEEP_DEFAULT)))
+                            rel = f"Public/{folder}/Assets/Effects/Effects_Banks/{part.get('folder', tag)}/{new_name}.lsfx"
+                            # nothing to recolour or resize (post-process, sound, overlay): reuse the original, no copy
+                            made[key] = (new_id, new_name, rel, text, st, r, scale) if st["keys"] or st["scaled"] or st["lights"] else None
+                        if made[key]:
+                            blk = blk.replace(f'value="{rid}"', f'value="{made[key][0]}"')
+                            nres += 1
+                warn = _playability(store, blk)
+                if warn:
+                    rn = (re.search(r'id="EffectResourceGuid" type="guid" value="([^"]+)"', t[b0:b1]) or [None, "?"])[1]
+                    out.append(f"  ! {name}: {src[1]} #{i} ({store.effect_name(rn, allowed) or rn}) uses {', '.join(warn)} - "
+                               "no player spell's effect does; it may not play on a player")
+                blk = re.sub(r'(<attribute id="UUID" type="guid" value=")([^"]+)',
+                             lambda mm: mm.group(1) + _uid(layer, "info", name, str(pi), mm.group(2)), blk, count=1)
+                blocks.append(blk)
+            desc.append(f"{src[1]}" + (f" [{src[3]}]" if src[3] != "base" else "") + (f" {pname}" if pname else "")
+                        + (f" x{scale:g}" if scale != 1.0 else "") + (f" #{','.join(map(str, only))}" if only else ""))
+        if not blocks:
+            out.append(f"  {name}: no effects selected")
             continue
         mei_uuid = _uid(layer, "mei", name)
-        t = open(mei_path, encoding="utf-8-sig").read()
+        spans = _blocks(template, "EffectInfo")
+        head = template[:spans[0][0]] if spans else template
+        tail = template[spans[-1][1]:] if spans else ""
         # the MultiEffectInfo's own UUID/Name come before its first EffectInfo (top node "MultiEffectInfos" or, in older
         # files, "root"; attribute order varies)
-        cut = t.find('<node id="EffectInfo"')
-        head, rest = (t[:cut], t[cut:]) if cut >= 0 else (t, "")
         head = re.sub(r'(<attribute id="UUID" type="guid" value=")[^"]+', r"\g<1>" + mei_uuid, head, count=1)
         head = re.sub(r'(<attribute id="Name" type="LSString" value=")[^"]*', r"\g<1>" + name, head, count=1)
-        t = head + rest
-        t = re.sub(r'(<node id="EffectInfo">(?:(?!</?node)[\s\S])*?<attribute id="UUID" type="guid" value=")([^"]+)',
-                   lambda mm: mm.group(1) + _uid(layer, "info", name, mm.group(2)), t)
-        for o, nw in mapping.items():
-            t = t.replace(f'value="{o}"', f'value="{nw}"')
+        sep = "\n" + head[head.rfind("\n", 0, len(head)) + 1:] if head.endswith((" ", "\t")) else "\n"
+        t = head + sep.join(blocks) + tail
         rel = f"Public/{folder}/MultiEffectInfos/{mei_uuid}.lsx"
         written.append((rel, t))
-        generated[name] = {"uuid": mei_uuid, "from": f"{src[1]} ({src[0]})", "palette": pname,
-                           "resources": {o: nw for o, nw in mapping.items()}}
-        out.append(f"  {name} = {mei_uuid}  <- {src[1]} [{src[3]}], palette {pname}, {len(mapping)} effect(s) recoloured")
-    for (rid, pname), (new_id, new_name, rel, text, st, r) in made.items():
+        generated[name] = {"uuid": mei_uuid, "parts": desc}
+        out.append(f"  {name} = {mei_uuid}  <- {' + '.join(desc)}  ({len(blocks)} effects, {nres} new)")
+    made = {k: v for k, v in made.items() if v}
+    for (rid, pname, scale), (new_id, new_name, rel, text, st, r, _) in made.items():
         entry = _base_bank_entry(cfg, rid) if r[0] == "base" else None
         if not entry:
             raise RuntimeError(f"no bank entry found for {r[1]} ({rid}); only vanilla sources are supported for now")
         entry = re.sub(r'(id="ID" type="FixedString" value=")[^"]+', r"\g<1>" + new_id, entry, count=1)
         entry = re.sub(r'(id="(?:Name|EffectName)" type="(?:LSString|FixedString)" value=")[^"]+', r"\g<1>" + new_name, entry)
         entry = re.sub(r'(id="SourceFile" type="LSString" value=")[^"]+', r"\g<1>" + rel, entry, count=1)
-        entries.append("\t\t\t\t" + entry.strip() + "\n")
+        entries.append("\t\t\t\t" + _scale_entry(entry, scale).strip() + "\n")
         written.append((rel, text))
-        out.append(f"    {new_name}: {st['keys']} colour keys, {st['white_kept']} white keys kept, {st['lights']} light override(s)")
-    if not made:
+        out.append(f"    {new_name}: {st['keys']} colour keys, {st['white_kept']} white kept, {st['lights']} light override(s), "
+                   f"{st['scaled']} size values scaled")
+    if not generated:
         out.append("  nothing to build")
         return "\n".join(out)
-    bank_rel = os.path.relpath(os.path.join(bank_dir, "_merged.lsf"), m["path"]).replace("\\", "/")
-    written.append((bank_rel, BANK_HEAD + "".join(entries) + BANK_TAIL))
+    if entries:
+        bank_rel = os.path.relpath(os.path.join(bank_dir, "_merged.lsf"), m["path"]).replace("\\", "/")
+        written.append((bank_rel, BANK_HEAD + "".join(entries) + BANK_TAIL))
     files = [r for r, _ in written]
     stale = [f for f in old.get("_files", []) if f not in files]
-    out.append(f"  {len(files)} file(s): {len(made)} effects, {len(generated)} MultiEffectInfos, 1 bank ({bank_rel})"
+    sizes = _sizes(cfg)
+    est = sum(sizes.get(r[2], 0) for (_, _, _, _, _, r, _) in made.values())   # a new effect is about its source's size
+    out.append(f"  {len(files)} file(s): {len(made)} new effects (~{est / 1e6:.1f} MB), {len(generated)} MultiEffectInfos"
+               + (", 1 bank" if entries else "")
                + (f"; {len(stale)} stale file(s) from the last build to remove" if stale else ""))
     if not apply:
         out.append("dry run - pass apply=True to write")
@@ -873,9 +997,9 @@ def build(store, layer, apply=False, log=print):
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.move(src, dst)
     for f in stale:
-        p = os.path.join(m["path"], f)
-        if os.path.exists(p):
-            os.remove(p)
+        fp = os.path.join(m["path"], f)
+        if os.path.exists(fp):
+            os.remove(fp)
     generated["_files"] = files
     json.dump(generated, open(gen_path, "w"), indent=1)
     open(gen_path, "a").write("\n")
@@ -892,9 +1016,17 @@ SPEC_HELP = """Spec format (TOML):
   mode = "tint"                    # hue: keep white/grey keys (texture colour shows) | tint: colour them too
   saturation = 1.0                 # multiplier on the colour's saturation
   brightness = 1.0                 # multiplier on every recoloured key's brightness (HDR kept relative)
-  [[effect]]
-  name = "PTA_FingerOfDeath_BeamEffect"   # new MultiEffectInfo name
+
+  [[effect]]                       # one source, recoloured
+  name = "PTA_FingerOfDeath_CastEffect"   # new MultiEffectInfo name (unique)
   from = "<vanilla MultiEffectInfo UUID or name>"
-  palette = "blood"
-  only = [1, 2]                    # optional: EffectInfo positions to recolour
-  keep = ["Darken Environment.Color"]   # optional: colour properties left alone"""
+  palette = "blood"                # optional
+  scale = 1.5                      # optional: uniform scale of every component (and light radii)
+  only = [1, 2]                    # optional: EffectInfo positions to take (default all)
+  keep = ["Darken Environment.Color"]   # optional: colour properties left alone
+
+  [[effect]]                       # composed: several vanilla effects layered into one
+  name = "PTA_MeteorSwarm_PositionEffect"
+  parts = [ { from = "Fireball_HitEffect", scale = 2.0 },
+            { from = "DestructiveWave_Radiant_TargetEffect", palette = "fire" },
+            { from = "IceStorm_PositionEffect", only = [1] } ]   # a part with no palette/scale reuses the vanilla effect"""

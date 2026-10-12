@@ -221,6 +221,11 @@ class Footprints:
 
 # ---------------------------------------------------------------- change detection
 
+# presentation-only stats fields: effects, sounds and spell animations don't change what a build checks (2026-10-12:
+# 171 effect fields on 70 spells would otherwise have owed every build)
+VISUAL_FIELD = re.compile(r'^data "(\w*Effect\w*|\w*Sound\w*|SpellAnimation\w*|DualWieldingSpellAnimation|Icon)" ')
+
+
 def _stats_entries(text):
     out, cur, buf = {}, None, []
     for line in (text or "").splitlines():
@@ -229,7 +234,7 @@ def _stats_entries(text):
             if cur:
                 out[cur] = "\n".join(buf)
             cur, buf = m.group(1), []
-        elif cur and line.strip() and not line.strip().startswith("//"):
+        elif cur and line.strip() and not line.strip().startswith("//") and not VISUAL_FIELD.match(line.strip()):
             buf.append(" ".join(line.split()))
     if cur:
         out[cur] = "\n".join(buf)
@@ -286,6 +291,8 @@ def changes(path, a, b="HEAD"):
         low = f.lower()
         if parts[0] == "Mods" and len(parts) > 2 and parts[2] == "Localization":
             ch["ignored"].append(f)
+        elif parts[0] == "Public" and len(parts) > 2 and (parts[2] in ("MultiEffectInfos", "Assets") or parts[2] == "Content"):
+            ch["ignored"].append(f"{f} (visual)")   # effects, effect banks, textures: no build checks them
         elif base == "meta.lsx" and _strip_version(_show(path, a, f)) == _strip_version(_show(path, b, f)):
             ch["ignored"].append(f"{f} (version stamp)")    # a release's Version64 bump owes no builds
         elif parts[0] == "Mods" and (len(parts) > 2 and parts[2] == "ScriptExtender" or base == "meta.lsx"):
