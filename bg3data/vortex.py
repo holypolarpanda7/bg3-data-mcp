@@ -205,13 +205,15 @@ def action(name, mod=None, enabled=True):
               "check-updates": ("POST", "/check-updates", {"mod": mod} if mod else {}),
               "update": ("POST", "/update", {"mod": mod, "profiles": _update_profiles()}),
               "downloads": ("GET", "/downloads", None), "loadorder": ("GET", "/loadorder", None),
-              "install": ("POST", "/install", {"download": mod, "profiles": _update_profiles()})}
+              "install": ("POST", "/install", {"download": mod, "profiles": _update_profiles()}),
+              "nexus-info": ("POST", "/nexus-info", {"modId": mod}),
+              "nexus-download": ("POST", "/nexus-download", {"modId": mod, "profiles": _update_profiles()})}
     if name not in routes:  # (the token travels on a local PowerShell command line under WSL - local user only)
         return {"error": f"unknown action {name!r}; one of {sorted(routes)}"}
-    if name in ("enable", "disable", "remove", "update", "install") and not mod:
+    if name in ("enable", "disable", "remove", "update", "install", "nexus-info", "nexus-download") and not mod:
         return {"error": f"{name} needs `mod` (a mod id or a unique part of it)"}
     method, ep, body = routes[name]
-    return bridge_call(method, ep, body, timeout=300 if name in ("deploy", "purge", "install", "check-updates") else 60)
+    return bridge_call(method, ep, body, timeout=300 if name in ("deploy", "purge", "install", "check-updates", "nexus-info") else 60)
 
 
 def format_result(r):

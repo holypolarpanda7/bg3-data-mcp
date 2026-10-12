@@ -164,6 +164,27 @@ function main(context) {
         for (const id of b.enable || []) api.store.dispatch(actions.setModEnabled(pid, id, true));
         return status();
       },
+      // a Nexus mod that is not installed yet, through Vortex's Nexus login: its info, its files, and downloading one
+      'POST /nexus-info': async (b) => {
+        const g = gameId(); const ext = api.ext || {};
+        const info = ext.nexusGetModInfo ? await ext.nexusGetModInfo(g, Number(b.modId)) : null;
+        const files = ext.nexusGetModFiles ? await ext.nexusGetModFiles(g, Number(b.modId)) : null;
+        if (!info && !files) throw new Error('this Vortex does not expose nexusGetModInfo / nexusGetModFiles');
+        return { info, files };
+      },
+      'POST /nexus-download': async (b) => {
+        const g = gameId(); const ext = api.ext || {};
+        let fileId = b.fileId;
+        if (!fileId) {
+          const files = (ext.nexusGetModFiles ? await ext.nexusGetModFiles(g, Number(b.modId)) : []) || [];
+          const main = files.filter(f => f.category_id === 1).sort((x, y) => (y.uploaded_timestamp || 0) - (x.uploaded_timestamp || 0));
+          if (!main.length) throw new Error(`no main file found for Nexus mod ${b.modId}`);
+          fileId = main[0].file_id;
+        }
+        autoAnswer(installRules(b), 30 * 60000);
+        api.events.emit('mod-update', g, String(b.modId), String(fileId), 'nexus');
+        return { modId: b.modId, fileId, note: 'download started (or the Nexus page opened for a free account)' };
+      },
       'GET /downloads': async () => ({ downloads: downloads() }),
       // install a finished download as a new staged mod (not enabled: the MCP switches versions explicitly)
       'POST /install': async (b) => {
