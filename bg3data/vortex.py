@@ -185,6 +185,16 @@ def bridge_call(method, endpoint, body=None, cfg=None, timeout=120):
         return {"error": f"bridge unreachable ({e}) - is Vortex running with the bridge installed?"}
 
 
+def _update_profiles():
+    """layers.json vortex.update_profiles: which profiles a dependency update the MCP installs applies to when Vortex asks -
+    "current" (default: the active dev profile only, the play profile keeps its version) or "all"."""
+    try:
+        v = (sources.load_config().get("vortex") or {}).get("update_profiles", "current")
+    except Exception:
+        v = "current"
+    return "all" if str(v).lower() == "all" else "current"
+
+
 def action(name, mod=None, enabled=True):
     """deploy | purge | enable | disable | remove | status | check-updates | update | downloads | install (mod = the download id)
     through the bridge."""
@@ -193,9 +203,9 @@ def action(name, mod=None, enabled=True):
               "disable": ("POST", "/enable", {"mod": mod, "enabled": False}),
               "remove": ("POST", "/remove", {"mod": mod}),
               "check-updates": ("POST", "/check-updates", {"mod": mod} if mod else {}),
-              "update": ("POST", "/update", {"mod": mod}),
+              "update": ("POST", "/update", {"mod": mod, "profiles": _update_profiles()}),
               "downloads": ("GET", "/downloads", None), "loadorder": ("GET", "/loadorder", None),
-              "install": ("POST", "/install", {"download": mod})}
+              "install": ("POST", "/install", {"download": mod, "profiles": _update_profiles()})}
     if name not in routes:  # (the token travels on a local PowerShell command line under WSL - local user only)
         return {"error": f"unknown action {name!r}; one of {sorted(routes)}"}
     if name in ("enable", "disable", "remove", "update", "install") and not mod:

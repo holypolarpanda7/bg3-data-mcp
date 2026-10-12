@@ -290,6 +290,10 @@ def update(store, layer, apply=False, log=print):
     m = _mod(cfg, layer)
     regen = m.get("regen") or []
     lock = read_lock(cfg, layer)
+    # the dependency's new release must be indexed before the diff, the regen and the snapshot - otherwise the diff compares
+    # the old data with itself ("0 changed", seen 2026-10-12 on dnd55e 4.13.1.0 -> 4.13.7.1) and regen reads stale data
+    index.refresh(store.db, cfg, log=log)
+    store.invalidate()
     drift = []
     for d, dep_m, dep_info in dependencies(cfg, layer):
         if not dep_m:

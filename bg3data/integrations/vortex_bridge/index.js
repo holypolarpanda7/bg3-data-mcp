@@ -63,11 +63,35 @@ function main(context) {
         })),
       };
     };
+    // Answer Vortex's own prompts during an install / update the MCP started (e.g. "Update current profile" vs "Update all
+    // profiles" when a new version replaces one enabled in several profiles). Rules expire, so the user's own installs are untouched.
+    let answerRules = [];
+    const answered = [];
+    const autoAnswer = (rules, ttlMs) => { const until = Date.now() + ttlMs; answerRules = rules.map(r => ({ ...r, until })); };
+    const labelOf = (a) => (typeof a === 'string' ? a : (a && a.label) || '');
+    api.store.subscribe(() => {
+      if (!answerRules.length || !actions || !actions.closeDialog) return;
+      answerRules = answerRules.filter(r => r.until > Date.now());
+      const dialogs = ((state().session.notifications || {}).dialogs) || [];
+      for (const d of dialogs) {
+        if (answered.includes(d.id)) continue;
+        for (const r of answerRules) {
+          const label = (d.actions || []).map(labelOf).find(l => new RegExp(r.label, 'i').test(l));
+          if (label && (!r.title || new RegExp(r.title, 'i').test(`${d.title} ${JSON.stringify(d.content || {})}`))) {
+            answered.push(d.id);
+            setTimeout(() => api.store.dispatch(actions.closeDialog(d.id, label)), 200);
+            break;
+          }
+        }
+      }
+    });
+    const installRules = (b) => [{ label: (b && b.profiles) === 'all' ? '^update all profiles$|all profiles' : '^update current profile$|current profile' }];
     const emit = (event, ...args) => new Promise((resolve, reject) => {
       api.events.emit(event, ...args, (err) => (err ? reject(err) : resolve()));
     });
     const handlers = {
       'GET /status': async () => status(),
+      'GET /answered': async () => ({ answered, rules: answerRules }),
       'POST /deploy': async () => { await emit('deploy-mods'); return status(); },
       'POST /purge': async () => {
         await new Promise((res, rej) => api.events.emit('purge-mods', false, (err) => (err ? rej(err) : res())));
@@ -93,6 +117,7 @@ function main(context) {
         if (!n.modId) throw new Error(`${id} has no Nexus mod id`);
         const fileId = b.fileId || n.newestFileId;
         if (!fileId) throw new Error(`no newer file known for ${id} - run check-updates first`);
+        autoAnswer(installRules(b), 30 * 60000);   // the download and its install finish after this call returns
         api.events.emit('mod-update', g, String(n.modId), String(fileId), 'nexus');
         return { mod: id, modId: n.modId, fileId, note: 'download started (or the Nexus page opened for a free account)' };
       },
@@ -142,6 +167,7 @@ function main(context) {
       'GET /downloads': async () => ({ downloads: downloads() }),
       // install a finished download as a new staged mod (not enabled: the MCP switches versions explicitly)
       'POST /install': async (b) => {
+        autoAnswer(installRules(b), 10 * 60000);
         const modId = await new Promise((res, rej) => {
           const cb = (err, id) => (err ? rej(err) : res(id));
           api.events.emit('start-install-download', b.download, { allowAutoEnable: false }, cb);
