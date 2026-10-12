@@ -258,7 +258,9 @@ def mod_files(cfg, mod, kind):
         "lists": ["Public/*/Lists/*.lsx", "Public/*/Lists/*.lsf"],
         "loca": ["Mods/*/Localization/English/*.xml"],
         "mei": ["Public/*/MultiEffectInfos/*.lsx", "Public/*/MultiEffectInfos/*.lsf"],
-        "fxbanks": ["Public/*/Content/Assets/Effects/**/_merged.lsx", "Public/*/Content/Assets/Effects/**/_merged.lsf"],
+        # mods put effect banks anywhere under Content/ with any file name (Vlad's Grimoire: Effects/[PAK]_X/ContentMerge_*.lsf,
+        # Vlad's Codex: one <uuid>.lsf per resource); parse_effect_bank keeps only .lsfx resources, so other banks are harmless
+        "fxbanks": ["Public/*/Content/**/*.lsx", "Public/*/Content/**/*.lsf"],
         "staticdata": STATIC_PATTERNS_LSX + [x[:-1] + "f" for x in STATIC_PATTERNS_LSX],
         "khn": ["Mods/*/Scripts/thoth/helpers/*.khn"],
     }
