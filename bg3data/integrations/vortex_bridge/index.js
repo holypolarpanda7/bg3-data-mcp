@@ -1,5 +1,5 @@
 // bg3-data-mcp bridge for Vortex (optional; installed by the MCP tool bg3_vortex_bridge_install).
-// A tiny HTTP server on 127.0.0.1 that runs Vortex's own actions (deploy, purge, enable/disable, remove, and the Nexus
+// A tiny HTTP server on 127.0.0.1 that runs Vortex's own actions (deploy, purge, enable/disable, remove, profile switch, and the Nexus
 // update check / download / install through Vortex's own Nexus login) for the active game, so the MCP never touches
 // Vortex's database, deployment files or Nexus credentials itself.
 // Every request must carry the token from bridge.json (written next to this file, readable by your user only).
@@ -31,6 +31,10 @@ function main(context) {
       if (hit.length !== 1) throw new Error(hit.length ? `ambiguous mod '${q}': ${hit.join(' | ')}` : `no mod matching '${q}'`);
       return hit[0];
     };
+    const profilesOf = (g) => Object.values(state().persistent.profiles || {}).filter(p => p.gameId === g).map(p => ({
+      id: p.id, name: p.name, lastActivated: p.lastActivated,
+      enabled: Object.keys(p.modState || {}).filter(id => (p.modState[id] || {}).enabled).length,
+    }));
     const nexusOf = (m) => {
       const a = m.attributes || {};
       return { modId: a.modId, fileId: a.fileId, newestVersion: a.newestVersion, newestFileId: a.newestFileId,
@@ -99,6 +103,41 @@ function main(context) {
         if (!Array.isArray(b.loadOrder)) throw new Error('loadOrder must be an array');
         api.store.dispatch(actions.setFBLoadOrder(profileId(), b.loadOrder));
         return { profile: profileId(), count: b.loadOrder.length };
+      },
+      // profiles of the active game; POST /profile switches to one (by id or name), creating it when asked
+      'GET /profiles': async () => ({ active: profileId(), profiles: profilesOf(gameId()) }),
+      'POST /profile': async (b) => {
+        if (!actions) throw new Error('vortex-api actions unavailable in this Vortex');
+        const g = gameId();
+        let p = profilesOf(g).find(x => x.id === b.profile || (x.name || '').toLowerCase() === String(b.profile).toLowerCase());
+        let created = false;
+        if (!p) {
+          if (!b.create) throw new Error(`no ${g} profile '${b.profile}'`);
+          const id = crypto.randomBytes(6).toString('base64').replace(/[^A-Za-z0-9]/g, 'x');
+          api.store.dispatch(actions.setProfile({ id, gameId: g, name: String(b.profile), modState: {}, lastActivated: 0 }));
+          p = { id, name: String(b.profile) };
+          created = true;
+        }
+        const from = profileId();
+        if (from !== p.id) {
+          api.store.dispatch(actions.setNextProfile(p.id));   // Vortex purges the old profile's deployment and activates this one
+          const until = Date.now() + (b.timeoutMs || 180000);
+          while (profileId() !== p.id || ((state().settings.profiles || {}).nextProfileId && state().settings.profiles.nextProfileId !== p.id)) {
+            if (Date.now() > until) throw new Error(`timed out switching to profile '${p.name}'`);
+            await new Promise(r => setTimeout(r, 500));
+          }
+        }
+        return { switched: from !== p.id, from, created, ...status() };
+      },
+      // enable / disable many mods of the active profile at once (ids exactly as /status lists them)
+      'POST /modstate': async (b) => {
+        if (!actions) throw new Error('vortex-api actions unavailable in this Vortex');
+        const g = gameId(); const mods = modsOf(g); const pid = profileId();
+        const unknown = [...(b.enable || []), ...(b.disable || [])].filter(id => !mods[id]);
+        if (unknown.length) throw new Error(`unknown mod id(s): ${unknown.join(' | ')}`);
+        for (const id of b.disable || []) api.store.dispatch(actions.setModEnabled(pid, id, false));
+        for (const id of b.enable || []) api.store.dispatch(actions.setModEnabled(pid, id, true));
+        return status();
       },
       'GET /downloads': async () => ({ downloads: downloads() }),
       // install a finished download as a new staged mod (not enabled: the MCP switches versions explicitly)

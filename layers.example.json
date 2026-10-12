@@ -1,4 +1,5 @@
 {
+  "vortex": {"dev_profile": "MyMod-Testing", "dev_keep": []},
   "mods": [
     {"name": "dnd55e", "path": "%LOCALAPPDATA%\\Larian Studios\\Baldur's Gate 3\\Mods\\DnD2024_897914ef-5c96-053c-44af-0be823f895fe.pak"},
     {"name": "mymod", "path": "C:\\BG3Mods\\MyMod"}

@@ -1095,6 +1095,27 @@ def bg3_vortex_sort(apply: bool = False, remove: list[str] | None = None, deploy
 
 @mcp.tool()
 @guarded
+def bg3_vortex_profile(action: str = "list", layer: str | None = None) -> str:
+    """Vortex dev/test profile (needs the bridge). layers.json `vortex.dev_profile` (or a layer's `vortex_profile`) names a
+    Vortex profile used for mod development and testing; bg3_deploy and the gate switch to it automatically and fit it for the
+    layer. action "list": the profiles, active and dev marked. "plan" / "fit" (layer required): what fitting changes / do it -
+    create the profile if missing, switch to it, enable exactly the layer's dependencies + test_mods + `vortex.dev_keep` + non-pak
+    tool mods (Script Extender), disable every other pak mod (and a Vortex copy of the layer itself, which bg3_deploy deploys
+    loose), sort, deploy. "play": switch back to the profile that was active before and deploy it."""
+    from . import vortex
+    if action == "list":
+        return vortex.profiles_report(layer)
+    if action == "play":
+        return vortex.switch_back()
+    if action in ("plan", "fit"):
+        if not layer:
+            return f"{action} needs a layer"
+        return "\n".join(vortex.fit_dev_profile(layer, apply=action == "fit")) or "no dev profile configured: set vortex.dev_profile in layers.json"
+    return f"unknown action {action!r}; one of list, plan, fit, play"
+
+
+@mcp.tool()
+@guarded
 def bg3_vortex(action: str = "status", mod: str | None = None) -> str:
     """Drive Vortex through the bridge extension (bg3_vortex_bridge_install): action = status | deploy | purge |
     enable | disable | remove; mod = a Vortex mod id or a unique part of it (e.g. '4.11.23.0'). Acts on Vortex's

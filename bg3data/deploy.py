@@ -398,6 +398,8 @@ def deploy(layer, do_enable=True):
     lines.append(f"packed {n} files -> {pak}")
     if game_running():
         return lines + ["NOT DEPLOYED: the game is running and holds the pak open (close it, or use bg3_game_restart)"], False
+    from . import vortex   # layers.json vortex.dev_profile: Vortex on the dev profile, fitted for this layer (no-op when unset)
+    lines += vortex.fit_dev_profile(layer, cfg=cfg)
     os.makedirs(mods_dir, exist_ok=True)
     target = os.path.join(mods_dir, info["Folder"] + ".pak")
     if os.path.exists(target):

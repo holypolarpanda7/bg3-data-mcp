@@ -1,10 +1,10 @@
-"""Vortex (Nexus mod manager), read-only: what it has staged, what it has deployed into the game's Mods folder, and
+"""Vortex (Nexus mod manager): what it has staged, what it has deployed into the game's Mods folder, and
 its recent activity for the game - so "why isn't mod X in game" is one call instead of log archaeology.
 
 Sources: the deployment manifest Vortex writes next to deployed files (Mods/vortex.deployment.json: staging path,
 method, files and the staged mod each came from), the staging folder (one folder per installed mod/version) and
-%APPDATA%/Vortex/vortex.log. Vortex's own state database (LevelDB) is never touched. Triggering a deploy needs a
-Vortex-side bridge (an extension); until then a deploy is clicked in Vortex.
+%APPDATA%/Vortex/vortex.log. Vortex's own state database (LevelDB) is never touched. Acting (deploy, enable, switching to
+the dev profile) goes through the optional Vortex-side bridge extension, which runs Vortex's own actions.
 """
 import json
 import os
@@ -221,4 +221,189 @@ def format_result(r):
             newer = nx.get("newestVersion") and nx.get("newestVersion") != m.get("version")
             out.append(f"  [{'x' if m.get('enabled') else ' '}] {m.get('id')}" + (f"  v{m['version']}" if m.get("version") else "")
                        + (f"  -> Nexus has v{nx['newestVersion']} (file {nx.get('newestFileId')})" if newer else ""))
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------- dev / test profile (2026-10-12)
+# layers.json `vortex.dev_profile` (or a layer's own `vortex_profile`) names a Vortex profile kept for mod development and
+# testing, so the play profile's mod list is never touched: bg3_deploy and the gate switch Vortex to it and fit it to exactly
+# the layer's dependencies + test_mods (+ `vortex.dev_keep`), with every other pak mod disabled. The layer itself is deployed
+# loose by bg3_deploy, so a Vortex-installed copy of it (e.g. the released version from Nexus) is disabled there too.
+# Vortex mods that ship no game data (Script Extender's DWrite.dll, LSLib tools) are enabled: tests need the extender. Loose-file
+# data mods (Generated/, Public/ overrides) count as data and are disabled like paks. Profile names match ignoring case/spaces/punctuation.
+PROFILE_STATE = os.path.join(sources.CACHE, "vortex_profile.json")
+DATA_FILE = re.compile(r"\.pak$|^(generated|public|mods|data|localization)/", re.I)
+
+
+def _norm(name):
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def dev_profile_name(cfg, layer=None):
+    m = next((x for x in cfg.get("mods") or [] if x["name"] == layer), {}) if layer else {}
+    return m.get("vortex_profile") or (cfg.get("vortex") or {}).get("dev_profile")
+
+
+def _uuid_to_mod(cfg, mods, files):
+    """{uuid: vortex mod id} for the staged mods: from every profile's BG3 load order file, then pak names in staging matched
+    against the mods registry (Folder / Name)."""
+    import glob
+    out = {}
+    for f in glob.glob(os.path.join(app_dir(cfg), GAME_ID, "*_loadOrder.json")):
+        try:
+            for e in json.load(open(f, encoding="utf-8-sig")):
+                u = ((e.get("data") or {}).get("uuid") or "").lower()
+                if u and e.get("modId") in mods:
+                    out.setdefault(u, e["modId"])
+        except (OSError, ValueError):
+            continue
+    by_pak = {}
+    for mid in mods:
+        for p in (f for f in files.get(mid) or [] if f.lower().endswith(".pak")):
+            by_pak.setdefault(os.path.splitext(os.path.basename(p))[0].lower(), mid)
+    for u, d in deploy._registry().items():
+        for k in (d.get("Folder"), d.get("Name")):
+            if k and k.lower() in by_pak:
+                out.setdefault(u.lower(), by_pak[k.lower()])
+    return out
+
+
+def _files(stage, m):
+    root = os.path.join(stage or "", m.get("installationPath") or m.get("id") or "")
+    return [os.path.relpath(os.path.join(dp, f), root).replace("\\", "/") for dp, _, fs in os.walk(root) for f in fs]
+
+
+def _save_state(d):
+    os.makedirs(os.path.dirname(PROFILE_STATE), exist_ok=True)
+    json.dump(d, open(PROFILE_STATE, "w", encoding="utf-8"), indent=1)
+
+
+def fit_dev_profile(layer, apply=True, cfg=None):
+    """Switch Vortex to the dev profile and fit it for `layer` (see above). Returns report lines; [] when no dev profile is
+    configured. apply=False only reports what would change. Never raises for a Vortex problem: deploys carry on without it."""
+    cfg = cfg or sources.load_config()
+    name = dev_profile_name(cfg, layer)
+    if not name:
+        return []
+    tag = f"Vortex dev profile '{name}'"
+    if apply and deploy.game_running():
+        return [f"{tag}: not switched - the game is running"]
+    st = action("status")
+    if st.get("error"):
+        return [f"{tag}: not applied ({st['error']})"]
+    profs = bridge_call("GET", "/profiles")
+    if profs.get("error"):
+        return [f"{tag}: not applied - the bridge is older than 0.3.0 (re-run bg3_vortex_bridge_install, restart Vortex)"]
+    target = next((p for p in profs.get("profiles") or [] if _norm(p["name"]) == _norm(name)), None)
+    mods = {m["id"]: m for m in st.get("mods") or []}
+    man = manifest(deploy._paths(cfg)[1])
+    stage = staging_dir(cfg, man, _log_lines(app_dir(cfg)))
+    files = {mid: _files(stage, m) for mid, m in mods.items()} if stage else {}
+    u2m = _uuid_to_mod(cfg, mods, files)
+    _, _, info, _ = deploy.mod_info(layer)
+    keep = [str(k) for k in (cfg.get("vortex") or {}).get("dev_keep") or []]
+    want_uuids = [u.lower() for u in deploy.desired_mods(layer) if u.lower() != info["UUID"].lower()]
+    lines, want, missing = [], set(), []
+    reg = deploy._registry()
+    for u in want_uuids:
+        mid = u2m.get(u)
+        nm = (reg.get(u) or {}).get("Name") or u
+        if mid:
+            want.add(mid)
+        elif os.path.exists(os.path.join(deploy._paths(cfg)[1], ((reg.get(u) or {}).get("Folder") or "?") + ".pak")):
+            lines.append(f"  {nm}: not a Vortex mod (loose pak in the Mods folder) - left as is")
+        else:
+            missing.append(nm)
+    seen, queue = set(), sorted(want)   # dependencies of dependencies, from each wanted mod's staged pak (meta.lsx)
+    while queue:
+        mid = queue.pop()
+        if mid in seen:
+            continue
+        seen.add(mid)
+        for pak in (f for f in files.get(mid) or [] if f.lower().endswith(".pak")):
+            try:
+                from . import vortex_order
+                deps = vortex_order._pak_info(cfg, os.path.join(stage, mods[mid].get("installationPath") or mid, pak))["deps"]
+            except Exception:
+                continue
+            for d in deps:
+                u = d["UUID"].lower()
+                if d.get("Folder") in deploy.BASE_MODULE_NAMES or d.get("Name") in deploy.BASE_MODULE_NAMES or u == info["UUID"].lower():
+                    continue
+                if u2m.get(u):
+                    want.add(u2m[u])
+                    queue.append(u2m[u])
+                elif not os.path.exists(os.path.join(deploy._paths(cfg)[1], (d.get("Folder") or "?") + ".pak")):
+                    missing.append(f"{d.get('Name') or u} (needed by {mods[mid].get('name') or mid})")
+    for k in keep:
+        hit = [mid for mid in mods if k.lower() in mid.lower()] or [mid for u, mid in u2m.items() if u == k.lower()]
+        if len(hit) == 1:
+            want.add(hit[0])
+        else:
+            lines.append(f"  dev_keep '{k}': {'ambiguous' if hit else 'no'} Vortex mod match - ignored")
+    tools = {mid for mid in mods if files.get(mid) and not any(DATA_FILE.search(f) for f in files[mid])}
+    want |= tools
+    own = u2m.get(info["UUID"].lower())
+    if own:
+        want.discard(own)
+    active = target and target["id"] == profs.get("active")
+    on = {mid for mid, m in mods.items() if m.get("enabled")} if active else set()
+    enable, disable = sorted(want - on), sorted(on - want)
+    fitted = active and not enable and not disable
+    if missing:
+        lines.append(f"  !! not installed in Vortex: {', '.join(dict.fromkeys(missing))} - install them (Nexus) and re-run")
+    if fitted:
+        return [f"{tag}: active and fitted for {layer} ({len(want)} mods)"] + lines
+    plan = (f"{tag}: {'create, ' if not target else ''}{'switch to, ' if not active else ''}enable {len(enable) if active else len(want)}"
+            f"{f', disable {len(disable)}' if disable else ''} for {layer}: " + ", ".join(mods[m].get("name") or m for m in sorted(want)))
+    if not apply:
+        return [plan + " (dry run)"] + lines
+    prev = profs.get("active")
+    sw = r = bridge_call("POST", "/profile", {"profile": target["id"] if target else name, "create": True}, timeout=240)
+    if r.get("error"):
+        return [f"{tag}: switch failed ({r['error']})"] + lines
+    if r.get("switched"):
+        old = next((p["name"] for p in profs.get("profiles") or [] if p["id"] == prev), prev)
+        _save_state({"previous": prev, "previous_name": old, "dev": name, "switched": time.strftime("%Y-%m-%d %H:%M:%S")})
+        lines.insert(0, f"  switched Vortex from profile '{old}' (bg3_vortex_profile action='play' switches back)")
+    on = {m["id"] for m in r.get("mods") or [] if m.get("enabled")}
+    enable, disable = sorted(want - on), sorted(on - want)
+    if enable or disable:
+        r = bridge_call("POST", "/modstate", {"enable": enable, "disable": disable})
+        if r.get("error"):
+            return [f"{tag}: could not set the mod list ({r['error']})"] + lines
+    from . import vortex_order
+    res = vortex_order.report(apply=True, deploy_after=True).splitlines()
+    return [f"{tag}: {'created, ' if sw.get('created') else ''}active; enabled {len(enable)}, disabled {len(disable)}; "
+            f"sorted + deployed: {res[-1] if res else '?'}"] + lines
+
+
+def switch_back():
+    """Switch Vortex back to the profile that was active before the dev profile, and deploy it."""
+    s = {}
+    try:
+        s = json.load(open(PROFILE_STATE, encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    if not s.get("previous"):
+        return "no previous profile recorded (the dev profile was never switched to by the MCP)"
+    if deploy.game_running():
+        return "the game is running - close it first"
+    r = bridge_call("POST", "/profile", {"profile": s["previous"]}, timeout=240)
+    if r.get("error"):
+        return f"switch failed: {r['error']}"
+    d = action("deploy")
+    return f"switched Vortex back to '{s.get('previous_name')}' and deployed\n" + format_result(d)
+
+
+def profiles_report(layer=None):
+    cfg = sources.load_config()
+    r = bridge_call("GET", "/profiles")
+    if r.get("error"):
+        return f"bridge error: {r['error']}"
+    name = dev_profile_name(cfg, layer)
+    out = [f"Vortex {GAME_ID} profiles (dev profile: {name or 'none - set vortex.dev_profile in layers.json'}):"]
+    for p in r.get("profiles") or []:
+        out.append(f"  {'*' if p['id'] == r.get('active') else ' '} {p['name']}  ({p['id']}, {p.get('enabled', 0)} mods enabled)"
+                   + ("  [dev]" if name and _norm(p["name"]) == _norm(name) else ""))
     return "\n".join(out)
