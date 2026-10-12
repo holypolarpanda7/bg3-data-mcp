@@ -254,27 +254,44 @@ def dev_profile_name(cfg, layer=None):
     return m.get("vortex_profile") or (cfg.get("vortex") or {}).get("dev_profile")
 
 
-def _uuid_to_mod(cfg, mods, files):
+def _uuid_to_mod(cfg, mods, files, stage=None):
     """{uuid: vortex mod id} for the staged mods: from every profile's BG3 load order file, then pak names in staging matched
-    against the mods registry (Folder / Name)."""
+    against the mods registry (Folder / Name). Several staged versions of one mod (an update installed for the current profile
+    only): the one enabled in the active profile wins, else the newest staged folder - never an older version (2026-10-12)."""
     import glob
-    out = {}
+    cands = {}
+    for u, mid in _uuid_candidates(cfg, mods, files):
+        cands.setdefault(u, []).append(mid)
+
+    def rank(mid):
+        m = mods[mid]
+        try:
+            mt = os.path.getmtime(os.path.join(stage or "", m.get("installationPath") or mid))
+        except OSError:
+            mt = 0
+        return (bool(m.get("enabled")), mt)
+    return {u: max(dict.fromkeys(ms), key=rank) for u, ms in cands.items()}
+
+
+def _uuid_candidates(cfg, mods, files):
+    import glob
+    out = []
     for f in glob.glob(os.path.join(app_dir(cfg), GAME_ID, "*_loadOrder.json")):
         try:
             for e in json.load(open(f, encoding="utf-8-sig")):
                 u = ((e.get("data") or {}).get("uuid") or "").lower()
                 if u and e.get("modId") in mods:
-                    out.setdefault(u, e["modId"])
+                    out.append((u, e["modId"]))
         except (OSError, ValueError):
             continue
     by_pak = {}
     for mid in mods:
         for p in (f for f in files.get(mid) or [] if f.lower().endswith(".pak")):
-            by_pak.setdefault(os.path.splitext(os.path.basename(p))[0].lower(), mid)
+            by_pak.setdefault(os.path.splitext(os.path.basename(p))[0].lower(), []).append(mid)
     for u, d in deploy._registry().items():
         for k in (d.get("Folder"), d.get("Name")):
             if k and k.lower() in by_pak:
-                out.setdefault(u.lower(), by_pak[k.lower()])
+                out += [(u.lower(), mid) for mid in by_pak[k.lower()]]
     return out
 
 
@@ -309,7 +326,7 @@ def fit_dev_profile(layer, apply=True, cfg=None):
     man = manifest(deploy._paths(cfg)[1])
     stage = staging_dir(cfg, man, _log_lines(app_dir(cfg)))
     files = {mid: _files(stage, m) for mid, m in mods.items()} if stage else {}
-    u2m = _uuid_to_mod(cfg, mods, files)
+    u2m = _uuid_to_mod(cfg, mods, files, stage)
     _, _, info, _ = deploy.mod_info(layer)
     keep = [str(k) for k in (cfg.get("vortex") or {}).get("dev_keep") or []]
     want_uuids = [u.lower() for u in deploy.desired_mods(layer) if u.lower() != info["UUID"].lower()]
