@@ -117,6 +117,41 @@ def _granted(store, active, nodes, layer):
     return out
 
 
+# rules-table column -> the action resource that carries it (a class's own pool; the table's value is the maximum at that level)
+RESOURCE_COLUMNS = {
+    "Barbarian": {"rages": "Rage"}, "Cleric": {"channel_divinity": "ChannelDivinity"}, "Paladin": {"channel_divinity": "ChannelOath"},
+    "Druid": {"wild_shape": "WildShape"}, "Fighter": {"second_wind": "SecondWind"}, "Monk": {"focus_points": "KiPoint"},
+    "Sorcerer": {"sorcery_points": "SorceryPoint"}, "Ranger": {"favored_enemy": "FavoredEnemy"}, "Illrigger": {"seals": "Seal"},
+}
+
+
+def _res_totals(store, active, nodes):
+    """{level: {resource: total}} - what the class table's nodes (and the passives they add) grant by each level: the static
+    ActionResource(R,n,0) boosts, the way the game sums them (an exact duplicate node, base game vs SharedDev, counts once)."""
+    per, seen = {}, set()
+    for lvl, _name, _t, _src, a in nodes:
+        if str(a.get("IsMulticlass", "")).lower() == "true":
+            continue
+        sig = json.dumps({k: v for k, v in a.items() if k != "UUID"}, sort_keys=True)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        text = a.get("Boosts") or ""
+        for p in filter(None, (a.get("PassivesAdded") or "").split(";")):
+            r = store.resolve(p, active)
+            text += ";" + (((r or {}).get("fields", {}).get("Boosts") or ("",))[0] or "")
+        d = per.setdefault(lvl, {})
+        for rname, rlvl, amt in testing._boost_resources(text):
+            if rlvl == 0 and "IF(" not in text.split(f"ActionResource({rname}")[0].split(";")[-1]:
+                d[rname] = d.get(rname, 0) + amt
+    out, run = {}, {}
+    for L in range(1, 21):
+        for k, v in per.get(L, {}).items():
+            run[k] = run.get(k, 0) + v
+        out[L] = dict(run)
+    return out
+
+
 def _all_cantrips(store, active, uuid, _cache={}):
     if uuid not in _cache:
         lv = set()
@@ -187,7 +222,9 @@ def lint_rules(store, active, layer, lo=13, hi=20):
         if ca.get("ParentGuid") or cname not in classes or not ca.get("ProgressionTableUUID"):
             continue
         rows = classes[cname]
-        got = _granted(store, active, store.progression(ca["ProgressionTableUUID"], active), layer)
+        cnodes = store.progression(ca["ProgressionTableUUID"], active)
+        got = _granted(store, active, cnodes, layer)
+        res_tot = _res_totals(store, active, cnodes)
         n0 = len(out)
         for L in range(lo, hi + 1):
             row, prev = rows.get(L), rows.get(L - 1, {})
@@ -229,6 +266,17 @@ def lint_rules(store, active, layer, lo=13, hi=20):
                 m = re.match(r"Mystic Arcanum \(level (\d) spell\)", f)
                 if m and not _sel_count(g, lambda k, a: k == "SelectSpells" and len(a) > 5 and a[5] == "None"):
                     out.append(f"  CHOICE  {cname} L{L}: Mystic Arcanum (level {m.group(1)}) - no slot-free spell choice")
+            for col, res in RESOURCE_COLUMNS.get(cname, {}).items():
+                if col in row and isinstance(row[col], int):
+                    have = res_tot[L].get(res, 0)
+                    if have != row[col]:
+                        out.append(f"  RES     {cname} L{L}: {res} totals {have:g}, the table says {col} = {row[col]}")
+            if "weapon_mastery" in row and isinstance(row["weapon_mastery"], int) and isinstance(prev.get("weapon_mastery"), int):
+                # the picks gained at this level (what the level adds: lower-level gaps of dnd55e's own are its to fix)
+                have = _sel_count(g, lambda k, a: k == "SelectPassives" and len(a) > 2 and a[2] == "WeaponMasteryList")
+                want = row["weapon_mastery"] - prev["weapon_mastery"]
+                if have != want:
+                    out.append(f"  RES     {cname} L{L}: {have} weapon mastery pick(s), the table adds {want}")
             for k in range(1, 10):
                 col = f"slots_{k}"
                 if col in row:
