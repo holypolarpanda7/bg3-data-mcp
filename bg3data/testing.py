@@ -394,8 +394,26 @@ def level_check(store, active, st=None):
             warns += 1
             lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, expected {total:g}" + (f"-{hi:g}" if hi != total else "")
                          + f" ({base}" + (f" {why}" if why else "") + ")")
+    # PHB 2024: one Hit Point Die per class level, of the class's size. The data check above can't settle this one when the dice
+    # come from conditional boosts (a range), and identical boosts from one passive counted once in game (Wizard 14 had 13 d6,
+    # 2026-10-13) - so check the rule itself. ">=": extra pools of the same size (Sangromancer's Full-Blooded d12) are fine.
+    need = {}
+    for c in classes:
+        die = HIT_DIE.get(c["class"])
+        if die:
+            need[die] = need.get(die, 0) + c["level"]
+    for die, n in sorted(need.items()):
+        got = (st["resources"].get(f"HitPointDice{die:02d}") or {}).get("0")
+        mx = got[1] if got else 0
+        ok = mx >= n
+        fails += not ok
+        lines.append(f"  {'PASS' if ok else 'FAIL'} Hit Point Dice d{die}: max {mx:g}, the class levels need {n} (PHB 2024: one per level)")
     lines.insert(0, f"LEVEL CHECK: {'ALL PASS' if not fails else f'{fails} FAIL'}" + (f", {warns} warning(s)" if warns else ""))
     return "\n".join(lines)
+
+
+HIT_DIE = {"Barbarian": 12, "Fighter": 10, "Paladin": 10, "Ranger": 10, "Bard": 8, "Cleric": 8, "Druid": 8, "Monk": 8, "Rogue": 8,
+           "Warlock": 8, "Sorcerer": 6, "Wizard": 6}   # PHB 2024 (the twelve base classes; dnd55e's own classes carry their own tables)
 
 
 # Multiclass spellcaster table (PHB): caster level -> slots of levels 1..9. The engine adds these to a multiclassed caster, through
@@ -2700,6 +2718,11 @@ def continue_guard(want=None):
     if want:
         hits = [d for d, _p, _t, who in order if who == leader and want.lower() in title(d).lower()]
         exact = [d for d in hits if title(d).lower() == want.lower()]
+        if not hits:   # an older harness save (a build's start save) is past the newest 60: match the folder names instead -
+            # harness folders are "<leader>-<id>__<title>"; the Load screen selection verifies the save itself (gameui.select_save)
+            names = [d for d in os.listdir(g["savegames"]) if d.startswith(leader + "-") and "__" in d]
+            hits = [d for d in names if want.lower() in title(d).lower()]
+            exact = [d for d in hits if title(d).lower() == want.lower()]
         pick = (exact or hits)[:1]
         return order[0][0], order[0][3], title(pick[0]) if pick else None
     if order[0][3] == leader:

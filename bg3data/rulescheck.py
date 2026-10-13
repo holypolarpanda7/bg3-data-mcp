@@ -87,6 +87,14 @@ def _granted(store, active, nodes, layer):
                 continue   # plumbing the player never sees as a feature (e.g. 13-20 Hit Point Dice), not a rules feature
             g["passives"].append((p, store.display_name((r or {}).get("fields", {}), active) if r else ""))
         g["removed"] += [p for p in (a.get("PassivesRemoved") or "").split(";") if p]
+        # a passive swapped for a stronger one of the same name (Sangromancer Red Renewal 14 -> 16 -> 18 -> 20) scales a feature
+        # the rules already list; it isn't a new one (2026-10-13)
+        gone = set()
+        for p in g["removed"]:
+            r = store.resolve(p, active)
+            if r:
+                gone.add(_norm(store.display_name(r["fields"], active)))
+        g["scales"] = {p for p, d in g["passives"] if d and _norm(d) in gone}
         for kind, args in re.findall(r"(\w+)\(([^)]*)\)", a.get("Selectors") or ""):
             g["selectors"].append((kind, [x.strip() for x in args.split(",")]))
             a_ = [x.strip() for x in args.split(",")]
@@ -156,7 +164,7 @@ def _check_features(where, L, want, g, aliases, technical, out, earlier=()):
         else:
             out.append(f"  MISSING {where} L{L}: {fname}")
     for p, d in g["passives"]:
-        if p in used or TECHNICAL.match(p) or p in technical or not d:
+        if p in used or TECHNICAL.match(p) or p in technical or not d or p in g.get("scales", ()):
             continue
         if any(p in (v if isinstance(v, list) else []) for v in aliases["feature"].values()):
             continue

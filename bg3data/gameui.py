@@ -610,6 +610,12 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
                 if not _row_pending(y):
                     log.append(f"row y={y}: scanned icons, {i + 1} click(s)")
                     return True
+            # no icons found by the scan - e.g. a Savant page of 2 dark-red Sangromancy icons (wiz-sangromancer L13, 2026-10-13):
+            # pick the first open spell of each incomplete spell selector through the view model, each click verified + undone
+            for h in _open_spell_picks():
+                _pick_wanted(y, None, {h: h}, log)   # None: the centred-row candidates (a Savant page)
+                if not _row_pending(y):
+                    return True
             log.append(f"row y={y}: page the driver can't read (no known picker, no icons found, not a feat page) - not handled")
             return False
         for name, pos, extra in FEATS:
@@ -801,6 +807,28 @@ for _, key in ipairs({"NotSubSpellSelectors", "SubSpellSelectors"}) do
 end
 return out""" % ("{" + ",".join('"%s"' % h for h in handles) + "}"))
     return [tuple(x) for x in res] if isinstance(res, list) else []
+
+
+def _open_spell_picks():
+    """Spell handles that would complete the open level-up's incomplete spell selectors: the first available, unselected items of
+    each (up to what it still needs)."""
+    res, _ = _client(FIND + _VM + """
+local out = {}
+local det = d.ClassProgressionDetails
+for _, key in ipairs({"NotSubSpellSelectors", "SubSpellSelectors"}) do
+  local col = det[key]
+  for i = 1, (col and #col or 0) do
+    local sel = col[i]
+    if not sel.IsComplete then
+      for j = 1, #sel.Available do
+        local it = sel.Available[j]
+        if not it.Selected and not it.NotAvailable then out[#out + 1] = tostring(it.Spell.Name) end
+      end
+    end
+  end
+end
+return out""")
+    return [str(h) for h in res] if isinstance(res, list) else []
 
 
 def _item_selected(key, i, j):
