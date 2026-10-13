@@ -65,6 +65,8 @@ def game_cfg():
     g["game_exe"] = platform.to_native(g["game_exe"]) if g.get("game_exe") else platform.game_exe(install)
     g.setdefault("app_id", platform.STEAM_APP_ID)
     g.setdefault("launch_args", ["--skip-launcher", "-continueGame"])
+    g.setdefault("test_layer", "apotheosis")   # the layer whose Vortex dev profile a plain restart (no deploy) puts the game on
+    g.setdefault("require_dev_profile", True)  # no launch unless Vortex is on the dev profile (vortex.dev_profile), fitted
     g.setdefault("test_leader", "Tavizard")   # the harness's characters are led by this name (the user's own campaigns aren't)
     ld = platform.larian_dir(cfg)
     g["savegames"] = platform.to_native(g["savegames"]) if g.get("savegames") else \
@@ -550,6 +552,11 @@ def validate(store, active, c):
     for who in [c.get("caster")] + [cs.get("by") for cs in c.get("casts", [])]:
         if who and who not in aliases:
             errs.append(f"caster `{who}` isn't host or a spawn alias")
+    if c.get("rest") is not None:
+        if c["rest"] != "short":
+            errs.append(f"rest = {c['rest']!r}: only \"short\" is supported (a long rest is the camp flow)")
+        if any(sp.get("faction", "hostile") == "hostile" for sp in c.get("spawn", [])):
+            errs.append("rest = short with a hostile spawn: the game won't rest in combat")
     if c.get("console") and not c.get("expect_log"):
         errs.append("console case needs `expect_log` (the log line that means PASS)")
     if c.get("spell") and not store.resolve(c["spell"], active):
@@ -973,6 +980,11 @@ Osi.LeaveCombat(h) return true""")
                 for st_ in c.get("clear_between", []):  # e.g. PRONE, so every cast can land it again
                     lua(f"local g = {tgt} if Osi.HasActiveStatus(g, {se._lua_string(st_)}) == 1 then Osi.RemoveStatus(g, {se._lua_string(st_)}) end return true")
                 lua(f"BG3T.cast({who}, {se._lua_string(c['spell'])}, {tgt}, {rolled}); return true")
+    if c.get("rest"):  # rest = "short": a real short rest through the HUD (OnShortRest passives, e.g. Red Renewal)
+        ok_, why_ = gameui.short_rest()
+        notes.append(f"rest short: {why_}")
+        if not ok_:
+            return {"ok": False, "error": f"rest = short failed: {why_}", "notes": notes}
     if c.get("end_turns"):  # end the host's turn N times through the HUD (turn-order features, enemy turns)
         pass  # gameui is imported at the top of stage()
         need = int(c.get("ai_samples", 0)) if mode == "ai" else 0
@@ -2788,6 +2800,16 @@ def _restart(deploy_layer=None, launch=True, timeout=300, save=None):
             log += [f"deploy: {l}" for l in lines]
             if not ok:
                 return "\n".join(log + ["deploy failed - not launching"])
+    if not deploy_layer and launch:
+        # a plain restart must still run on the dev profile: on 2026-10-12 one loaded the harness save with the play profile's
+        # cosmetic mods (the Mod Verification box listed 23 "new" mods). bg3_deploy fits it already; this covers restarts.
+        from . import vortex
+        _, g0 = game_cfg()
+        fit = vortex.fit_dev_profile(g0["test_layer"])
+        log += [f"profile: {l}" for l in fit]
+        if g0["require_dev_profile"] and fit and any("not applied" in l or "not switched" in l for l in fit):
+            return "\n".join(log + ["NOT LAUNCHED: Vortex isn't on the fitted dev profile (game.require_dev_profile) - start Vortex "
+                                     "or run bg3_vortex_profile"])
     if not launch:
         return "\n".join(log)
     absent = missing_dependencies()

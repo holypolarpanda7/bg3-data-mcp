@@ -10,7 +10,8 @@ stops the bad outcome on its own:
                   before any game launch, so whatever happens there is a restorable copy. restore_hint() says how.
   2. baseline     begin_session(): vault + a size/mtime baseline of the protected files. session_violations() compares against it:
                   any protected file changed/added/removed during a harness session is an alarm.
-  3. watchdog     start_watchdog(): a thread that, while the game runs, checks (a) the baseline every few seconds and (b) the loaded
+  3. watchdog     start_watchdog(): a DETACHED process (python -m bg3data.safety watch; it outlives the MCP server, a /mcp reconnect
+                  and any script that started it - an in-process thread died with them, 2026-10-12) that, while the game runs, checks (a) the baseline every few seconds and (b) the loaded
                   host's name against the protected leaders (e.g. "Gregor"); either one kills the game at once - before an
                   autosave - and writes cache/vault/alerts.log.
   4. box gate     classify_mod_verification(): a Mod Verification box (the game's "mods changed" prompt before a load) that lists
@@ -299,12 +300,37 @@ def _kill():
     testing.kill_game(graceful=False)
 
 
+DAEMON = os.path.join(VAULT, "watchdog.json")     # the detached watchdog's pid + heartbeat
+
+
 def start_watchdog(**kw):
+    """The watchdog for a harness game session. No arguments: a detached process (survives the caller; see the module doc). With
+    arguments (tests): an in-process thread."""
     stop_watchdog()
-    w = Watchdog(**kw)
-    w.start()
-    _state["watchdog"] = w
-    return w
+    if kw:
+        w = Watchdog(**kw)
+        w.start()
+        _state["watchdog"] = w
+        return w
+    import subprocess
+    import sys
+    os.makedirs(VAULT, exist_ok=True)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log = open(os.path.join(VAULT, "watchdog.log"), "a", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "-m", "bg3data.safety", "watch"], cwd=root, stdin=subprocess.DEVNULL, stdout=log,
+                            stderr=subprocess.STDOUT, start_new_session=True)
+    _write_daemon({"pid": proc.pid, "started": time.time(), "beat": time.time(), "checked": 0})
+    t0 = time.time()
+    while time.time() - t0 < 30:        # its baseline is taken before the caller launches anything
+        d = daemon_state()
+        if d and d.get("ready"):
+            break
+        if proc.poll() is not None:
+            raise RuntimeError(f"the watchdog process exited at start (see {os.path.join(VAULT, 'watchdog.log')})")
+        time.sleep(0.3)
+    else:
+        raise RuntimeError("the watchdog process didn't report ready within 30s")
+    return proc.pid
 
 
 def stop_watchdog():
@@ -312,6 +338,73 @@ def stop_watchdog():
     if w:
         w.stop()
     _state["watchdog"] = None
+    d = daemon_state()
+    if d and _alive(d.get("pid")):
+        import signal
+        try:
+            os.kill(d["pid"], signal.SIGTERM)
+        except OSError:
+            pass
+    if d:
+        _write_daemon(dict(d, ended=d.get("ended") or "stopped"))
+
+
+def _alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def _write_daemon(d):
+    os.makedirs(VAULT, exist_ok=True)
+    tmp = DAEMON + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(d, fh)
+    os.replace(tmp, DAEMON)
+
+
+def daemon_state():
+    try:
+        return json.load(open(DAEMON, encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def watchdog_running():
+    """(running, description): the detached watchdog's state from its heartbeat file."""
+    d = daemon_state()
+    if not d:
+        return False, "not running"
+    if d.get("ended") or not _alive(d.get("pid")):
+        return False, f"not running (last: {d.get('ended') or 'process gone'}{'; ALERT: ' + d['alert'] if d.get('alert') else ''})"
+    age = time.time() - float(d.get("beat") or 0)
+    return True, f"running, pid {d['pid']}, {d.get('checked', 0)} checks, last beat {age:.0f}s ago"
+
+
+def _daemon_main():
+    """python -m bg3data.safety watch: baseline, then watch until the game exits (or never comes up)."""
+    import signal
+    me = dict(daemon_state() or {}, pid=os.getpid())
+    stopping = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *a: stopping.set())
+    n = begin_session(log=lambda m: None)
+    w = Watchdog()
+    w.start()
+    me.update(ready=True, files=n, beat=time.time())
+    _write_daemon(me)
+    while w.is_alive() and not stopping.is_set():
+        stopping.wait(2.0)
+        me.update(beat=time.time(), checked=w.checked)
+        _write_daemon(me)
+    w.stop()
+    w.join(5)
+    me.update(beat=time.time(), checked=w.checked, alert=w.alert, ended=w.ended or ("stopped" if stopping.is_set() else "?"))
+    _write_daemon(me)
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), "watchdog ended:", me["ended"], "alert:", w.alert, flush=True)
 
 
 def status(vault=None, savegames=None, test_leader=None):
@@ -328,9 +421,20 @@ def status(vault=None, savegames=None, test_leader=None):
     out = [f"protected save folders: {len(lines)} (harness saves start with '{_paths(savegames, test_leader)[1]}-')"] + lines
     out.append("session baseline: " + ("none (no session begun)" if "baseline" not in _state else f"{len(_state['baseline'][2])} files; "
                + ("UNCHANGED" if not bad else "VIOLATIONS: " + "; ".join(bad[:5]))))
-    out.append("watchdog: " + ("not running" if not w or not w.is_alive() else f"running ({w.checked} checks)") + (f"; ALERT: {w.alert}" if w and w.alert else ""))
+    if w and w.is_alive():
+        out.append(f"watchdog: in-process, running ({w.checked} checks)" + (f"; ALERT: {w.alert}" if w.alert else ""))
+    else:
+        out.append("watchdog: " + watchdog_running()[1])
     al = os.path.join(vault, "alerts.log")
     if os.path.exists(al):
         out.append("past alerts:\n    " + "\n    ".join(open(al, encoding="utf-8").read().strip().splitlines()[-5:]))
     out.append(restore_hint(vault=vault))
     return "\n".join(out)
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] == ["watch"]:
+        _daemon_main()
+    else:
+        print(status())

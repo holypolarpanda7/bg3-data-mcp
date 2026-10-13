@@ -153,6 +153,56 @@ def _host_turns():
         return -1
 
 
+def short_rest(timeout=20.0):
+    """A real short rest through the HUD's own ShortRest command (the Rest button; verified 2026-10-12: OnShortRest passives fire,
+    dnd55e's ShortResting heals 1 and applies SHORT_RESTING). Osiris raises no ShortRested event for it, so success is read from
+    the host's SHORT_RESTING status appearing. Not in combat. Returns (ok, why)."""
+    # the party's short rests (party ActionResource ShortRestPoint, 2 per long rest, on a party entity - not the host): top it up so
+    # a case never fails because earlier rests used them (CanDoRest.ShortRestErrorFlags NotEnoughResources, 2026-10-12)
+    try:
+        se.eval_lua("""
+for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("ActionResources")) do
+  local res = e.ActionResources.Resources["a24ca5e2-01e1-48fd-a4c8-79b8817f0a18"]
+  if res and res[1] and res[1].Amount < res[1].MaxAmount then res[1].Amount = res[1].MaxAmount e:Replicate("ActionResources") end
+end
+return true""", "server", timeout=8)
+    except (RuntimeError, TimeoutError):
+        pass
+    timing.wait(0.5)
+    had, _ = _server_status("SHORT_RESTING")
+    if had:   # left over from an earlier rest: clear it so the new one is seen
+        try:
+            se.eval_lua("Osi.RemoveStatus(Osi.GetHostCharacter(), 'SHORT_RESTING') return true", "server", timeout=6)
+        except (RuntimeError, TimeoutError):
+            pass
+        timing.wait(0.5)
+    res, _ = _client(FIND + """
+local h = find(Ext.UI.GetRoot(), "HotBar", 0)
+if not h then return "no HotBar (no session?)" end
+local okc, can = pcall(function() return h.DataContext.ShortRest:CanExecute(nil) end)
+if not (okc and can) then return "ShortRest can't execute (in combat, or no short rests left)" end
+local ok = pcall(function() h.DataContext.ShortRest:Execute(nil) end)
+return ok and true or 'the ShortRest command failed'""")
+    if res is not True:
+        return False, str(res)
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        timing.wait(0.5)
+        on, _ = _server_status("SHORT_RESTING")
+        if on:
+            timing.wait(1.0)        # the other OnShortRest functors land in the same tick; give them a moment
+            return True, "short rest done"
+    return False, f"no SHORT_RESTING on the host within {timeout:.0f}s - the rest didn't happen"
+
+
+def _server_status(status):
+    try:
+        r = se.eval_lua(f"return Osi.HasActiveStatus(Osi.GetHostCharacter(), '{status}') == 1", "server", timeout=6)
+    except (RuntimeError, TimeoutError) as e:
+        return False, str(e)
+    return bool(r.get("ok") and r.get("result")), r
+
+
 def end_host_turn(timeout=90):
     """End the host's turn and wait until a NEW host turn starts (harness TurnStarted events). Summons share the
     summoner's turn, so "host turn inactive, then active" can happen before the click even lands; that read as a
