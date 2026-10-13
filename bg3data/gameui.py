@@ -1308,6 +1308,7 @@ def _lua_str(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+MODVERIFY_CANCEL = (1070, 954)  # its Cancel button (full-res px, from the 2026-10-12 screenshots)
 MODVERIFY_START = (844, 954)   # the Mod Verification box's Start Game button (full-res px, verified 2026-10-07)
 
 
@@ -1340,8 +1341,33 @@ def _save_only_lacks_mods(name):
 
 
 def _auto_accept_mod_verify():
+    """Press Start Game on a box that classifies as a harness save's (default on; layers.json game.auto_accept_mod_verify: false turns it off)."""
     from . import sources
-    return bool((sources.load_config().get("game") or {}).get("auto_accept_mod_verify", False))
+    return bool((sources.load_config().get("game") or {}).get("auto_accept_mod_verify", True))
+
+
+def _safety():
+    from . import safety
+    return safety
+
+
+def read_mod_verification():
+    """Every text in the Mod Verification box (section titles, mod names, buttons), or [] when unreadable. The classifier treats an
+    unreadable box as unknown, which never presses Start Game."""
+    res, _ = _client(FIND + """
+local root = find(Ext.UI.GetRoot(), "ModVerification", 0)
+if not root then return {} end
+local out = {}
+local function walk(n, d)
+  if d > 40 or #out > 400 then return end
+  local ok, t = pcall(function() return n.Text end)
+  if ok and type(t) == "string" and t ~= "" then out[#out + 1] = t end
+  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+  if okc and cnt then for i = 1, cnt do walk(n:VisualChild(i), d + 1) end end
+end
+walk(root, 0)
+return out""")
+    return [str(t) for t in res] if isinstance(res, list) else []
 
 
 def load_save(index=0, timeout=90.0, name=None, from_menu=False, newest=False):
@@ -1443,10 +1469,16 @@ return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true
         # a Mod Verification box that only lists NEW mods (the save predates a mod now in the load order - every test layer's
         # first run, 2026-10-07): Start Game is safe. A missing or changed mod stays a failure (fix it with bg3_save_fix_mods).
         if name and not accepted and "ModVerification" in (screen() or []):
+            # Which save is this box for? The box doesn't say, but its CONTENT does: a box listing missing or disabled mods belongs to
+            # a campaign made with other mods (the user's own, 2026-10-12) - never press Start Game on it, cancel it.
+            texts = read_mod_verification()
+            kind, why_kind = _safety().classify_mod_verification(texts)
+            if kind != "harness":
+                _rclick(*MODVERIFY_CANCEL)
+                return None, (f"a Mod Verification box came up that is not a harness save's ({kind}: {why_kind}); it was cancelled and "
+                              "nothing was started. Read it: the selection may not be the save asked for (the Honour campaign?)")
             if not _auto_accept_mod_verify():
-                return None, ("a Mod Verification box is up and needs your answer - nothing was clicked (set game.auto_accept_mod_verify "
-                              "in layers.json to let the harness press Start Game for a save that only lacks NEW mods; never for a "
-                              "box you haven't looked at: it can belong to the user's own campaign)")
+                return None, ("a harness Mod Verification box is up and game.auto_accept_mod_verify is off - nothing was clicked")
             why = _save_only_lacks_mods(name)
             if why is not None:
                 return None, f"Mod Verification box: {why} - fix the save with bg3_save_fix_mods (nothing was clicked)"

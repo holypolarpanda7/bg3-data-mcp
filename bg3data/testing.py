@@ -2801,11 +2801,18 @@ def _restart(deploy_layer=None, launch=True, timeout=300, save=None):
     if load_title:
         log.append(f"not continuing into it: loading the harness save {load_title!r} from the main menu instead"
                    + (" (the newest save isn't a harness save - the user's own campaign)" if not save else ""))
-    from . import platform
+    from . import platform, safety
     _, g = game_cfg()
     if load_title:
         g["launch_args"] = [a for a in g["launch_args"] if a != "-continueGame"]
     args = " ".join(g["launch_args"])
+    try:   # the safety layer is not optional: no vault + baseline + watchdog, no launch (bg3data/safety.py)
+        n_files = safety.begin_session(log=lambda m: log.append(m))
+        safety.start_watchdog()
+        log.append(f"safety: {n_files} files of the user's own campaigns vaulted and baselined; watchdog armed")
+    except Exception as e:  # noqa: BLE001
+        safety.stop_watchdog()
+        return "\n".join(log + [f"NOT LAUNCHED: the safety layer failed ({type(e).__name__}: {e}) - the game doesn't start without it"])
     clear_mod_crash_check(g, log)
     if g["launcher"] == "steam" and g.get("steam_exe"):
         platform.launch_detached(g["steam_exe"], ["-applaunch", str(g["app_id"])] + g["launch_args"])
@@ -2826,7 +2833,9 @@ def _restart(deploy_layer=None, launch=True, timeout=300, save=None):
         # Extender can't see the UI for most of the load (it shows up in SE only with the HUD, ~60 s in). A posted Enter
         # needs no visibility and closes it in about a second, so press it until the host exists - unless the main menu
         # is involved (a safe-mode relaunch, where Enter would press the focused button).
-        if time.time() - t0 > 25 and not any("main menu" in l for l in log):
+        # never in the guarded path (load_title): the main menu's focused button is Continue, which loads the newest save - the user's
+        # own campaign when it is the newest; this used to be avoided only by accident (a log line containing "main menu")
+        if time.time() - t0 > 25 and not load_title and not any("main menu" in l for l in log):
             if gameui.press_key():
                 enters += 1
         try:
@@ -2834,6 +2843,14 @@ def _restart(deploy_layer=None, launch=True, timeout=300, save=None):
             if r["ok"] and r["result"]:
                 log.append(f"session loaded after {time.time() - t0:.0f}s: host in {r['result']}"
                            + (f" ({enters} Enter presses while loading)" if enters else ""))
+                who = safety.host_identity()
+                if who and who.strip().lower() in {d.lower() for d in safety.protected_leaders()}:
+                    kill_game(graceful=False)
+                    safety.stop_watchdog()
+                    return "\n".join(log + [f"ABORTED: the loaded host is {who!r}, the leader of a protected campaign. The game was killed "
+                                            "before it could save anything; the vaulted copy and the baseline say whether any file changed "
+                                            "(bg3_safety_check)."])
+                log.append(f"safety: host {who!r}" if who else "safety: host name unreadable (the watchdog keeps checking)")
                 _clear_dialogs(log, 3, timeout=3, t0=t0)  # anything still open, e.g. a box that needs a real answer
                 return "\n".join(log)
         except (RuntimeError, TimeoutError):
@@ -2878,4 +2895,6 @@ def _restart(deploy_layer=None, launch=True, timeout=300, save=None):
         except RuntimeError:
             pass
     log.append(f"not loaded within {timeout}s.{state or ' Check the game window (main menu? crash?)'}")
+    if not any(p.lower() in _tasklist() for p in g["processes"]):
+        safety.stop_watchdog()           # nothing to watch: a watchdog left behind could act on the user's own game later
     return "\n".join(log)

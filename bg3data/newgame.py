@@ -75,6 +75,15 @@ def launch_menu(deploy_layer=None, timeout=300, log=print, isolate_layer=None):
     _, g = testing.game_cfg()
     args = [a for a in g["launch_args"] if a.lower() != "-continuegame"]
 
+    from . import safety
+    try:
+        n_files = safety.begin_session(log=lambda m: msgs.append(m))
+        safety.start_watchdog()
+        msgs.append(f"safety: {n_files} files of the user's own campaigns vaulted and baselined; watchdog armed")
+    except Exception as e:  # noqa: BLE001
+        safety.stop_watchdog()
+        return False, f"NOT LAUNCHED: the safety layer failed ({type(e).__name__}: {e})"
+
     def launch():
         testing.clear_mod_crash_check(g, msgs)
         if g["launcher"] == "steam" and g.get("steam_exe"):
@@ -97,6 +106,7 @@ def launch_menu(deploy_layer=None, timeout=300, log=print, isolate_layer=None):
             launch()
             msgs.append("relaunched after a clean quit")
             t0 = time.time()
+    safety.stop_watchdog()
     return False, f"no main menu within {timeout}s: " + " | ".join(msgs[-4:])
 
 

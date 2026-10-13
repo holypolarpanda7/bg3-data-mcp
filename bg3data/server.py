@@ -32,7 +32,7 @@ MAX_OUTPUT = 24_000  # characters; keeps a single answer from flooding the calle
 # Hot reload: tool modules are re-imported when their source changes, so MCP code edits apply on the next call
 # without a client reconnect. Not reloaded: the stores and connections that hold live state (query, index,
 # sources, se) and this module itself - those still need a reconnect.
-HOT = ("format", "lint", "fx", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex", "vortex_order")
+HOT = ("format", "lint", "fx", "safety", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex", "vortex_order")
 _mtimes = {}
 
 
@@ -681,6 +681,25 @@ def bg3_game_restart(deploy_layer: str | None = None, launch: bool = True, save:
     e.g. "wiz-evoker L20") from the main menu, whatever the newest save is."""
     from . import testing
     return testing.restart(deploy_layer, launch, save=save)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_safety_check(action: str = "status") -> str:
+    """Safe test sessions: the user's own campaigns (every save folder not led by the test character, e.g. the Honour Mode run)
+    are vaulted before any game launch, baselined, and watched while a harness game runs (a watchdog kills the game if a protected
+    file changes or a protected leader is the loaded host). action: "status" (default: protected folders, vaulted versions, the
+    baseline check, the watchdog, past alerts), "protect" (vault now), "verify" (is every protected file unchanged since the session
+    began?). Nothing here ever writes into the Savegames folder; restoring is a manual copy (the status shows how)."""
+    from . import safety
+    if action == "protect":
+        done = safety.protect()
+        return f"vaulted {len(done)} protected save folder(s)\n" + safety.status()
+    if action == "verify":
+        bad = safety.session_violations()
+        return ("all protected files are unchanged since the session began" if "baseline" in safety._state and not bad else
+                ("no session baseline yet (a game launch begins one)" if "baseline" not in safety._state else "VIOLATIONS:\n  " + "\n  ".join(bad)))
+    return safety.status()
 
 
 @mcp.tool()
