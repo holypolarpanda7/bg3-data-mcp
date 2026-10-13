@@ -1708,6 +1708,48 @@ def passive_delta(store, active, before, after, tables, L, char_level, races, ex
     return bad
 
 
+def _newest_harness_folder(title):
+    """The newest harness save folder (<test_leader>-<id>__<title>) with exactly this title, by file time (save fixes keep it)."""
+    _, g = game_cfg()
+    root, leader = g["savegames"], g["test_leader"]
+    best = None
+    for d in os.listdir(root):
+        if d.startswith(leader + "-") and d.split("__", 1)[-1].lower() == title.lower():
+            lsv = [f for f in os.listdir(os.path.join(root, d)) if f.endswith(".lsv")]
+            if lsv:
+                t = os.path.getmtime(os.path.join(root, d, lsv[0]))
+                if not best or t > best[0]:
+                    best = (t, d)
+    return best[1] if best else None
+
+
+def load_harness_save(title, log=None):
+    """gameui.load_save for a harness save, newest of its title - with its mod list made current first. A save made before a mod
+    update raises a Mod Verification box with a version section, which the box gate rightly refuses (every 2026-10-06 checkpoint
+    after the dnd55e update, 2026-10-13); syncing a HARNESS save's mod list is safe but needs the game closed, so: close, sync,
+    relaunch into it through the guarded restart. Returns (seconds, host level) or (None, reason)."""
+    from . import gameui, saves, sources
+    log = log if log is not None else []
+    folder = _newest_harness_folder(title)
+    if not folder:
+        return None, f"no harness save titled {title!r}"
+    cfg = sources.load_config()
+    try:
+        plan = saves.fix_mods(cfg, folder, (), True, False)
+    except Exception as e:  # noqa: BLE001
+        plan = f"couldn't read its mod list ({e})"
+    if "nothing to change" in plan or "couldn't read" in plan:
+        return gameui.load_save(name=title, newest=True)
+    log.append(f"{title}: mod list out of date - closing the game to sync it:\n    " + "\n    ".join(plan.splitlines()[1:-1]))
+    _restart(None, launch=False)
+    log.append("    " + saves.fix_mods(cfg, folder, (), True, True).splitlines()[-1])
+    out = restart(None, True, 480, title)
+    lv = gameui.host_level()
+    if lv is None or f"main menu: loaded {title!r}" not in out:
+        return None, "relaunch after the sync didn't load it:\n" + out
+    return 0.0, lv
+
+
 def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_level=None, progress=None):
     """Level the host through a build's plan with the automatic level-up driver - its subclass and the spells its tests need -
     validating every level (level +1, subclass, wanted spells, level_check) and running that level's automated tests. Starts at
@@ -1726,12 +1768,15 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     parent = find_build(layer, b["from"]) if b.get("from") else None
     cl = gameui.class_levels() or {}
     resumed = None
+    notes_ = []                         # save loads (a stale save synced, a checkpoint that didn't load) - head the build's report
     if start_level:
         for k in sorted((k for k in range(max(lo, 1), start_level) if is_checkpoint(k)), reverse=True):
             if lv == k and cl == {b["class"]: k}:
                 resumed = f"host already at checkpoint level {k}"
                 break
-            tt, info = gameui.load_save(name=checkpoint_name(build_id, k))
+            tt, info = load_harness_save(checkpoint_name(build_id, k), notes_)
+            if tt is None:
+                notes_.append(f"checkpoint {checkpoint_name(build_id, k)!r} not loaded: {info}")
             if tt is not None:
                 lv, cl = info, gameui.class_levels() or {}
                 if lv != k or cl.get(b["class"]) != k:
@@ -1744,9 +1789,9 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
         pass
     elif parent and parent.get("save_as") and (lv != lo - 1 or cl != {b["class"]: lo - 1}):
         # not this build's character: load its start save by name (made with bg3_new_character)
-        t, info = gameui.load_save(name=parent["save_as"])
+        t, info = load_harness_save(parent["save_as"], notes_)
         if t is None:
-            return f"host is {cl} level {lv}; couldn't load the start save {parent['save_as']!r}: {info}"
+            return "\n".join(notes_ + [f"host is {cl} level {lv}; couldn't load the start save {parent['save_as']!r}: {info}"])
         lv, cl = info, gameui.class_levels() or {}
         if lv != lo - 1 or cl != {b["class"]: lo - 1}:  # a wrong save once passed as "level 20 -> 20" (2026-10-05)
             return f"loaded the start save {parent['save_as']!r} but the host is {cl} level {lv}, not {b['class']} {lo - 1}"
@@ -1756,6 +1801,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     for c in assign_cases(load_cases(layer), load_builds(layer)).get(build_id, []):
         cases_by_level.setdefault(c.get("level"), []).append(c)
     out = _Log(progress)
+    out.extend(notes_)               # extend, not +=: list.__iadd__ skips _Log.append (the live progress log)
     out.append(f"build {build_id}: level {lv} -> {hi}" + (f" ({resumed})" if resumed else ""))
     t_all = time.time()
     st_prev = None
@@ -2025,6 +2071,27 @@ def lint_progressions(store, active, layer):
         nodes = list(latest.values())
         if len(nodes) > 1 and any(x[0] == layer for x in nodes) and sum(grants_choice(x) for x in nodes) > 1:
             dup.append((k, nodes))
+    # a node with the same UUID as a lower layer's REPLACES it: whatever the lower node granted and this one doesn't list is gone
+    # (Apotheosis' Barbarian/Cleric 12 overrides dropped dnd55e's Hit Point Die, 2026-10-13)
+    lower, dropped = {}, []
+    for r in rows:
+        if r[0] != layer and r[4]:
+            lower[r[4]] = r
+    for r in mine:
+        b = lower.get(r[4])
+        if not b:
+            continue
+        a_new, a_old = json.loads(r[5]), json.loads(b[5])
+        for k in ("Boosts", "PassivesAdded", "PassivesRemoved", "Selectors"):
+            new_items = [x for x in (a_new.get(k) or "").split(";") if x]
+            lost = [x for x in (a_old.get(k) or "").split(";") if x and x not in new_items]
+            if lost:
+                dropped.append(f"  {r[1]} L{r[2]} {k}: drops {b[0]}'s {', '.join(lost)}")
+        if str(a_old.get("AllowImprovement", "")).lower() == "true" and str(a_new.get("AllowImprovement", "")).lower() != "true":
+            dropped.append(f"  {r[1]} L{r[2]}: drops {b[0]}'s AllowImprovement (feat)")
+    if dropped:
+        out.append(f"OVERRIDES that drop the lower layer's grants ({len(dropped)}) - an override replaces the whole node; list them again:")
+        out += dropped
     # ActionResource boosts on resources nobody defines do nothing (Apotheosis had RageCharge / Indomitable_Charge /
     # ActionSurge for months: found by a resource audit 2026-10-03)
     known = {n for (n,) in store.db.execute(f"SELECT name FROM staticdata WHERE kind LIKE 'ActionResource%' AND {w}", p)}
