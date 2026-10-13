@@ -79,7 +79,9 @@ function main(context) {
           const label = (d.actions || []).map(labelOf).find(l => new RegExp(r.label, 'i').test(l));
           if (label && (!r.title || new RegExp(r.title, 'i').test(`${d.title} ${JSON.stringify(d.content || {})}`))) {
             answered.push(d.id);
-            setTimeout(() => api.store.dispatch(actions.closeDialog(d.id, label)), 200);
+            // Vortex 2.8.2 reads result.input.remember: answer with the dialog's checkboxes at their defaults
+            const input = {}; for (const c of ((d.content || {}).checkboxes || [])) input[c.id] = !!c.value;
+            setTimeout(() => api.store.dispatch(actions.closeDialog(d.id, label, input)), 200);
             break;
           }
         }
