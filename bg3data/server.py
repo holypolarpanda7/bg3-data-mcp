@@ -1341,15 +1341,15 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17, add_class: str | 
 
 @mcp.tool()
 @guarded
-def bg3_load_save(index: int = 0, name: str | None = None) -> str:
-    """Load a save in the RUNNING game from the pause menu (no restart, ~15-40 s): Esc, Load Game, the save in row `index` of the
-    list (0 = first row = the game's newest), Load Game; clears the [ForceUpdate] box and waits for a host. Clicks nothing unless
-    the pause menu is confirmed open. Returns the host level, so a wrong row shows up immediately. name: load by (part of) the save's
-    name instead - looked up in the game's list order (newest SaveTime first). Take a bg3_screenshot of
-    the Load list first if unsure which row is which."""
+def bg3_load_save(index: int = 0, name: str | None = None, newest: bool = True, dry_run: bool = False) -> str:
+    """Load a HARNESS save (the test leader's playthrough, "Tavizard") in the running game: opens the Load screen, selects the save
+    in that playthrough, verifies in the game's own view model that exactly that save is selected (no other playthrough, not an
+    Honour save) and only then presses Load Game. The user's own campaigns can't be loaded through this. name: (part of) the
+    title; without it, the index-th newest harness save (0 = newest). newest: several saves share the title - take the newest.
+    dry_run: select and verify only, leaving the dialog open (bg3_screenshot to see it). Returns the host level."""
     from . import gameui
-    t, info = gameui.load_save(index, name=name)
-    return f"loaded in {t}s, host level {info}" if t is not None else "not loaded: " + info
+    t, info = gameui.load_save(index, name=name, newest=newest, dry_run=dry_run)
+    return f"loaded in {t}s, host level {info}" if t is not None else (info if dry_run else "not loaded: " + info)
 
 
 @mcp.tool()

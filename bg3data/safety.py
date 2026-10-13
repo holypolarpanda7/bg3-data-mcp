@@ -177,10 +177,24 @@ def protected_leaders(savegames=None, extra=None):
     return _state["leaders"]
 
 
+HARNESS_SECTIONS = {"extra"}   # VerificationMods section ReflectionStrings safe for a harness save (Extra = New Mods Detected)
+
+
 def classify_mod_verification(texts):
     """The Mod Verification box (shown before loading a save made with other mods) -> (kind, why).
     kind 'foreign': it lists missing or disabled mods - a campaign made with a different mod list (the user's own), never a harness
     save: do NOT press Start Game. 'harness': only version mismatches and new mods. 'unknown': no recognisable sections."""
+    # the box's view model (gameui.read_mod_verification, 2026-10-12): "section:<ReflectionString>" rows (gui::DCModVerification
+    # .VerificationMods, ls.VMEnumData headers) - "Extra" = New Mods Detected. Anything but known-harmless sections is not harness.
+    secs = [t.split(":", 1)[1].strip().lower() for t in texts if isinstance(t, str) and t.startswith("section:")]
+    if secs:
+        bad = [x for x in secs if "missing" in x or "disabled" in x or "notfound" in x or "unavailable" in x]
+        if bad:
+            return "foreign", f"it has a {bad[0]!r} section: a campaign made with other mods"
+        other = [x for x in secs if x not in HARNESS_SECTIONS]
+        if other:
+            return "unknown", f"unrecognised section(s) {', '.join(sorted(set(other)))}"
+        return "harness", f"only {', '.join(sorted(set(secs)))} ({len(texts) - len(secs)} mods)"
     low = [t.strip().lower() for t in texts if t and t.strip()]
     missing = [i for i, t in enumerate(low) if "missing" in t and ("disabled" in t or t == "missing")]
     if missing:
@@ -201,9 +215,10 @@ local h = Osi.GetHostCharacter()
 if not h then return nil end
 local e = Ext.Entity.Get(h)
 local n
-pcall(function() n = e.DisplayName.Name end)
-if (not n or n == "") then pcall(function() n = Ext.Loca.GetTranslatedString(e.DisplayName.NameKey.Handle.Handle) end) end
-if (not n or n == "") then pcall(function() n = Osi.GetDisplayName(h) end) end
+-- a custom character's name is CustomName.Name; DisplayName.Name is a TranslatedString object, not text (read None, 2026-10-12)
+pcall(function() n = e.CustomName and e.CustomName.Name end)
+if type(n) ~= "string" or n == "" then pcall(function() n = Ext.Loca.GetTranslatedString(Osi.GetDisplayName(h)) end) end
+if type(n) ~= "string" or n == "" then n = nil end
 return n""", "server", timeout=4)
     except Exception:
         return None

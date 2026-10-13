@@ -2659,7 +2659,8 @@ def _unstick_menu(log, relaunched, menu_only=False, load_title=None):
         if load_title:   # never Continue into a save that isn't the harness's (see continue_guard)
             took, lv = gameui.load_save(name=load_title, from_menu=True, newest=True)
             log.append(f"main menu: loaded {load_title!r} ({took}s, host level {lv})" if took else f"main menu: loading {load_title!r} failed: {lv}")
-            return "continue"
+            # a failed guarded load is final: retrying re-opens the Load screen every few seconds for nothing (19 times, 2026-10-12)
+            return "continue" if took else "load_failed"
         gameui.main_menu_command("ContinueGameCommand")
         log.append("main menu: pressed Continue")
         return "continue"
@@ -2871,6 +2872,9 @@ def _restart(deploy_layer=None, launch=True, timeout=300, save=None):
                            "(stats/.khn/Lua); bisect it. The game was left running - restart kills it.")
                 return "\n".join(log)
             note = _unstick_menu(log, relaunched, load_title=load_title)
+            if note == "load_failed":
+                log.append("stopped: the harness save wasn't loaded and nothing was pressed; the game is at the main menu")
+                return "\n".join(log)
             if note in ("relaunch", "relaunch_killed"):
                 relaunched = note == "relaunch"  # after a kill, the safe-mode relaunch must still be allowed
                 clear_mod_crash_check(g, log)

@@ -112,6 +112,10 @@ try:
     check("a box with only version mismatch / new mods is a harness save's", safety.classify_mod_verification(mine)[0] == "harness")
     check("a box with no recognisable sections is unknown (never Start Game)", safety.classify_mod_verification(["Mod Verification", "OK"])[0] == "unknown")
     check("an empty read is unknown", safety.classify_mod_verification([])[0] == "unknown")
+    # the box's view model rows (gameui.read_mod_verification): "section:<ReflectionString>" + mod names
+    check("view model: only the Extra section (new mods) is a harness save's", safety.classify_mod_verification(["section:Extra", "ImpUI (ImprovedUI)", "SCO"])[0] == "harness")
+    check("view model: a Missing section is foreign", safety.classify_mod_verification(["section:Extra", "a", "section:Missing", "b"])[0] == "foreign")
+    check("view model: an unrecognised section is unknown (never Start Game)", safety.classify_mod_verification(["section:Extra", "a", "section:Updated", "b"])[0] == "unknown")
     st = safety.status(vault, sg, "Tavizard")
     check("status reports protected folders, the baseline and the restore hint", "protected save folders: 2" in st and "restore" in st.lower())
 finally:
