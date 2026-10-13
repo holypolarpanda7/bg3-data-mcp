@@ -1339,19 +1339,30 @@ def _save_only_lacks_mods(name):
     return "; ".join(bad) if bad else None
 
 
-def load_save(index=0, timeout=90.0, name=None):
+def load_save(index=0, timeout=90.0, name=None, from_menu=False, newest=False):
     """Load a save from the pause menu of the RUNNING game (no restart): Esc until the pause menu (GameMenu) is confirmed open,
     Load Game, the save, Load Game. `name`: the save's title (exact, else a unique substring, e.g. "Barbarian L1 Base"), selected
     through the Load screen's view model; else row `index` (0 = first, the newest). Waits until a host exists in the new
-    session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason)."""
+    session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason).
+    newest: several saves with the same title (every build run makes its own "wiz-evoker L20"): take the newest (the list's
+    order) instead of failing as ambiguous.
+    from_menu: the game is at the MAIN MENU (no session): open the Load dialog with the menu's own OpenLoadGameDialog command
+    (2026-10-12: a restart must not Continue into the user's own campaign, so it loads a harness save by title instead)."""
     t0 = time.time()
     # the HUD's own OpenLoadGameDialog command: no Esc / pause-menu clicks (2026-10-06: Esc stopped reaching the game after a
     # level-up session and every load failed with "the pause menu didn't open")
-    res, _ = _client(FIND + """
+    # already open (a previous attempt left it up): sending the open command again can toggle it shut
+    already, _ = _client(FIND + 'local w = find(Ext.UI.GetRoot(), "LoadGame", 0) return w ~= nil and #w.DataContext.ExistingSaves or 0')
+    if isinstance(already, (int, float)) and already > 0:
+        res = False
+    elif from_menu:
+        res = main_menu_command("OpenLoadGameDialog")
+    else:
+        res, _ = _client(FIND + """
 local h = find(Ext.UI.GetRoot(), "HotBar", 0)
 local ok = h and pcall(function() h.DataContext.OpenLoadGameDialog:Execute(nil) end)
 return ok and true or false""")
-    opened = False
+    opened = isinstance(already, (int, float)) and already > 0
     if res is True:
         for _ in range(30):
             timing.wait(0.2)
@@ -1359,6 +1370,8 @@ return ok and true or false""")
             if isinstance(n, (int, float)) and n > 0:
                 opened = True
                 break
+    if not opened and from_menu:
+        return None, "the main menu's Load Game dialog didn't open (nothing was clicked)"
     if not opened:
         if not _pause_menu():
             return None, "the pause menu didn't open (nothing was clicked)"
@@ -1376,6 +1389,7 @@ for i = 1, #saves do
   if t == want then exact[#exact + 1] = saves[i] elseif string.find(t, want, 1, true) then part[#part + 1] = saves[i] end
 end
 local hits = #exact > 0 and exact or part
+if %s and #hits > 1 then hits = {hits[1]} end
 if #hits ~= 1 then
   local names = {}
   for _, s in ipairs(hits) do names[#names + 1] = tostring(s.Title) end
@@ -1393,7 +1407,7 @@ local function f(n, dd)
 end
 local b = f(find(Ext.UI.GetRoot(), "LoadGame", 0), 0)
 local ok = b and pcall(function() b.Command:Execute(d.SelectedSave) end)
-return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true or false}""" % _lua_str(name))
+return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true or false}""" % (_lua_str(name), "true" if newest else "false"))
         if not isinstance(res, dict) or res.get("n") != 1:
             send_key(0x01, hold_ms=60)
             return None, f"{(res or {}).get('n', '?')} saves match {name!r}: {', '.join((res or {}).get('names') or [])}"

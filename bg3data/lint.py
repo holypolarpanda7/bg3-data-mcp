@@ -387,6 +387,21 @@ def lint_stats(store, active, layer, limit=200):
             elif fn == "FeatRequirementProficiency" and known_prof and args.strip(" '\"") not in known_prof:
                 add("FEAT", fname, "Feats.lsx", f"FeatRequirementProficiency({args}) - no proficiency of that name in any other layer")
     # deliberate exceptions: <suite>/lint_allow.toml [[allow]] kind / name (fnmatch) / reason - still listed, not counted
+    # Khonsu scripts (Scripts/thoth/**/*.khn): the game CRASHES while loading modules for a .khn with `//` comment lines or LF line
+    # endings; dnd55e's own files have CRLF and no comments, and the same file written that way loads (bisected 2026-10-12)
+    try:
+        mod = next((m for m in sources.load_config()["mods"] if m["name"] == layer), None)
+        root = sources.mod_root(sources.load_config(), mod) if mod and not mod["path"].lower().endswith(".pak") else None
+    except Exception:
+        root = None
+    for kf in sorted(glob.glob(os.path.join(root, "Mods", "*", "Scripts", "thoth", "**", "*.khn"), recursive=True)) if root else []:
+        raw = open(kf, "rb").read()
+        rel = os.path.relpath(kf, root).replace("\\", "/")
+        if re.search(rb"(?m)^\s*//|/\*", raw):
+            add("KHN", os.path.basename(kf), rel, "comments in a .khn crash the game while it loads modules (dnd55e's files have none)")
+        if raw.count(b"\n") != raw.count(b"\r\n"):
+            add("KHN", os.path.basename(kf), rel, "LF line endings: write CRLF like dnd55e's .khn files (an LF file crashed the game at module load); "
+                                                    "protect it in .gitattributes with `-text`")
     allowed, allow = [], _lint_allow(layer)
     if allow:
         import fnmatch
@@ -401,7 +416,7 @@ def lint_stats(store, active, layer, limit=200):
     head = (f"stats lint for {layer}: {len(rows)} entries, {len(issues)} issue(s)"
             + (" (" + ", ".join(f"{v} {k}" for k, v in sorted(by_kind.items())) + ")" if issues else " - clean")
             + f"; vocabulary from {'+'.join(l for l in active if l != layer)}")
-    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TEXT = name/description handle with no text; TPL = root template reference that doesn't exist; FEAT = feat prerequisite the engine ignores or can't match; PICKER = a spell that opens another spell's variant picker (or a wrong-level one)"]
+    lines = [head, "  ENUM/CALL/FIELD = value, name or field no other layer uses (likely silently dropped); REF = missing entry; RES = unknown resource; SPELL = spell that can't resolve (or whose area can't); SIZE = container too big to load; ICON = icon nothing else uses; TEXT = name/description handle with no text; TPL = root template reference that doesn't exist; FEAT = feat prerequisite the engine ignores or can't match; PICKER = a spell that opens another spell's variant picker (or a wrong-level one); KHN = a .khn that would crash the game at load"]
     lines += [f"  {kind:4} {name} [{file}]: {msg}" for kind, name, file, msg in issues[:limit]]
     if len(issues) > limit:
         lines.append(f"  ... {len(issues) - limit} more")

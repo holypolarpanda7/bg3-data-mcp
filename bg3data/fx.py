@@ -806,7 +806,9 @@ def _mei_file(cfg, store, uuid_, layer):
     return hits[-1] if hits else None
 
 
-BANK_HEAD = '<?xml version="1.0" encoding="utf-8"?>\n<save>\n\t<version major="4" minor="0" revision="9" build="0" />\n' \
+# lslib_meta as the base game's banks: without "bswap_guids" LSLib writes the GUIDs in the other byte order and every resource id
+# in the binary bank is wrong (2026-10-12)
+BANK_HEAD = '<?xml version="1.0" encoding="utf-8"?>\n<save>\n\t<version major="4" minor="0" revision="9" build="0" lslib_meta="v1,bswap_guids,lsf_adjacency" />\n' \
             '\t<region id="EffectBank">\n\t\t<node id="EffectBank">\n\t\t\t<children>\n'
 BANK_TAIL = '\t\t\t</children>\n\t\t</node>\n\t</region>\n</save>\n'
 
@@ -982,7 +984,15 @@ def build(store, layer, apply=False, log=print):
         out.append("dry run - pass apply=True to write")
         return "\n".join(out)
     ready = []   # everything is produced in the work dir first, so a failed conversion leaves the mod untouched
+    # Divine's binary output isn't byte-reproducible (the string table's order differs between runs; the content is identical), so a
+    # rebuild would rewrite every .lsfx in git: a file whose source text is unchanged since the last build is left as it is
+    hashes = {rel: hashlib.sha1(text.encode("utf-8")).hexdigest() for rel, text in written}
+    old_hashes = old.get("_hashes", {})
+    kept = 0
     for rel, text in written:
+        if old_hashes.get(rel) == hashes[rel] and os.path.exists(os.path.join(m["path"], rel)):
+            kept += 1
+            continue
         tmp = os.path.join(work, rel + ".lsx")
         os.makedirs(os.path.dirname(tmp), exist_ok=True)
         open(tmp, "w", encoding="utf-8").write(text)
@@ -1001,9 +1011,12 @@ def build(store, layer, apply=False, log=print):
         if os.path.exists(fp):
             os.remove(fp)
     generated["_files"] = files
+    generated["_hashes"] = hashes
     json.dump(generated, open(gen_path, "w"), indent=1)
     open(gen_path, "a").write("\n")
     shutil.rmtree(work, ignore_errors=True)
+    if kept:
+        out.append(f"  {kept} file(s) unchanged since the last build were left alone")
     out.append(f"written; MultiEffectInfo UUIDs in {os.path.relpath(gen_path, m['path'])}. Refresh the layer to index them.")
     return "\n".join(out)
 

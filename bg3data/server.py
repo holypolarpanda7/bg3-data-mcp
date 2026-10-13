@@ -672,12 +672,15 @@ def bg3_timing(action: str = "show", scale: float | None = None, settings: dict 
 
 @mcp.tool()
 @se_guarded
-def bg3_game_restart(deploy_layer: str | None = None, launch: bool = True) -> str:
+def bg3_game_restart(deploy_layer: str | None = None, launch: bool = True, save: str | None = None) -> str:
     """Kill the game, optionally deploy a mod layer (its layers.json `deploy` command, else the built-in
-    bg3_deploy), relaunch (Steam -applaunch, or the game exe for GOG/other installs; --skip-launcher
-    -continueGame loads the NEWEST save) and wait until a host character is loaded. Unsaved progress is lost."""
+    bg3_deploy), relaunch (Steam -applaunch, or the game exe for GOG/other installs) and wait until a host character is
+    loaded. Unsaved progress is lost. It Continues into the newest save ONLY if that is a harness save (led by the test
+    character, `game.test_leader`, default Tavizard); if the newest is anything else - the user's own campaign - it launches
+    to the main menu and loads the newest harness save instead. `save`: load that harness save by title (or part of one,
+    e.g. "wiz-evoker L20") from the main menu, whatever the newest save is."""
     from . import testing
-    return testing.restart(deploy_layer, launch)
+    return testing.restart(deploy_layer, launch, save=save)
 
 
 @mcp.tool()

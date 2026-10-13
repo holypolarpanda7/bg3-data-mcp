@@ -65,6 +65,7 @@ def game_cfg():
     g["game_exe"] = platform.to_native(g["game_exe"]) if g.get("game_exe") else platform.game_exe(install)
     g.setdefault("app_id", platform.STEAM_APP_ID)
     g.setdefault("launch_args", ["--skip-launcher", "-continueGame"])
+    g.setdefault("test_leader", "Tavizard")   # the harness's characters are led by this name (the user's own campaigns aren't)
     ld = platform.larian_dir(cfg)
     g["savegames"] = platform.to_native(g["savegames"]) if g.get("savegames") else \
         os.path.join(ld or "", "PlayerProfiles", g.get("profile", "Public"), "Savegames", "Story")
@@ -2606,7 +2607,7 @@ def kill_game(graceful=True):
     return killed
 
 
-def _unstick_menu(log, relaunched, menu_only=False):
+def _unstick_menu(log, relaunched, menu_only=False, load_title=None):
     """The game is up but no save is loaded: dismiss the splash, continue from the main menu, and get out of the
     no-mods safe mode (clean quit + relaunch, once) that follows a killed or hung load."""
     from . import deploy, gameui, sources as src
@@ -2655,6 +2656,10 @@ def _unstick_menu(log, relaunched, menu_only=False):
             return "relaunch" if gameui.quit_game(g["processes"], _tasklist) else None
         if menu_only:                      # a new game (bg3data.newgame) starts from the menu with every mod loaded
             return "menu"
+        if load_title:   # never Continue into a save that isn't the harness's (see continue_guard)
+            took, lv = gameui.load_save(name=load_title, from_menu=True, newest=True)
+            log.append(f"main menu: loaded {load_title!r} ({took}s, host level {lv})" if took else f"main menu: loading {load_title!r} failed: {lv}")
+            return "continue"
         gameui.main_menu_command("ContinueGameCommand")
         log.append("main menu: pressed Continue")
         return "continue"
@@ -2664,6 +2669,30 @@ def _unstick_menu(log, relaunched, menu_only=False):
         msg = f"message box {(info or {}).get('uuid')}: {' | '.join(what)[:300] or '(no text read)'}"
         log.append(("dismissed " if closed else "left open (needs your answer: %s actions) " % (info or {}).get("actions")) + msg)
     return None
+
+
+def continue_guard(want=None):
+    """(newest save folder, its leader, title to load from the main menu or None). -continueGame loads the game's NEWEST save
+    (SaveTime, not file time) - on 2026-10-12 that was the user's own Honour Mode campaign (leader Gregor, 280 mods), which a
+    restart then tried to load. Unless the newest save is led by the harness character (`game.test_leader`), or no particular
+    save is wanted, the restart loads a harness save by title through the main menu instead: `want` (a title or part of one),
+    else the newest harness save."""
+    from . import saves
+    cfg, g = game_cfg()
+    order = saves.game_order(cfg, limit=60)
+    if not order:
+        return None, None, None
+    leader = g["test_leader"]
+    title = lambda folder: folder.split("__", 1)[-1]
+    if want:
+        hits = [d for d, _p, _t, who in order if who == leader and want.lower() in title(d).lower()]
+        exact = [d for d in hits if title(d).lower() == want.lower()]
+        pick = (exact or hits)[:1]
+        return order[0][0], order[0][3], title(pick[0]) if pick else None
+    if order[0][3] == leader:
+        return order[0][0], leader, None
+    first = next((d for d, _p, _t, who in order if who == leader), None)
+    return order[0][0], order[0][3], title(first) if first else None
 
 
 def newest_save():
@@ -2728,18 +2757,18 @@ def missing_dependencies():
     return out
 
 
-def restart(deploy_layer=None, launch=True, timeout=300):
+def restart(deploy_layer=None, launch=True, timeout=300, save=None):
     # one restart at a time: a second one (e.g. after the first was backgrounded by the client) kills the game the
     # first is waiting on and both misreport (seen 2026-10-02)
     if not _RESTART_LOCK.acquire(blocking=False):
         return "another bg3_game_restart is still running in this server - wait for it (or stop it) first"
     try:
-        return _restart(deploy_layer, launch, timeout)
+        return _restart(deploy_layer, launch, timeout, save)
     finally:
         _RESTART_LOCK.release()
 
 
-def _restart(deploy_layer=None, launch=True, timeout=300):
+def _restart(deploy_layer=None, launch=True, timeout=300, save=None):
     log = []
     killed = kill_game()
     log.append("killed: " + (", ".join(killed) or "game wasn't running"))
@@ -2765,10 +2794,17 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
         return "\n".join(log + [f"NOT LAUNCHED: {mod} needs {dep}, which isn't installed in the user Mods folder - the "
                                  f"game would drop {mod} from the load order. Install/deploy it first (mod manager)."
                                  for mod, dep in absent])
-    ns = newest_save()
-    log.append(f"newest save (what -continueGame loads): {ns[0]} ({ns[1]})" if ns else "no saves found")
+    newest, leader, load_title = continue_guard(save)
+    log.append(f"newest save (what -continueGame would load): {newest} (led by {leader})" if newest else "no saves found")
+    if save and not load_title:
+        return "\n".join(log + [f"NOT LAUNCHED: no harness save (led by the test character) matches {save!r}"])
+    if load_title:
+        log.append(f"not continuing into it: loading the harness save {load_title!r} from the main menu instead"
+                   + (" (the newest save isn't a harness save - the user's own campaign)" if not save else ""))
     from . import platform
     _, g = game_cfg()
+    if load_title:
+        g["launch_args"] = [a for a in g["launch_args"] if a != "-continueGame"]
     args = " ".join(g["launch_args"])
     clear_mod_crash_check(g, log)
     if g["launcher"] == "steam" and g.get("steam_exe"):
@@ -2817,7 +2853,7 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
                            f"({time.time() - t0:.0f}s after launch), a hung module/save load. Suspect the last deploy "
                            "(stats/.khn/Lua); bisect it. The game was left running - restart kills it.")
                 return "\n".join(log)
-            note = _unstick_menu(log, relaunched)
+            note = _unstick_menu(log, relaunched, load_title=load_title)
             if note in ("relaunch", "relaunch_killed"):
                 relaunched = note == "relaunch"  # after a kill, the safe-mode relaunch must still be allowed
                 clear_mod_crash_check(g, log)
