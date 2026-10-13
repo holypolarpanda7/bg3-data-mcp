@@ -136,6 +136,7 @@ PALETTE = {
     "thunder": ["#9961bb", "#dfbbf5"], "acid": ["#bcc311", "#ecef74"], "poison": ["#3f7a12", "#8cc43a"],
     "necrotic": ["#3ad077", "#92f5c5"], "radiant": ["#caac2d", "#efe084"], "psychic": ["#c467bc", "#efadeb"],
     "force": ["#e13c3f", "#fa878a"], "healing": ["#20bab1", "#66efe9"],
+    "blood": ["#8c0f1c", "#d6283a", "#ff7a7a"], "crimson": ["#5e0713", "#a31225", "#e8505e"], "scarlet": ["#b3171f", "#f0432f", "#ffa088"],  # Sangromancy reds (user 2026-10-13)
     "arcane": ["#4f22a8", "#9466e0"], "earth": ["#8a5a2b", "#e0b070"],  # no damage type: deeper violet (user 2026-10-05); brown for stone
 }
 
