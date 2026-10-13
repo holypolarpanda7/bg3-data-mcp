@@ -114,6 +114,7 @@ try:
     check("an empty read is unknown", safety.classify_mod_verification([])[0] == "unknown")
     # the box's view model rows (gameui.read_mod_verification): "section:<ReflectionString>" + mod names
     check("view model: only the Extra section (new mods) is a harness save's", safety.classify_mod_verification(["section:Extra", "ImpUI (ImprovedUI)", "SCO"])[0] == "harness")
+    check("view model: a version section (a mod updated since the save) is a harness save's", safety.classify_mod_verification(["section:version", "DnD 5.5e All-in-One BEYOND", "section:Extra", "ImpUI"])[0] == "harness")
     check("view model: a Missing section is foreign", safety.classify_mod_verification(["section:Extra", "a", "section:Missing", "b"])[0] == "foreign")
     check("view model: an unrecognised section is unknown (never Start Game)", safety.classify_mod_verification(["section:Extra", "a", "section:Updated", "b"])[0] == "unknown")
     st = safety.status(vault, sg, "Tavizard")

@@ -178,7 +178,7 @@ def protected_leaders(savegames=None, extra=None):
     return _state["leaders"]
 
 
-HARNESS_SECTIONS = {"extra"}   # VerificationMods section ReflectionStrings safe for a harness save (Extra = New Mods Detected)
+HARNESS_SECTIONS = {"extra", "version"}   # VerificationMods section ReflectionStrings safe for a harness save (Extra = New Mods Detected, version = a mod updated since the save: harness saves are test-only and the game just loads them with the current mods, 2026-10-13)
 
 
 def classify_mod_verification(texts):

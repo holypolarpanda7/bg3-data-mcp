@@ -1391,8 +1391,8 @@ MODVERIFY_START = (844, 954)   # the Mod Verification box's Start Game button (f
 
 
 def _save_only_lacks_mods(name):
-    """None when every mod the save `name` lists is in the load order unchanged (the box only reports new mods), else what's
-    wrong."""
+    """None when every mod the save `name` lists is still in the load order (the box reports new mods and changed versions, both fine
+    for a harness save), else what's wrong (a mod that is gone)."""
     from . import saves, sources
     import tempfile
     from . import platform as _plat
@@ -1403,14 +1403,13 @@ def _save_only_lacks_mods(name):
             rows = saves.compare(saves.mods_in(saves.read_meta(cfg, lsv, work)), saves.current_mods(cfg))
     except Exception as e:
         return f"couldn't read the save's mod list ({e})"
-    # the game itself ignores MD5 / PublishHandle drift (its box listed only the new mods while both differed, 2026-10-07):
-    # block on what it does warn about - a missing mod or a changed Folder / Version
+    # a harness save made before a mod update differs in Folder / Version64 / MD5: the game warns (the box's version section) and loads
+    # it with the current mods, which is what a test wants (2026-10-13: syncing every save after each dnd55e update cost ~1.5 min a
+    # save plus a relaunch). Only a mod that is no longer loaded at all (not a "differs") is serious.
     def serious(prob):
         if not prob:
             return False
-        if not prob.startswith("differs: "):
-            return True
-        return bool(set(prob[len("differs: "):].split(", ")) - {"MD5", "PublishHandle", "Name"})
+        return not prob.startswith("differs: ")
     from . import deploy
     isolated = {r["uuid"] for r in (deploy.isolation_state() or {}).get("removed", [])}   # mods a test run took out on purpose
     bad = [f"{(m.get('Name') or m.get('Folder'))}: {prob}" for m, prob, _ in rows

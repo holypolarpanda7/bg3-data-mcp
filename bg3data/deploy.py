@@ -323,12 +323,39 @@ def isolate_saves(layer, only=None):
         if any(n.lower() in d.lower() for n in names):
             targets.add(d)
     out = []
+    # a save already clean for this set of removed mods is skipped without reading it (reading a save's meta is ~7 s): the cache
+    # keys on (save file mtime and size, the removed uuids)
+    cache_path = os.path.join(sources.CACHE, "isolate_saves_clean.json")
+    try:
+        clean = json.load(open(cache_path))
+    except (OSError, ValueError):
+        clean = {}
+    key = ",".join(sorted(removed))
+    root = saves.save_root(cfg)
     for d in sorted(targets):
+        try:
+            lsv = saves.find_save(cfg, d)
+            st = os.stat(lsv)
+            sig = f"{st.st_mtime:.0f}:{st.st_size}:{key}"
+        except Exception:  # noqa: BLE001
+            lsv, sig = None, None
+        if sig and clean.get(d) == sig:
+            out.append(f"save {d}: already clean (cached)")
+            continue
         try:
             r = saves.fix_mods(cfg, d, remove=removed, sync=False, apply=True)
             out.append(f"save {d}: " + ("dropped the isolated mods" if "rewrote" in r else r.splitlines()[-1]))
+            try:   # re-stat: a rewrite changes the file
+                st = os.stat(saves.find_save(cfg, d))
+                clean[d] = f"{st.st_mtime:.0f}:{st.st_size}:{key}"
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as e:
             out.append(f"save {d}: not fixed ({e})")
+    try:
+        json.dump(clean, open(cache_path, "w"))
+    except OSError:
+        pass
     return out
 
 
