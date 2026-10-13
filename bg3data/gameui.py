@@ -1339,6 +1339,11 @@ def _save_only_lacks_mods(name):
     return "; ".join(bad) if bad else None
 
 
+def _auto_accept_mod_verify():
+    from . import sources
+    return bool((sources.load_config().get("game") or {}).get("auto_accept_mod_verify", False))
+
+
 def load_save(index=0, timeout=90.0, name=None, from_menu=False, newest=False):
     """Load a save from the pause menu of the RUNNING game (no restart): Esc until the pause menu (GameMenu) is confirmed open,
     Load Game, the save, Load Game. `name`: the save's title (exact, else a unique substring, e.g. "Barbarian L1 Base"), selected
@@ -1396,6 +1401,10 @@ if #hits ~= 1 then
   return {n = #hits, names = names}
 end
 d:SetProperty("SelectedSave", hits[1])
+-- the selection must read back as the save asked for BEFORE anything is pressed: the Load screen is a grouped tree whose default
+-- highlight can be the user's own campaign (2026-10-12), and a Load on the wrong row loads that
+local sel = d.SelectedSave and tostring(d.SelectedSave.Title) or ""
+if sel ~= tostring(hits[1].Title) then return {n = 1, selected = sel, mismatch = true, executed = false} end
 -- the Load Game button's own command: a click loads the row the LIST has selected, which the view model property doesn't move
 -- (2026-10-06: a save in another part of the list never loaded, and the newest save's running session passed as loaded)
 local function f(n, dd)
@@ -1411,8 +1420,14 @@ return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true
         if not isinstance(res, dict) or res.get("n") != 1:
             send_key(0x01, hold_ms=60)
             return None, f"{(res or {}).get('n', '?')} saves match {name!r}: {', '.join((res or {}).get('names') or [])}"
+        if res.get("mismatch"):
+            send_key(0x01, hold_ms=60)
+            return None, f"the Load screen's selection reads back as {res.get('selected')!r}, not {name!r} - nothing was pressed"
         if not res.get("executed"):
-            _rclick(1068, 1005)       # Load Game button (fallback)
+            # no blind click on the Load Game button any more: it loads whatever row is highlighted, and in the grouped Load screen
+            # that can be the user's own Honour Mode campaign (2026-10-12)
+            send_key(0x01, hold_ms=60)
+            return None, f"couldn't press the Load Game button through its command (selected {res.get('selected')!r}) - nothing was clicked"
     else:
         _rclick(320, 210 + 34 * index)
         timing.wait(0.4)
@@ -1428,6 +1443,10 @@ return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true
         # a Mod Verification box that only lists NEW mods (the save predates a mod now in the load order - every test layer's
         # first run, 2026-10-07): Start Game is safe. A missing or changed mod stays a failure (fix it with bg3_save_fix_mods).
         if name and not accepted and "ModVerification" in (screen() or []):
+            if not _auto_accept_mod_verify():
+                return None, ("a Mod Verification box is up and needs your answer - nothing was clicked (set game.auto_accept_mod_verify "
+                              "in layers.json to let the harness press Start Game for a save that only lacks NEW mods; never for a "
+                              "box you haven't looked at: it can belong to the user's own campaign)")
             why = _save_only_lacks_mods(name)
             if why is not None:
                 return None, f"Mod Verification box: {why} - fix the save with bg3_save_fix_mods (nothing was clicked)"
