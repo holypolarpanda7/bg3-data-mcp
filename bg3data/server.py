@@ -783,7 +783,7 @@ def bg3_icon_import(paths: list[str], layer: str, names: list[str] | None = None
     """Take generated images (e.g. ComfyUI outputs) into a mod's icon sources (<mod root>/Icons/src) as
     <IconName>.png: the green screen the BG3 icon LoRAs paint on is unmixed (key="unmix": the soft glow over it survives
     as semi-transparent haze, like base-game icons; "green" = hard key; "none" to skip), centre-cropped,
-    512 px. Black-background art (SDXL + IP-Adapter): key="black", or tints=[fire|cold|lightning|thunder|acid|poison|
+    512 px. Black-background art (SDXL + IP-Adapter): key="black", or tints=[blood|scarlet|crimson|fire|cold|lightning|thunder|acid|poison|
     necrotic|radiant|psychic|force|healing|arcane|earth per path] to recolour to that damage type's base-game gradient;
     crop=True fills the tile. names: one icon name per path (default: the file name without ComfyUI's _00001_ counter).
     Then bg3_icon_build."""
