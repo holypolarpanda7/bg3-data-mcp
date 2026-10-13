@@ -101,7 +101,13 @@ def package(layer):
     if not (r and r.get("ok")):
         return f"the gate isn't GREEN on HEAD {head[:10]} ({r['desc'] if r else 'not gated'}) - not packaging"
     ver = version_str(info["Version64"])
-    pak, n = deploy.pack(layer)
+    # the shipped pak leaves out what only the tests and the mod.io publish use: <mod>/release_exclude.txt, one glob per line relative to
+    # the mod root (e.g. Mods/<folder>/ScriptExtender/Lua/SpellTests.lua); the gate runs on the full pak (the test Lua is how some cases run),
+    # the stripped one is smoke-tested after packaging
+    ex_file = os.path.join(path, "release_exclude.txt")
+    exclude = [l.strip() for l in open(ex_file, encoding="utf-8")] if os.path.exists(ex_file) else []
+    exclude = [l for l in exclude if l and not l.startswith("#")]
+    pak, n = deploy.pack(layer, exclude)
     out = os.path.join(sources.CACHE, "release", layer, f"v{ver}")
     if os.path.isdir(out):
         shutil.rmtree(out)

@@ -90,7 +90,9 @@ def game_running():
     return any(p in tl for p in ("bg3.exe", "bg3_dx11.exe"))
 
 
-def pack(layer):
+def pack(layer, exclude=()):
+    """Pack Mods/<folder> + Public/<folder> into a pak. `exclude`: glob patterns (fnmatch, relative to the mod root, / separators)
+    left out of the pak - the release strip (test Lua, the publish logo)."""
     cfg, m, info, _ = mod_info(layer)
     folder = info["Folder"]
     out_dir = os.path.join(platform.windows_temp(), "bg3data_build", folder)
@@ -104,6 +106,10 @@ def pack(layer):
                 raise ValueError(f"missing {src}")
             continue
         shutil.copytree(src, os.path.join(stage, part, folder), ignore=shutil.ignore_patterns("*.lsx.bak", "Thumbs.db"))
+    for pat in exclude:
+        for f in glob.glob(os.path.join(stage, pat), recursive=True):
+            if os.path.isfile(f):
+                os.remove(f)
     pak = os.path.join(out_dir, folder + ".pak")
     if os.path.exists(pak):
         os.remove(pak)
