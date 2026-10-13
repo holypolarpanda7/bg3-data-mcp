@@ -1738,7 +1738,10 @@ def load_harness_save(title, log=None):
         plan = saves.fix_mods(cfg, folder, (), True, False)
     except Exception as e:  # noqa: BLE001
         plan = f"couldn't read its mod list ({e})"
-    if "nothing to change" in plan or "couldn't read" in plan:
+    # only what the game's box warns about needs the close/sync/relaunch: a changed Folder or Version64 (it ignores MD5 /
+    # PublishHandle / Name drift - a save made a minute ago differed in those and was relaunched for nothing, 2026-10-13)
+    serious = [l for l in plan.splitlines()[1:] if re.search(r": (Folder|Version64) ", l)]
+    if not serious:
         return gameui.load_save(name=title, newest=True)
     log.append(f"{title}: mod list out of date - closing the game to sync it:\n    " + "\n    ".join(plan.splitlines()[1:-1]))
     _restart(None, launch=False)
