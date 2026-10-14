@@ -3,7 +3,7 @@
   bg3-data watch-community [dry] [seed]
 
 Each run reads the newest comments of every layer with a "modio" block in layers.json, drops the author's own, and posts
-the ones not seen before AND matching BUG (other comments are recorded as seen, not posted) to #nexus-bug-reports as one digest. State: ~/.cache/bg3-data-mcp/community-watch.json (seen
+the ones not seen before AND matching BUG (other comments are recorded as seen, not posted) to #mod-bug-reports as one digest. State: ~/.cache/bg3-data-mcp/community-watch.json (seen
 comment ids per layer); the first run for a layer only records what is already there ("seed" forces that for all layers).
 Nexus has no comment or bug API (verified 2026-10-13) - that part would need the signed-in browser (nexus_web.py).
 """
@@ -17,7 +17,7 @@ from . import modio, sources, watch
 
 STATE = os.path.expanduser("~/.cache/bg3-data-mcp/community-watch.json")
 LOG = os.path.expanduser("~/.cache/bg3-data-mcp/community-watch.log")
-CHANNEL = "nexus-bug-reports"
+CHANNEL = "mod-bug-reports"
 OWN = {"GreygorVangar"}
 # A comment is reported only when it reads like a problem report (keyword heuristic - praise and questions are skipped).
 BUG = re.compile(r"\b(bugs?|bugged|glitch\w*|crash\w*|broken|breaks?|not work\w*|n'?t work\w*|no longer work\w*|stopped working|"
