@@ -262,7 +262,7 @@ def discover(layer, apply=True):
 
 
 def _profile(layer):
-    """<mod>/modio/profile.toml (name, summary, tags, logo; description.html beside it) - the mod.io page, kept in the repo."""
+    """<mod>/modio/profile.toml (name, summary, tags, deps = mod.io mod ids, logo; description.html beside it) - the mod.io page, kept in the repo."""
     import tomllib
     from . import deploy
     _, m, _, _ = deploy.mod_info(layer)
@@ -281,7 +281,7 @@ def _profile(layer):
 
 def publish(layer, apply=False, wait=240, golive=True):
     """After the Toolkit upload (bg3_toolkit_ui publish): find the mod, wait for the scan, approve the newest file for Windows,
-    make it the live file, apply the page from <mod>/modio/profile.toml (name, summary, description.html, tags, logo) and make the
+    make it the live file, apply the page from <mod>/modio/profile.toml (name, summary, description.html, tags, deps, logo) and make the
     mod public. Dry run unless apply (a dry run only reads). Every step is a plain API call - nothing here needs the browser."""
     out = []
     mod_id = discover(layer, apply=apply)
@@ -313,6 +313,10 @@ def publish(layer, apply=False, wait=240, golive=True):
     add = [t for t in prof.get("tags", []) if t not in cur]
     if add:
         out.append(_write2(mod_id, "POST", "/tags", {"tags": add}, apply, "add tags"))
+    have = {d.get("mod_id") for d in call("GET", f"/games/{GAME}/mods/{mod_id}/dependencies", GAME).get("data", [])}
+    add_deps = [d for d in prof.get("deps", []) if d not in have]
+    if add_deps:
+        out.append(_write2(mod_id, "POST", "/dependencies", {"dependencies": add_deps}, apply, "add dependencies"))
     if prof.get("logo") and os.path.isfile(prof["logo"]):
         out.append(_write2(mod_id, "POST", "/media", None, apply, "set the logo", files={"logo": prof["logo"]}))
     if golive:
