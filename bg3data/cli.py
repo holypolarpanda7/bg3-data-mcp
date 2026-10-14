@@ -37,6 +37,9 @@ def main(argv=None):
     if a.cmd == "watch-dnd55e":  # scheduled: breaking dnd55e changes for the Apotheosis mod -> Discord (see watch.py)
         from . import watch
         return sys.exit(watch.main(a.args))
+    if a.cmd == "watch-community":  # scheduled: new mod.io comments on the user's mods -> Discord (see community.py)
+        from . import community
+        return sys.exit(community.main(a.args))
     if a.cmd == "refresh":
         force = None if not a.args else (a.args[0] if a.args[0] == "all" else [a.args[0]])
         index.refresh(force=force, log=log)
