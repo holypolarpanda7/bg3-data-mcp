@@ -319,7 +319,7 @@ class Store:
                                p + [like(guid), limit]).fetchall()
         return rows
 
-    def search_effects(self, text, active, limit=30):
+    def search_effects(self, text, active, limit=30, users=True):
         """MultiEffectInfos whose own name or any component effect name contains `text`."""
         w, p = self._where(active)
         # every word must appear, in any order ("necrotic beam" matches ..._Necrotic_..._Beam_...)
@@ -337,10 +337,9 @@ class Store:
             for uuid, name, source in self.db.execute(f"SELECT uuid, name, source FROM mei WHERE {w} AND ({cond})",
                                                       p + [f"%{c}%" for c in chunk]):
                 hits.setdefault(uuid, (name, source, "component"))
-            if len(hits) >= limit * 4:
+            if len(hits) >= limit * 4 and users:
                 break
         out = []
         for uuid, (name, source, why) in list(hits.items())[: limit]:
-            users = self.effect_users(uuid, active, limit=5)
-            out.append((uuid, name, source, why, users))
+            out.append((uuid, name, source, why, self.effect_users(uuid, active, limit=5) if users else []))
         return out

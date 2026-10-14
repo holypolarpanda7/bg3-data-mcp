@@ -7,7 +7,7 @@ Steps, stopping at the first that fails:
   clean    the mod's git tree has no changes (the result belongs to a commit)
   static   every .lsx/.xml under Mods/ and Public/ parses; no XML comments in Localization (they crash the Toolkit)
   regen    the layer's `regen` commands (layers.json) change nothing (generated files are current)
-  lint     bg3_lint_stats / bg3_lint_progressions / bg3_lint_rules / bg3_lint_container_tests are clean
+  lint     bg3_lint_stats / bg3_lint_progressions / bg3_lint_rules / bg3_lint_container_tests / bg3_lint_effects are clean
   ingame   deploy + restart, then the builds the commit needs (see below), each stopping at its first failure
 Result: <cache>/gate/<layer>.json (per-build pass records), a report <cache>/gate/<layer>-<sha>.md, and with --post a GitHub
 commit status "bg3data/gate" on the commit (posted later with `post` if the commit wasn't pushed yet).
@@ -221,6 +221,11 @@ class Footprints:
 
 # ---------------------------------------------------------------- change detection
 
+# presentation-only stats fields: effects, sounds and spell animations don't change what a build checks (2026-10-12:
+# 171 effect fields on 70 spells would otherwise have owed every build)
+VISUAL_FIELD = re.compile(r'^data "(\w*Effect\w*|\w*Sound\w*|SpellAnimation\w*|DualWieldingSpellAnimation|Icon)" ')
+
+
 def _stats_entries(text):
     out, cur, buf = {}, None, []
     for line in (text or "").splitlines():
@@ -229,7 +234,7 @@ def _stats_entries(text):
             if cur:
                 out[cur] = "\n".join(buf)
             cur, buf = m.group(1), []
-        elif cur and line.strip() and not line.strip().startswith("//"):
+        elif cur and line.strip() and not line.strip().startswith("//") and not VISUAL_FIELD.match(line.strip()):
             buf.append(" ".join(line.split()))
     if cur:
         out[cur] = "\n".join(buf)
@@ -286,6 +291,8 @@ def changes(path, a, b="HEAD"):
         low = f.lower()
         if parts[0] == "Mods" and len(parts) > 2 and parts[2] == "Localization":
             ch["ignored"].append(f)
+        elif parts[0] == "Public" and len(parts) > 2 and (parts[2] in ("MultiEffectInfos", "Assets") or parts[2] == "Content"):
+            ch["ignored"].append(f"{f} (visual)")   # effects, effect banks, textures: no build checks them
         elif base == "meta.lsx" and _strip_version(_show(path, a, f)) == _strip_version(_show(path, b, f)):
             ch["ignored"].append(f"{f} (version stamp)")    # a release's Version64 bump owes no builds
         elif parts[0] == "Mods" and (len(parts) > 2 and parts[2] == "ScriptExtender" or base == "meta.lsx"):
@@ -390,7 +397,7 @@ def step_regen(m):
 
 
 def step_lint(store, active, layer):
-    from . import lint, rulescheck, testing
+    from . import fx, lint, rulescheck, testing
     out = []
     # the rules lint checks class/subclass levels against the books' class tables; a layer without its own class progression
     # (feats, backgrounds, a subclass tweak) sets "rules": false in layers.json (2026-10-07: Bigby, Bladesinger)
@@ -398,7 +405,8 @@ def step_lint(store, active, layer):
     for name, fn in (("stats", lambda: lint.lint_stats(store, active, layer)),
                      ("progressions", lambda: testing.lint_progressions(store, active, layer)),
                      ("rules", (lambda: rulescheck.lint_rules(store, active, layer)) if rules else None),
-                     ("container tests", lambda: testing.lint_container_tests(store, active, layer))):
+                     ("container tests", lambda: testing.lint_container_tests(store, active, layer)),
+                     ("effects", lambda: fx.lint(store, layer, active))):
         if fn is None:
             continue
         r = fn()
@@ -527,6 +535,9 @@ def _run(layer, which="affected", ingame=True, post=False, log=print, start=None
         owing = len(todo)
         return finish(False if owing else True, f"static/regen/lint clean; {owing} build(s) not run (--no-ingame)" if owing else "clean, no builds owed")
     if todo:
+        from . import vortex   # the dev profile first: switching it rewrites modsettings.lsx, which isolate then trims
+        for line in vortex.fit_dev_profile(layer):
+            log(line)
         for line in deploy.isolate(layer, standalone=standalone) + deploy.isolate_saves(layer, {b for b, _, _ in todo}):
             log(line)
         r = testing.restart(layer, True)

@@ -65,6 +65,9 @@ def game_cfg():
     g["game_exe"] = platform.to_native(g["game_exe"]) if g.get("game_exe") else platform.game_exe(install)
     g.setdefault("app_id", platform.STEAM_APP_ID)
     g.setdefault("launch_args", ["--skip-launcher", "-continueGame"])
+    g.setdefault("test_layer", "apotheosis")   # the layer whose Vortex dev profile a plain restart (no deploy) puts the game on
+    g.setdefault("require_dev_profile", True)  # no launch unless Vortex is on the dev profile (vortex.dev_profile), fitted
+    g.setdefault("test_leader", "Tavizard")   # the harness's characters are led by this name (the user's own campaigns aren't)
     ld = platform.larian_dir(cfg)
     g["savegames"] = platform.to_native(g["savegames"]) if g.get("savegames") else \
         os.path.join(ld or "", "PlayerProfiles", g.get("profile", "Public"), "Savegames", "Story")
@@ -391,8 +394,26 @@ def level_check(store, active, st=None):
             warns += 1
             lines.append(f"  WARN resource {rname}[{rlvl}] max {mx:g}, expected {total:g}" + (f"-{hi:g}" if hi != total else "")
                          + f" ({base}" + (f" {why}" if why else "") + ")")
+    # PHB 2024: one Hit Point Die per class level, of the class's size. The data check above can't settle this one when the dice
+    # come from conditional boosts (a range), and identical boosts from one passive counted once in game (Wizard 14 had 13 d6,
+    # 2026-10-13) - so check the rule itself. ">=": extra pools of the same size (Sangromancer's Full-Blooded d12) are fine.
+    need = {}
+    for c in classes:
+        die = HIT_DIE.get(c["class"])
+        if die:
+            need[die] = need.get(die, 0) + c["level"]
+    for die, n in sorted(need.items()):
+        got = (st["resources"].get(f"HitPointDice{die:02d}") or {}).get("0")
+        mx = got[1] if got else 0
+        ok = mx >= n
+        fails += not ok
+        lines.append(f"  {'PASS' if ok else 'FAIL'} Hit Point Dice d{die}: max {mx:g}, the class levels need {n} (PHB 2024: one per level)")
     lines.insert(0, f"LEVEL CHECK: {'ALL PASS' if not fails else f'{fails} FAIL'}" + (f", {warns} warning(s)" if warns else ""))
     return "\n".join(lines)
+
+
+HIT_DIE = {"Barbarian": 12, "Fighter": 10, "Paladin": 10, "Ranger": 10, "Bard": 8, "Cleric": 8, "Druid": 8, "Monk": 8, "Rogue": 8,
+           "Warlock": 8, "Sorcerer": 6, "Wizard": 6}   # PHB 2024 (the twelve base classes; dnd55e's own classes carry their own tables)
 
 
 # Multiclass spellcaster table (PHB): caster level -> slots of levels 1..9. The engine adds these to a multiclassed caster, through
@@ -549,6 +570,11 @@ def validate(store, active, c):
     for who in [c.get("caster")] + [cs.get("by") for cs in c.get("casts", [])]:
         if who and who not in aliases:
             errs.append(f"caster `{who}` isn't host or a spawn alias")
+    if c.get("rest") is not None:
+        if c["rest"] != "short":
+            errs.append(f"rest = {c['rest']!r}: only \"short\" is supported (a long rest is the camp flow)")
+        if any(sp.get("faction", "hostile") == "hostile" for sp in c.get("spawn", [])):
+            errs.append("rest = short with a hostile spawn: the game won't rest in combat")
     if c.get("console") and not c.get("expect_log"):
         errs.append("console case needs `expect_log` (the log line that means PASS)")
     if c.get("spell") and not store.resolve(c["spell"], active):
@@ -972,6 +998,11 @@ Osi.LeaveCombat(h) return true""")
                 for st_ in c.get("clear_between", []):  # e.g. PRONE, so every cast can land it again
                     lua(f"local g = {tgt} if Osi.HasActiveStatus(g, {se._lua_string(st_)}) == 1 then Osi.RemoveStatus(g, {se._lua_string(st_)}) end return true")
                 lua(f"BG3T.cast({who}, {se._lua_string(c['spell'])}, {tgt}, {rolled}); return true")
+    if c.get("rest"):  # rest = "short": a real short rest through the HUD (OnShortRest passives, e.g. Red Renewal)
+        ok_, why_ = gameui.short_rest()
+        notes.append(f"rest short: {why_}")
+        if not ok_:
+            return {"ok": False, "error": f"rest = short failed: {why_}", "notes": notes}
     if c.get("end_turns"):  # end the host's turn N times through the HUD (turn-order features, enemy turns)
         pass  # gameui is imported at the top of stage()
         need = int(c.get("ai_samples", 0)) if mode == "ai" else 0
@@ -1677,6 +1708,54 @@ def passive_delta(store, active, before, after, tables, L, char_level, races, ex
     return bad
 
 
+def _newest_harness_folder(title):
+    """The newest harness save folder (<test_leader>-<id>__<title>) with exactly this title, by file time (save fixes keep it)."""
+    _, g = game_cfg()
+    root, leader = g["savegames"], g["test_leader"]
+    best = None
+    for d in os.listdir(root):
+        if d.startswith(leader + "-") and d.split("__", 1)[-1].lower() == title.lower():
+            lsv = [f for f in os.listdir(os.path.join(root, d)) if f.endswith(".lsv")]
+            if lsv:
+                t = os.path.getmtime(os.path.join(root, d, lsv[0]))
+                if not best or t > best[0]:
+                    best = (t, d)
+    return best[1] if best else None
+
+
+def load_harness_save(title, log=None):
+    """gameui.load_save for a harness save, newest of its title - with its mod list made current first. A save made before a mod
+    update raises a Mod Verification box with a version section, which the box gate rightly refuses (every 2026-10-06 checkpoint
+    after the dnd55e update, 2026-10-13); syncing a HARNESS save's mod list is safe but needs the game closed, so: close, sync,
+    relaunch into it through the guarded restart. Returns (seconds, host level) or (None, reason)."""
+    from . import gameui, saves, sources
+    log = log if log is not None else []
+    folder = _newest_harness_folder(title)
+    if not folder:
+        return None, f"no harness save titled {title!r}"
+    # a save made before a mod update raises a box with a version section; the box gate accepts it for a harness save (safety.
+    # HARNESS_SECTIONS, 2026-10-13), so load it directly. Only if that fails does the old close / sync / relaunch run.
+    res = gameui.load_save(name=title, newest=True)
+    if res[0] is not None:
+        return res
+    cfg = sources.load_config()
+    try:
+        plan = saves.fix_mods(cfg, folder, (), True, False)
+    except Exception as e:  # noqa: BLE001
+        plan = f"couldn't read its mod list ({e})"
+    serious = [l for l in plan.splitlines()[1:] if re.search(r": (Folder|Version64) ", l)]
+    if not serious:
+        return res
+    log.append(f"{title}: mod list out of date - closing the game to sync it:\n    " + "\n    ".join(plan.splitlines()[1:-1]))
+    _restart(None, launch=False)
+    log.append("    " + saves.fix_mods(cfg, folder, (), True, True).splitlines()[-1])
+    out = restart(None, True, 480, title)
+    lv = gameui.host_level()
+    if lv is None or f"main menu: loaded {title!r}" not in out:
+        return None, "relaunch after the sync didn't load it:\n" + out
+    return 0.0, lv
+
+
 def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_level=None, progress=None):
     """Level the host through a build's plan with the automatic level-up driver - its subclass and the spells its tests need -
     validating every level (level +1, subclass, wanted spells, level_check) and running that level's automated tests. Starts at
@@ -1695,12 +1774,15 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     parent = find_build(layer, b["from"]) if b.get("from") else None
     cl = gameui.class_levels() or {}
     resumed = None
+    notes_ = []                         # save loads (a stale save synced, a checkpoint that didn't load) - head the build's report
     if start_level:
         for k in sorted((k for k in range(max(lo, 1), start_level) if is_checkpoint(k)), reverse=True):
             if lv == k and cl == {b["class"]: k}:
                 resumed = f"host already at checkpoint level {k}"
                 break
-            tt, info = gameui.load_save(name=checkpoint_name(build_id, k))
+            tt, info = load_harness_save(checkpoint_name(build_id, k), notes_)
+            if tt is None:
+                notes_.append(f"checkpoint {checkpoint_name(build_id, k)!r} not loaded: {info}")
             if tt is not None:
                 lv, cl = info, gameui.class_levels() or {}
                 if lv != k or cl.get(b["class"]) != k:
@@ -1713,9 +1795,9 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
         pass
     elif parent and parent.get("save_as") and (lv != lo - 1 or cl != {b["class"]: lo - 1}):
         # not this build's character: load its start save by name (made with bg3_new_character)
-        t, info = gameui.load_save(name=parent["save_as"])
+        t, info = load_harness_save(parent["save_as"], notes_)
         if t is None:
-            return f"host is {cl} level {lv}; couldn't load the start save {parent['save_as']!r}: {info}"
+            return "\n".join(notes_ + [f"host is {cl} level {lv}; couldn't load the start save {parent['save_as']!r}: {info}"])
         lv, cl = info, gameui.class_levels() or {}
         if lv != lo - 1 or cl != {b["class"]: lo - 1}:  # a wrong save once passed as "level 20 -> 20" (2026-10-05)
             return f"loaded the start save {parent['save_as']!r} but the host is {cl} level {lv}, not {b['class']} {lo - 1}"
@@ -1725,6 +1807,7 @@ def run_build(store, active, layer, build_id, to_level=None, wait=4.0, start_lev
     for c in assign_cases(load_cases(layer), load_builds(layer)).get(build_id, []):
         cases_by_level.setdefault(c.get("level"), []).append(c)
     out = _Log(progress)
+    out.extend(notes_)               # extend, not +=: list.__iadd__ skips _Log.append (the live progress log)
     out.append(f"build {build_id}: level {lv} -> {hi}" + (f" ({resumed})" if resumed else ""))
     t_all = time.time()
     st_prev = None
@@ -1994,6 +2077,27 @@ def lint_progressions(store, active, layer):
         nodes = list(latest.values())
         if len(nodes) > 1 and any(x[0] == layer for x in nodes) and sum(grants_choice(x) for x in nodes) > 1:
             dup.append((k, nodes))
+    # a node with the same UUID as a lower layer's REPLACES it: whatever the lower node granted and this one doesn't list is gone
+    # (Apotheosis' Barbarian/Cleric 12 overrides dropped dnd55e's Hit Point Die, 2026-10-13)
+    lower, dropped = {}, []
+    for r in rows:
+        if r[0] != layer and r[4]:
+            lower[r[4]] = r
+    for r in mine:
+        b = lower.get(r[4])
+        if not b:
+            continue
+        a_new, a_old = json.loads(r[5]), json.loads(b[5])
+        for k in ("Boosts", "PassivesAdded", "PassivesRemoved", "Selectors"):
+            new_items = [x for x in (a_new.get(k) or "").split(";") if x]
+            lost = [x for x in (a_old.get(k) or "").split(";") if x and x not in new_items]
+            if lost:
+                dropped.append(f"  {r[1]} L{r[2]} {k}: drops {b[0]}'s {', '.join(lost)}")
+        if str(a_old.get("AllowImprovement", "")).lower() == "true" and str(a_new.get("AllowImprovement", "")).lower() != "true":
+            dropped.append(f"  {r[1]} L{r[2]}: drops {b[0]}'s AllowImprovement (feat)")
+    if dropped:
+        out.append(f"OVERRIDES that drop the lower layer's grants ({len(dropped)}) - an override replaces the whole node; list them again:")
+        out += dropped
     # ActionResource boosts on resources nobody defines do nothing (Apotheosis had RageCharge / Indomitable_Charge /
     # ActionSurge for months: found by a resource audit 2026-10-03)
     known = {n for (n,) in store.db.execute(f"SELECT name FROM staticdata WHERE kind LIKE 'ActionResource%' AND {w}", p)}
@@ -2606,7 +2710,7 @@ def kill_game(graceful=True):
     return killed
 
 
-def _unstick_menu(log, relaunched, menu_only=False):
+def _unstick_menu(log, relaunched, menu_only=False, load_title=None):
     """The game is up but no save is loaded: dismiss the splash, continue from the main menu, and get out of the
     no-mods safe mode (clean quit + relaunch, once) that follows a killed or hung load."""
     from . import deploy, gameui, sources as src
@@ -2655,6 +2759,11 @@ def _unstick_menu(log, relaunched, menu_only=False):
             return "relaunch" if gameui.quit_game(g["processes"], _tasklist) else None
         if menu_only:                      # a new game (bg3data.newgame) starts from the menu with every mod loaded
             return "menu"
+        if load_title:   # never Continue into a save that isn't the harness's (see continue_guard)
+            took, lv = gameui.load_save(name=load_title, from_menu=True, newest=True)
+            log.append(f"main menu: loaded {load_title!r} ({took}s, host level {lv})" if took else f"main menu: loading {load_title!r} failed: {lv}")
+            # a failed guarded load is final: retrying re-opens the Load screen every few seconds for nothing (19 times, 2026-10-12)
+            return "continue" if took else "load_failed"
         gameui.main_menu_command("ContinueGameCommand")
         log.append("main menu: pressed Continue")
         return "continue"
@@ -2664,6 +2773,35 @@ def _unstick_menu(log, relaunched, menu_only=False):
         msg = f"message box {(info or {}).get('uuid')}: {' | '.join(what)[:300] or '(no text read)'}"
         log.append(("dismissed " if closed else "left open (needs your answer: %s actions) " % (info or {}).get("actions")) + msg)
     return None
+
+
+def continue_guard(want=None):
+    """(newest save folder, its leader, title to load from the main menu or None). -continueGame loads the game's NEWEST save
+    (SaveTime, not file time) - on 2026-10-12 that was the user's own Honour Mode campaign (leader Gregor, 280 mods), which a
+    restart then tried to load. Unless the newest save is led by the harness character (`game.test_leader`), or no particular
+    save is wanted, the restart loads a harness save by title through the main menu instead: `want` (a title or part of one),
+    else the newest harness save."""
+    from . import saves
+    cfg, g = game_cfg()
+    order = saves.game_order(cfg, limit=60)
+    if not order:
+        return None, None, None
+    leader = g["test_leader"]
+    title = lambda folder: folder.split("__", 1)[-1]
+    if want:
+        hits = [d for d, _p, _t, who in order if who == leader and want.lower() in title(d).lower()]
+        exact = [d for d in hits if title(d).lower() == want.lower()]
+        if not hits:   # an older harness save (a build's start save) is past the newest 60: match the folder names instead -
+            # harness folders are "<leader>-<id>__<title>"; the Load screen selection verifies the save itself (gameui.select_save)
+            names = [d for d in os.listdir(g["savegames"]) if d.startswith(leader + "-") and "__" in d]
+            hits = [d for d in names if want.lower() in title(d).lower()]
+            exact = [d for d in hits if title(d).lower() == want.lower()]
+        pick = (exact or hits)[:1]
+        return order[0][0], order[0][3], title(pick[0]) if pick else None
+    if order[0][3] == leader:
+        return order[0][0], leader, None
+    first = next((d for d, _p, _t, who in order if who == leader), None)
+    return order[0][0], order[0][3], title(first) if first else None
 
 
 def newest_save():
@@ -2728,18 +2866,18 @@ def missing_dependencies():
     return out
 
 
-def restart(deploy_layer=None, launch=True, timeout=300):
+def restart(deploy_layer=None, launch=True, timeout=300, save=None):
     # one restart at a time: a second one (e.g. after the first was backgrounded by the client) kills the game the
     # first is waiting on and both misreport (seen 2026-10-02)
     if not _RESTART_LOCK.acquire(blocking=False):
         return "another bg3_game_restart is still running in this server - wait for it (or stop it) first"
     try:
-        return _restart(deploy_layer, launch, timeout)
+        return _restart(deploy_layer, launch, timeout, save)
     finally:
         _RESTART_LOCK.release()
 
 
-def _restart(deploy_layer=None, launch=True, timeout=300):
+def _restart(deploy_layer=None, launch=True, timeout=300, save=None):
     log = []
     killed = kill_game()
     log.append("killed: " + (", ".join(killed) or "game wasn't running"))
@@ -2758,6 +2896,16 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
             log += [f"deploy: {l}" for l in lines]
             if not ok:
                 return "\n".join(log + ["deploy failed - not launching"])
+    if not deploy_layer and launch:
+        # a plain restart must still run on the dev profile: on 2026-10-12 one loaded the harness save with the play profile's
+        # cosmetic mods (the Mod Verification box listed 23 "new" mods). bg3_deploy fits it already; this covers restarts.
+        from . import vortex
+        _, g0 = game_cfg()
+        fit = vortex.fit_dev_profile(g0["test_layer"])
+        log += [f"profile: {l}" for l in fit]
+        if g0["require_dev_profile"] and fit and any("not applied" in l or "not switched" in l for l in fit):
+            return "\n".join(log + ["NOT LAUNCHED: Vortex isn't on the fitted dev profile (game.require_dev_profile) - start Vortex "
+                                     "or run bg3_vortex_profile"])
     if not launch:
         return "\n".join(log)
     absent = missing_dependencies()
@@ -2765,11 +2913,25 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
         return "\n".join(log + [f"NOT LAUNCHED: {mod} needs {dep}, which isn't installed in the user Mods folder - the "
                                  f"game would drop {mod} from the load order. Install/deploy it first (mod manager)."
                                  for mod, dep in absent])
-    ns = newest_save()
-    log.append(f"newest save (what -continueGame loads): {ns[0]} ({ns[1]})" if ns else "no saves found")
-    from . import platform
+    newest, leader, load_title = continue_guard(save)
+    log.append(f"newest save (what -continueGame would load): {newest} (led by {leader})" if newest else "no saves found")
+    if save and not load_title:
+        return "\n".join(log + [f"NOT LAUNCHED: no harness save (led by the test character) matches {save!r}"])
+    if load_title:
+        log.append(f"not continuing into it: loading the harness save {load_title!r} from the main menu instead"
+                   + (" (the newest save isn't a harness save - the user's own campaign)" if not save else ""))
+    from . import platform, safety
     _, g = game_cfg()
+    if load_title:
+        g["launch_args"] = [a for a in g["launch_args"] if a != "-continueGame"]
     args = " ".join(g["launch_args"])
+    try:   # the safety layer is not optional: no vault + baseline + watchdog, no launch (bg3data/safety.py)
+        n_files = safety.begin_session(log=lambda m: log.append(m))
+        safety.start_watchdog()
+        log.append(f"safety: {n_files} files of the user's own campaigns vaulted and baselined; watchdog armed")
+    except Exception as e:  # noqa: BLE001
+        safety.stop_watchdog()
+        return "\n".join(log + [f"NOT LAUNCHED: the safety layer failed ({type(e).__name__}: {e}) - the game doesn't start without it"])
     clear_mod_crash_check(g, log)
     if g["launcher"] == "steam" and g.get("steam_exe"):
         platform.launch_detached(g["steam_exe"], ["-applaunch", str(g["app_id"])] + g["launch_args"])
@@ -2790,7 +2952,9 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
         # Extender can't see the UI for most of the load (it shows up in SE only with the HUD, ~60 s in). A posted Enter
         # needs no visibility and closes it in about a second, so press it until the host exists - unless the main menu
         # is involved (a safe-mode relaunch, where Enter would press the focused button).
-        if time.time() - t0 > 25 and not any("main menu" in l for l in log):
+        # never in the guarded path (load_title): the main menu's focused button is Continue, which loads the newest save - the user's
+        # own campaign when it is the newest; this used to be avoided only by accident (a log line containing "main menu")
+        if time.time() - t0 > 25 and not load_title and not any("main menu" in l for l in log):
             if gameui.press_key():
                 enters += 1
         try:
@@ -2798,6 +2962,14 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
             if r["ok"] and r["result"]:
                 log.append(f"session loaded after {time.time() - t0:.0f}s: host in {r['result']}"
                            + (f" ({enters} Enter presses while loading)" if enters else ""))
+                who = safety.host_identity()
+                if who and who.strip().lower() in {d.lower() for d in safety.protected_leaders()}:
+                    kill_game(graceful=False)
+                    safety.stop_watchdog()
+                    return "\n".join(log + [f"ABORTED: the loaded host is {who!r}, the leader of a protected campaign. The game was killed "
+                                            "before it could save anything; the vaulted copy and the baseline say whether any file changed "
+                                            "(bg3_safety_check)."])
+                log.append(f"safety: host {who!r}" if who else "safety: host name unreadable (the watchdog keeps checking)")
                 _clear_dialogs(log, 3, timeout=3, t0=t0)  # anything still open, e.g. a box that needs a real answer
                 return "\n".join(log)
         except (RuntimeError, TimeoutError):
@@ -2817,7 +2989,10 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
                            f"({time.time() - t0:.0f}s after launch), a hung module/save load. Suspect the last deploy "
                            "(stats/.khn/Lua); bisect it. The game was left running - restart kills it.")
                 return "\n".join(log)
-            note = _unstick_menu(log, relaunched)
+            note = _unstick_menu(log, relaunched, load_title=load_title)
+            if note == "load_failed":
+                log.append("stopped: the harness save wasn't loaded and nothing was pressed; the game is at the main menu")
+                return "\n".join(log)
             if note in ("relaunch", "relaunch_killed"):
                 relaunched = note == "relaunch"  # after a kill, the safe-mode relaunch must still be allowed
                 clear_mod_crash_check(g, log)
@@ -2842,4 +3017,6 @@ def _restart(deploy_layer=None, launch=True, timeout=300):
         except RuntimeError:
             pass
     log.append(f"not loaded within {timeout}s.{state or ' Check the game window (main menu? crash?)'}")
+    if not any(p.lower() in _tasklist() for p in g["processes"]):
+        safety.stop_watchdog()           # nothing to watch: a watchdog left behind could act on the user's own game later
     return "\n".join(log)

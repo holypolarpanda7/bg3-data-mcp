@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 
 from . import platform
@@ -35,7 +36,7 @@ BASE_GLOBS = [
     "Public/*/Progressions/Progressions.lsx",
     "Public/*/Lists/*.lsf",
     "Public/*/Lists/*.lsx",
-    "Public/*/MultiEffectInfos/*.lsf",
+    "Public/*/MultiEffectInfos/*.lsf", "Public/*/MultiEffectInfos/*.lsx",   # the game ships both (2026-10-12: .lsx ones were missed)
     "Public/*/Content/Assets/Effects/*_merged.lsf",
     "Public/*/ClassDescriptions/*.lsf", "Public/*/ClassDescriptions/*.lsx",
     "Public/*/Progressions/ProgressionDescriptions.lsf", "Public/*/Progressions/ProgressionDescriptions.lsx",
@@ -110,7 +111,13 @@ def winpath(p):
 
 
 def divine(cfg, *args):
-    r = subprocess.run([cfg["divine"], "-g", "bg3", *args], capture_output=True, text=True)
+    for attempt in range(3):
+        r = subprocess.run([cfg["divine"], "-g", "bg3", *args], capture_output=True, text=True)
+        # WSL interop can fail to start a Windows process under load ("UtilAcceptVsock ... accept4 failed 110",
+        # seen 2026-10-12 while another Divine batch ran); that's transient, so retry
+        if "UtilAcceptVsock" not in (r.stdout + r.stderr) or attempt == 2:
+            break
+        time.sleep(2 + 3 * attempt)
     if r.returncode != 0 or "[FATAL]" in r.stdout or "[ERROR]" in r.stdout:
         raise RuntimeError(f"Divine {' '.join(args[:2])} failed: {r.stdout.strip()[-400:]} {r.stderr.strip()[-200:]}")
     return r.stdout
@@ -258,7 +265,9 @@ def mod_files(cfg, mod, kind):
         "lists": ["Public/*/Lists/*.lsx", "Public/*/Lists/*.lsf"],
         "loca": ["Mods/*/Localization/English/*.xml"],
         "mei": ["Public/*/MultiEffectInfos/*.lsx", "Public/*/MultiEffectInfos/*.lsf"],
-        "fxbanks": ["Public/*/Content/Assets/Effects/**/_merged.lsx", "Public/*/Content/Assets/Effects/**/_merged.lsf"],
+        # mods put effect banks anywhere under Content/ with any file name (Vlad's Grimoire: Effects/[PAK]_X/ContentMerge_*.lsf,
+        # Vlad's Codex: one <uuid>.lsf per resource); parse_effect_bank keeps only .lsfx resources, so other banks are harmless
+        "fxbanks": ["Public/*/Content/**/*.lsx", "Public/*/Content/**/*.lsf"],
         "staticdata": STATIC_PATTERNS_LSX + [x[:-1] + "f" for x in STATIC_PATTERNS_LSX],
         "khn": ["Mods/*/Scripts/thoth/helpers/*.khn"],
     }

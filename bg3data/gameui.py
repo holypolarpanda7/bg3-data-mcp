@@ -153,6 +153,56 @@ def _host_turns():
         return -1
 
 
+def short_rest(timeout=20.0):
+    """A real short rest through the HUD's own ShortRest command (the Rest button; verified 2026-10-12: OnShortRest passives fire,
+    dnd55e's ShortResting heals 1 and applies SHORT_RESTING). Osiris raises no ShortRested event for it, so success is read from
+    the host's SHORT_RESTING status appearing. Not in combat. Returns (ok, why)."""
+    # the party's short rests (party ActionResource ShortRestPoint, 2 per long rest, on a party entity - not the host): top it up so
+    # a case never fails because earlier rests used them (CanDoRest.ShortRestErrorFlags NotEnoughResources, 2026-10-12)
+    try:
+        se.eval_lua("""
+for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("ActionResources")) do
+  local res = e.ActionResources.Resources["a24ca5e2-01e1-48fd-a4c8-79b8817f0a18"]
+  if res and res[1] and res[1].Amount < res[1].MaxAmount then res[1].Amount = res[1].MaxAmount e:Replicate("ActionResources") end
+end
+return true""", "server", timeout=8)
+    except (RuntimeError, TimeoutError):
+        pass
+    timing.wait(0.5)
+    had, _ = _server_status("SHORT_RESTING")
+    if had:   # left over from an earlier rest: clear it so the new one is seen
+        try:
+            se.eval_lua("Osi.RemoveStatus(Osi.GetHostCharacter(), 'SHORT_RESTING') return true", "server", timeout=6)
+        except (RuntimeError, TimeoutError):
+            pass
+        timing.wait(0.5)
+    res, _ = _client(FIND + """
+local h = find(Ext.UI.GetRoot(), "HotBar", 0)
+if not h then return "no HotBar (no session?)" end
+local okc, can = pcall(function() return h.DataContext.ShortRest:CanExecute(nil) end)
+if not (okc and can) then return "ShortRest can't execute (in combat, or no short rests left)" end
+local ok = pcall(function() h.DataContext.ShortRest:Execute(nil) end)
+return ok and true or 'the ShortRest command failed'""")
+    if res is not True:
+        return False, str(res)
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        timing.wait(0.5)
+        on, _ = _server_status("SHORT_RESTING")
+        if on:
+            timing.wait(1.0)        # the other OnShortRest functors land in the same tick; give them a moment
+            return True, "short rest done"
+    return False, f"no SHORT_RESTING on the host within {timeout:.0f}s - the rest didn't happen"
+
+
+def _server_status(status):
+    try:
+        r = se.eval_lua(f"return Osi.HasActiveStatus(Osi.GetHostCharacter(), '{status}') == 1", "server", timeout=6)
+    except (RuntimeError, TimeoutError) as e:
+        return False, str(e)
+    return bool(r.get("ok") and r.get("result")), r
+
+
 def end_host_turn(timeout=90):
     """End the host's turn and wait until a NEW host turn starts (harness TurnStarted events). Summons share the
     summoner's turn, so "host turn inactive, then active" can happen before the click even lands; that read as a
@@ -560,6 +610,12 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
                 if not _row_pending(y):
                     log.append(f"row y={y}: scanned icons, {i + 1} click(s)")
                     return True
+            # no icons found by the scan - e.g. a Savant page of 2 dark-red Sangromancy icons (wiz-sangromancer L13, 2026-10-13):
+            # pick the first open spell of each incomplete spell selector through the view model, each click verified + undone
+            for h in _open_spell_picks():
+                _pick_wanted(y, None, {h: h}, log)   # None: the centred-row candidates (a Savant page)
+                if not _row_pending(y):
+                    return True
             log.append(f"row y={y}: page the driver can't read (no known picker, no icons found, not a feat page) - not handled")
             return False
         for name, pos, extra in FEATS:
@@ -751,6 +807,28 @@ for _, key in ipairs({"NotSubSpellSelectors", "SubSpellSelectors"}) do
 end
 return out""" % ("{" + ",".join('"%s"' % h for h in handles) + "}"))
     return [tuple(x) for x in res] if isinstance(res, list) else []
+
+
+def _open_spell_picks():
+    """Spell handles that would complete the open level-up's incomplete spell selectors: the first available, unselected items of
+    each (up to what it still needs)."""
+    res, _ = _client(FIND + _VM + """
+local out = {}
+local det = d.ClassProgressionDetails
+for _, key in ipairs({"NotSubSpellSelectors", "SubSpellSelectors"}) do
+  local col = det[key]
+  for i = 1, (col and #col or 0) do
+    local sel = col[i]
+    if not sel.IsComplete then
+      for j = 1, #sel.Available do
+        local it = sel.Available[j]
+        if not it.Selected and not it.NotAvailable then out[#out + 1] = tostring(it.Spell.Name) end
+      end
+    end
+  end
+end
+return out""")
+    return [str(h) for h in res] if isinstance(res, list) else []
 
 
 def _item_selected(key, i, j):
@@ -1308,12 +1386,13 @@ def _lua_str(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+MODVERIFY_CANCEL = (1070, 954)  # its Cancel button (full-res px, from the 2026-10-12 screenshots)
 MODVERIFY_START = (844, 954)   # the Mod Verification box's Start Game button (full-res px, verified 2026-10-07)
 
 
 def _save_only_lacks_mods(name):
-    """None when every mod the save `name` lists is in the load order unchanged (the box only reports new mods), else what's
-    wrong."""
+    """None when every mod the save `name` lists is still in the load order (the box reports new mods and changed versions, both fine
+    for a harness save), else what's wrong (a mod that is gone)."""
     from . import saves, sources
     import tempfile
     from . import platform as _plat
@@ -1324,14 +1403,13 @@ def _save_only_lacks_mods(name):
             rows = saves.compare(saves.mods_in(saves.read_meta(cfg, lsv, work)), saves.current_mods(cfg))
     except Exception as e:
         return f"couldn't read the save's mod list ({e})"
-    # the game itself ignores MD5 / PublishHandle drift (its box listed only the new mods while both differed, 2026-10-07):
-    # block on what it does warn about - a missing mod or a changed Folder / Version
+    # a harness save made before a mod update differs in Folder / Version64 / MD5: the game warns (the box's version section) and loads
+    # it with the current mods, which is what a test wants (2026-10-13: syncing every save after each dnd55e update cost ~1.5 min a
+    # save plus a relaunch). Only a mod that is no longer loaded at all (not a "differs") is serious.
     def serious(prob):
         if not prob:
             return False
-        if not prob.startswith("differs: "):
-            return True
-        return bool(set(prob[len("differs: "):].split(", ")) - {"MD5", "PublishHandle", "Name"})
+        return not prob.startswith("differs: ")
     from . import deploy
     isolated = {r["uuid"] for r in (deploy.isolation_state() or {}).get("removed", [])}   # mods a test run took out on purpose
     bad = [f"{(m.get('Name') or m.get('Folder'))}: {prob}" for m, prob, _ in rows
@@ -1339,19 +1417,256 @@ def _save_only_lacks_mods(name):
     return "; ".join(bad) if bad else None
 
 
-def load_save(index=0, timeout=90.0, name=None):
-    """Load a save from the pause menu of the RUNNING game (no restart): Esc until the pause menu (GameMenu) is confirmed open,
-    Load Game, the save, Load Game. `name`: the save's title (exact, else a unique substring, e.g. "Barbarian L1 Base"), selected
-    through the Load screen's view model; else row `index` (0 = first, the newest). Waits until a host exists in the new
-    session, clearing message boxes with Enter. Returns (seconds, host level), or (None, reason)."""
+def _auto_accept_mod_verify():
+    """Press Start Game on a box that classifies as a harness save's (default on; layers.json game.auto_accept_mod_verify: false turns it off)."""
+    from . import sources
+    return bool((sources.load_config().get("game") or {}).get("auto_accept_mod_verify", True))
+
+
+def _safety():
+    from . import safety
+    return safety
+
+
+def read_mod_verification():
+    """The Mod Verification box's contents from its view model (gui::DCModVerification.VerificationMods): "section:<ReflectionString>"
+    for each section header (e.g. "section:Extra" = New Mods Detected) followed by its mods' names; [] when unreadable (its
+    visual text isn't reachable: the old walk read only "[ForceUpdate]", 2026-10-12). The classifier treats an unreadable box as
+    unknown, which never presses Start Game."""
+    res, _ = _client(LOADUI + """
+local root = lgfind(Ext.UI.GetRoot(), "ModVerification", 0)
+if not root then return {} end
+local vm = root.DataContext.VerificationMods
+local out = {}
+for i = 1, #vm do
+  local m = vm[i]
+  local ty = "" pcall(function() ty = tostring(m.Type) end)
+  if ty == "ls.VMEnumData" then
+    local r = "?" pcall(function() r = tostring(m.ReflectionString) end)
+    out[#out + 1] = "section:" .. r
+  else
+    local n = "?" pcall(function() n = tostring(m.Name) end)
+    out[#out + 1] = n
+  end
+end
+return out""")
+    return [str(t) for t in res] if isinstance(res, list) else []
+
+
+# Lua helpers for the Load screen (read from the live UI 2026-10-12, game 4.1.1.7631656): LoadGame (gui::DCSavegames: ExistingSaves,
+# ExistingPlaythroughs, read-only SelectedPlaythrough) > PlaythroughHolder (ListBox of playthroughs: ProtagonistName, Saves,
+# IsSelected; each row has a header LSButton) > PlaythroughSavegames (an expanded playthrough's save list) > LoadSaveBtn.
+# Saves (ls.VMSavegame): Title, TimeString ("11/10/2026 03:21", day first), IsSelected, IsHonourMode, OwnerPlaythrough.
+LOADUI = """
+local function lgfind(n, name, d)
+  if not n or d > 26 then return nil end
+  local ok, nm = pcall(function() return n.Name end)
+  if ok and nm == name then return n end
+  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+  if okc and cnt then for i = 1, cnt do local r = lgfind(n:VisualChild(i), name, d + 1) if r then return r end end end
+end
+local function ptof(n, d, want, found)
+  if not n or d > 26 then return end
+  local ok, nm = pcall(function() return n.Name end)
+  if ok and nm == want then
+    local okp, pn = pcall(function() return tostring(n.DataContext.ProtagonistName) end)
+    if okp then found[#found + 1] = {node = n, leader = pn} end
+    return
+  end
+  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+  if okc and cnt then for i = 1, cnt do ptof(n:VisualChild(i), d + 1, want, found) end end
+end
+local function savelist(w, leader)
+  local found = {}
+  ptof(w, 0, "PlaythroughSavegames", found)
+  for _, f in ipairs(found) do if f.leader == leader then return f.node end end
+end
+local function header(w, leader)
+  local holder = lgfind(w, "PlaythroughHolder", 0)
+  local item
+  local function rows(n, d)
+    if item or not n or d > 10 then return end
+    local ty = "" pcall(function() ty = tostring(n.Type) end)
+    if ty == "ListBoxItem" then
+      local pn = "" pcall(function() pn = tostring(n.DataContext.ProtagonistName) end)
+      if pn == leader then item = n end
+      return
+    end
+    local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+    if okc and cnt then for i = 1, cnt do rows(n:VisualChild(i), d + 1) end end
+  end
+  rows(holder, 0)
+  local btn
+  local function cmd(n, d)
+    if btn or not n or d > 10 then return end
+    local ok, c = pcall(function() return n.Command end)
+    if ok and c ~= nil then btn = n return end
+    local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+    if okc and cnt then for i = 1, cnt do cmd(n:VisualChild(i), d + 1) end end
+  end
+  cmd(item, 0)
+  return btn
+end
+local function playthrough(d, leader)
+  for i = 1, #d.ExistingPlaythroughs do
+    local q = d.ExistingPlaythroughs[i]
+    if tostring(q.ProtagonistName) == leader then return q end
+  end
+end
+local function stamp(s)
+  local dd, mm, yy, hh, mi = string.match(tostring(s), "(%d+)/(%d+)/(%d+) (%d+):(%d+)")
+  if not dd then return 0 end
+  return (((tonumber(yy) * 100 + tonumber(mm)) * 100 + tonumber(dd)) * 100 + tonumber(hh)) * 100 + tonumber(mi)
+end
+local function bytitle(p, title, time)
+  for i = 1, #p.Saves do
+    local s = p.Saves[i]
+    if tostring(s.Title) == title and tostring(s.TimeString) == time then return s end
+  end
+end
+-- the gate before Load: exactly one save selected, it is the one asked for, it belongs to the harness leader, isn't an Honour
+-- save, and no other playthrough is selected (a selected playthrough with no save is what Load loads)
+local function verify(d, leader, title, time)
+  local sel = {}
+  for i = 1, #d.ExistingSaves do local s = d.ExistingSaves[i] if s.IsSelected then sel[#sel + 1] = s end end
+  if #sel ~= 1 then return {ok = false, why = #sel .. " saves are selected"} end
+  local s = sel[1]
+  local owner = "" pcall(function() owner = tostring(s.OwnerPlaythrough.ProtagonistName) end)
+  if tostring(s.Title) ~= title or tostring(s.TimeString) ~= time or owner ~= leader then
+    return {ok = false, why = "the selection is " .. tostring(s.Title) .. " @ " .. tostring(s.TimeString) .. " (" .. owner .. ")"}
+  end
+  if s.IsHonourMode then return {ok = false, why = "the selected save is an Honour Mode save"} end
+  for i = 1, #d.ExistingPlaythroughs do
+    local q = d.ExistingPlaythroughs[i]
+    if q.IsSelected and tostring(q.ProtagonistName) ~= leader then return {ok = false, why = "playthrough " .. tostring(q.ProtagonistName) .. " is selected"} end
+  end
+  local sp = d.SelectedPlaythrough
+  if sp ~= nil and tostring(sp.ProtagonistName) ~= leader then return {ok = false, why = "the selected playthrough is " .. tostring(sp.ProtagonistName)} end
+  return {ok = true}
+end
+"""
+
+
+def _harness_folder(leader, title, when):
+    """The save folder behind a Load-screen row: <leader>-<id>__<title> whose .lsv time shows as the row's TimeString ("11/10/2026
+    03:21", day first; matched the game's rows 2026-10-12). None unless exactly one matches."""
+    import datetime
+    from . import saves, sources
+    root = saves.save_root(sources.load_config())
+    hits = []
+    for d in os.listdir(root):
+        if not (d.startswith(leader + "-") and d.endswith("__" + title)):
+            continue
+        lsv = [f for f in os.listdir(os.path.join(root, d)) if f.endswith(".lsv")]
+        if lsv:
+            t = datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(root, d, lsv[0])))
+            if f"{t.day}/{t.month}/{t.year} {t:%H:%M}" == when:
+                hits.append(d)
+    return hits[0] if len(hits) == 1 else None
+
+
+def select_save(name=None, index=0, newest=False, leader=None, tries=3):
+    """Select a HARNESS save in the open Load screen and verify it (see LOADUI). name: the title (exact, else a unique substring);
+    newest: several match - take the newest; no name: the index-th newest harness save. Only the harness leader's playthrough
+    (game.test_leader) is searched, and a leader that is protected (the user's own campaign) is refused. Presses nothing but the
+    playthrough's header and the save row. Returns {ok, title, time, leader} or {ok: False, why}."""
+    safety = _safety()
+    leader = leader or safety._paths()[1]
+    if leader in (safety.protected_leaders() or []):
+        return {"ok": False, "why": f"the harness leader {leader!r} is a protected campaign's leader - refusing"}
+    pick, _ = _client(LOADUI + """
+local w = lgfind(Ext.UI.GetRoot(), "LoadGame", 0)
+if not w then return {why = "the Load dialog isn't open"} end
+local p = playthrough(w.DataContext, %s)
+if not p then return {why = "no playthrough led by " .. %s .. " in the Load screen"} end
+local want, idx, newest = %s, %d, %s
+local exact, part, all = {}, {}, {}
+for i = 1, #p.Saves do
+  local s = p.Saves[i]
+  local t = tostring(s.Title)
+  local row = {title = t, time = tostring(s.TimeString), stamp = stamp(s.TimeString), honour = s.IsHonourMode and true or false}
+  all[#all + 1] = row
+  if want ~= "" then
+    if string.lower(t) == string.lower(want) then exact[#exact + 1] = row
+    elseif string.find(string.lower(t), string.lower(want), 1, true) then part[#part + 1] = row end
+  end
+end
+local hits = want == "" and all or (#exact > 0 and exact or part)
+table.sort(hits, function(a, b) return a.stamp > b.stamp end)
+if want == "" then
+  if idx + 1 > #hits then return {why = "the harness playthrough has only " .. #hits .. " saves"} end
+  hits = {hits[idx + 1]}
+elseif newest and #hits > 1 then hits = {hits[1]} end
+if #hits ~= 1 then
+  local names = {}
+  for i = 1, math.min(#hits, 8) do names[#names + 1] = hits[i].title .. " @ " .. hits[i].time end
+  return {why = #hits .. " harness saves match " .. want .. (#names > 0 and (": " .. table.concat(names, ", ")) or "")}
+end
+return {title = hits[1].title, time = hits[1].time, honour = hits[1].honour}""" % (
+        _lua_str(leader), _lua_str(leader), _lua_str(name or ""), int(index), "true" if newest else "false"))
+    if not isinstance(pick, dict) or not pick.get("title"):
+        return {"ok": False, "why": (pick or {}).get("why") if isinstance(pick, dict) else "the Load screen didn't answer"}
+    if pick.get("honour"):
+        return {"ok": False, "why": f"{pick['title']!r} is an Honour Mode save - refusing"}
+    args = (_lua_str(leader), _lua_str(pick["title"]), _lua_str(pick["time"]))
+    why = "not verified"
+    for _ in range(tries):
+        step, _ = _client(LOADUI + """
+local w = lgfind(Ext.UI.GetRoot(), "LoadGame", 0)
+if not w then return {why = "the Load dialog closed"} end
+local d = w.DataContext
+local leader, title, time = %s, %s, %s
+local list = savelist(w, leader)
+if not list then
+  -- collapsed: its header button expands it (and selects the playthrough); it never loads anything
+  local b = header(w, leader)
+  if not b then return {why = "the " .. leader .. " playthrough's header isn't in view"} end
+  local ok = pcall(function() b.Command:Execute(b.DataContext) end)
+  return {expanded = ok, why = ok and "" or "its header command failed"}
+end
+local s = bytitle(playthrough(d, leader), title, time)
+if not s then return {why = "the save left the list"} end
+local ok = pcall(function() list:SetProperty("SelectedItem", s) end)
+return {selected = ok, why = ok and "" or "the save list refused the selection"}""" % args)
+        if not isinstance(step, dict) or not (step.get("expanded") or step.get("selected")):
+            return {"ok": False, "why": (step or {}).get("why") if isinstance(step, dict) else "the Load screen didn't answer"}
+        timing.wait(1.0)                # the view model follows the list a frame or more later
+        if step.get("expanded"):
+            continue
+        v, _ = _client(LOADUI + """
+local w = lgfind(Ext.UI.GetRoot(), "LoadGame", 0)
+if not w then return {ok = false, why = "the Load dialog closed"} end
+return verify(w.DataContext, %s, %s, %s)""" % args)
+        if isinstance(v, dict) and v.get("ok"):
+            return {"ok": True, "title": pick["title"], "time": pick["time"], "leader": leader,
+                    "folder": _harness_folder(leader, pick["title"], pick["time"])}
+        why = (v or {}).get("why") if isinstance(v, dict) else "no answer"
+    return {"ok": False, "why": f"couldn't verify the selection of {pick['title']!r} ({pick['time']}): {why} - nothing was pressed"}
+
+
+def load_save(index=0, timeout=90.0, name=None, from_menu=False, newest=False, dry_run=False):
+    """Load a HARNESS save (the game.test_leader playthrough, "Tavizard") in the running game: open the Load screen (pause menu,
+    or from_menu: the main menu's OpenLoadGameDialog command), select the save with select_save() and verify the selection, then
+    press Load Game through its command. Waits until a host exists in the new session. Returns (seconds, host level), or
+    (None, reason). Saves of any other playthrough (the user's campaigns) can't be loaded through this.
+    name: the save's title (exact, else a unique substring, e.g. "Barbarian L1 Base"); without one, the index-th newest
+    harness save. newest: several saves share the title (every build run makes its own "wiz-evoker L20"): take the newest.
+    dry_run: select and verify, and leave the dialog open without pressing Load (proves the selection; screenshot it)."""
     t0 = time.time()
     # the HUD's own OpenLoadGameDialog command: no Esc / pause-menu clicks (2026-10-06: Esc stopped reaching the game after a
     # level-up session and every load failed with "the pause menu didn't open")
-    res, _ = _client(FIND + """
+    # already open (a previous attempt left it up): sending the open command again can toggle it shut
+    already, _ = _client(FIND + 'local w = find(Ext.UI.GetRoot(), "LoadGame", 0) return w ~= nil and #w.DataContext.ExistingSaves or 0')
+    if isinstance(already, (int, float)) and already > 0:
+        res = False
+    elif from_menu:
+        res = main_menu_command("OpenLoadGameDialog")
+    else:
+        res, _ = _client(FIND + """
 local h = find(Ext.UI.GetRoot(), "HotBar", 0)
 local ok = h and pcall(function() h.DataContext.OpenLoadGameDialog:Execute(nil) end)
 return ok and true or false""")
-    opened = False
+    opened = isinstance(already, (int, float)) and already > 0
     if res is True:
         for _ in range(30):
             timing.wait(0.2)
@@ -1359,74 +1674,66 @@ return ok and true or false""")
             if isinstance(n, (int, float)) and n > 0:
                 opened = True
                 break
+    if not opened and from_menu:
+        return None, "the main menu's Load Game dialog didn't open (nothing was clicked)"
     if not opened:
         if not _pause_menu():
             return None, "the pause menu didn't open (nothing was clicked)"
         _rclick(960, 568)             # Load Game
         timing.wait(3.0)               # the list fills in after a spinner
-    if name:
-        # select it in the Load screen's view model (gui::DCSavegames.SelectedSave via SetProperty): the list shows ~22 rows, so
-        # a row click missed any older save once checkpoints pushed it down and the NEWEST save loaded instead (2026-10-05)
-        res, _ = _client(FIND + """
-local d = find(Ext.UI.GetRoot(), "LoadGame", 0).DataContext
-local want, exact, part = string.lower(%s), {}, {}
-local saves = d.ExistingSaves
-for i = 1, #saves do
-  local t = string.lower(tostring(saves[i].Title))
-  if t == want then exact[#exact + 1] = saves[i] elseif string.find(t, want, 1, true) then part[#part + 1] = saves[i] end
-end
-local hits = #exact > 0 and exact or part
-if #hits ~= 1 then
-  local names = {}
-  for _, s in ipairs(hits) do names[#names + 1] = tostring(s.Title) end
-  return {n = #hits, names = names}
-end
-d:SetProperty("SelectedSave", hits[1])
--- the Load Game button's own command: a click loads the row the LIST has selected, which the view model property doesn't move
--- (2026-10-06: a save in another part of the list never loaded, and the newest save's running session passed as loaded)
-local function f(n, dd)
-  if dd > 12 then return nil end
-  local ok, nm = pcall(function() return n.Name end)
-  if ok and nm == "LoadSaveBtn" then return n end
-  local okc, cnt = pcall(function() return n.VisualChildrenCount end)
-  if okc and cnt then for i = 1, cnt do local r = f(n:VisualChild(i), dd + 1) if r then return r end end end
-end
-local b = f(find(Ext.UI.GetRoot(), "LoadGame", 0), 0)
-local ok = b and pcall(function() b.Command:Execute(d.SelectedSave) end)
-return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true or false}""" % _lua_str(name))
-        if not isinstance(res, dict) or res.get("n") != 1:
-            send_key(0x01, hold_ms=60)
-            return None, f"{(res or {}).get('n', '?')} saves match {name!r}: {', '.join((res or {}).get('names') or [])}"
-        if not res.get("executed"):
-            _rclick(1068, 1005)       # Load Game button (fallback)
-    else:
-        _rclick(320, 210 + 34 * index)
-        timing.wait(0.4)
-        _rclick(1068, 1005)           # Load Game button
-    # the running session has to go away first: until it does, a host still answers (the old one). No Enter before that - a Mod
-    # Verification box (the save's mod versions differ from the load order) takes Enter as Start Game with its Downgrade ticked
-    gone, accepted = False, False
-    while time.time() - t0 < 40:
-        timing.wait(1.0)
-        if host_level() is None:
-            gone = True
-            break
-        # a Mod Verification box that only lists NEW mods (the save predates a mod now in the load order - every test layer's
-        # first run, 2026-10-07): Start Game is safe. A missing or changed mod stays a failure (fix it with bg3_save_fix_mods).
-        if name and not accepted and "ModVerification" in (screen() or []):
-            why = _save_only_lacks_mods(name)
-            if why is not None:
-                return None, f"Mod Verification box: {why} - fix the save with bg3_save_fix_mods (nothing was clicked)"
-            _rclick(*MODVERIFY_START)
-            accepted = True
-    if not gone:
-        shown = screen() or []
-        return None, (f"the load didn't start - the old session is still running (screen: {', '.join(shown)}); a Mod Verification "
-                      "box means the save's mod list differs from the load order - fix it with bg3_save_fix_mods")
+    # Pick the save in the Load screen and prove it is picked BEFORE anything is pressed (2026-10-12, read from the live UI):
+    # the screen groups saves by playthrough (leader), the Load Game button has no CommandParameter, and when it opens the
+    # selected thing is the newest PLAYTHROUGH (the user's Honour campaign "Gregor"), with no save selected - pressing Load
+    # then loads that playthrough. DCSavegames.SelectedPlaythrough is read-only and has no SelectedSave; what works is the
+    # UI's own path: the harness playthrough's header button (expands it), then SelectedItem on its save list
+    # (PlaythroughSavegames). The view model then shows exactly one save IsSelected and no playthrough selected.
+    sel = select_save(name=name, index=index, newest=newest)
+    if not sel.get("ok"):
+        send_key(0x01, hold_ms=60)    # close the dialog: nothing was pressed
+        return None, sel.get("why") or "the save couldn't be selected - nothing was pressed"
+    if dry_run:
+        return None, (f"dry run: selected {sel['title']!r} ({sel['time']}, {sel['leader']}, folder {sel.get('folder')}) and verified "
+                      "it; Load was not pressed")
+    res, _ = _client(LOADUI + """
+local w = lgfind(Ext.UI.GetRoot(), "LoadGame", 0)
+if not w then return {pressed = false, why = "the Load dialog closed"} end
+local v = verify(w.DataContext, %s, %s, %s)
+if not v.ok then return {pressed = false, why = v.why} end
+local b = lgfind(w, "LoadSaveBtn", 0)
+if not b then return {pressed = false, why = "no Load Game button"} end
+local okc, can = pcall(function() return b.Command:CanExecute(nil) end)
+if not (okc and can) then return {pressed = false, why = "the Load Game button can't execute"} end
+local ok = pcall(function() b.Command:Execute(nil) end)
+return {pressed = ok, why = ok and "" or "the Load Game command failed"}""" % (_lua_str(sel["leader"]), _lua_str(sel["title"]), _lua_str(sel["time"])))
+    if not isinstance(res, dict) or not res.get("pressed"):
+        send_key(0x01, hold_ms=60)
+        return None, f"Load Game not pressed: {(res or {}).get('why') or 'no answer from the game'}"
+    name = sel.get("folder") or sel["title"]     # the exact folder for the mod-list check (several saves share a title)
+    # Wait for the new session. From the pause menu the old session has to go away first (until then a host still answers - the
+    # old one). No blind Enter anywhere: a Mod Verification box takes Enter as Start Game (2026-10-12: from the main menu there is
+    # no old session, so the box check used to be skipped and Enter was pressed every 1.5 s at it). Message boxes are cleared with
+    # dismiss_dialog (acknowledge-only boxes, e.g. [ForceUpdate]); a Mod Verification box goes through _modverify_gate.
+    old_session, accepted = not from_menu, False
     while time.time() - t0 < timeout:
-        send_key(0x1C, hold_ms=60)    # the [ForceUpdate] box appears as the save starts loading
         timing.wait(1.5)
+        shown = screen() or []
+        if "ModVerification" in shown:
+            if not accepted:
+                why = _modverify_gate(name)
+                if why:
+                    return None, why
+                accepted = True
+            continue
+        if "Dialog_box" in shown:
+            dismiss_dialog()
+            continue
         lv = host_level()
+        if old_session:
+            if lv is None:
+                old_session = False
+            elif time.time() - t0 > 40:
+                return None, (f"the load didn't start - the old session is still running (screen: {', '.join(shown)})")
+            continue
         if lv is not None:
             # the [ForceUpdate] box can still come up after the host exists, and it blocks the console: clear it
             for _ in range(6):
@@ -1435,7 +1742,27 @@ return {n = 1, selected = tostring(d.SelectedSave.Title), executed = ok and true
                     break
                 dismiss_dialog()
             return round(time.time() - t0, 1), lv
-    return None, f"no host after {timeout:.0f}s"
+    return None, f"no host after {timeout:.0f}s (screen: {', '.join(screen() or [])})"
+
+
+def _modverify_gate(name):
+    """A Mod Verification box is up after a harness save's Load: None once Start Game was pressed, else why not (and the box was
+    cancelled when it isn't a harness save's). Which save is the box for? It doesn't say, but its CONTENT does: a missing/disabled
+    section means a campaign made with other mods (the user's own, 2026-10-12) - never Start Game on it. Only new mods
+    (section Extra: the save predates a mod now in the load order) is safe; a changed or missing mod stays a failure (bg3_save_fix_mods)."""
+    texts = read_mod_verification()
+    kind, why_kind = _safety().classify_mod_verification(texts)
+    if kind != "harness":
+        _rclick(*MODVERIFY_CANCEL)
+        return (f"a Mod Verification box came up that is not a harness save's ({kind}: {why_kind}); it was cancelled and nothing "
+                "was started")
+    if not _auto_accept_mod_verify():
+        return "a harness Mod Verification box is up and game.auto_accept_mod_verify is off - nothing was clicked"
+    why = _save_only_lacks_mods(name)
+    if why is not None:
+        return f"Mod Verification box: {why} - fix the save with bg3_save_fix_mods (nothing was clicked)"
+    _rclick(*MODVERIFY_START)
+    return None
 
 
 def save_game(name, timeout=40.0):

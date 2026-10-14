@@ -32,7 +32,7 @@ MAX_OUTPUT = 24_000  # characters; keeps a single answer from flooding the calle
 # Hot reload: tool modules are re-imported when their source changes, so MCP code edits apply on the next call
 # without a client reconnect. Not reloaded: the stores and connections that hold live state (query, index,
 # sources, se) and this module itself - those still need a reconnect.
-HOT = ("format", "lint", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex", "vortex_order")
+HOT = ("format", "lint", "fx", "safety", "rulescheck", "icons", "iconkit", "drafting", "testing", "deploy", "groundtruth", "toolkit", "gameui", "parse", "saves", "deps", "vortex", "vortex_order")
 _mtimes = {}
 
 
@@ -365,19 +365,94 @@ def bg3_effect(guid: str, layers: list[str] | None = None) -> str:
 
 @mcp.tool()
 @guarded
-def bg3_search_effects(text: str, layers: list[str] | None = None, limit: int = 20) -> str:
+def bg3_search_effects(text: str, layers: list[str] | None = None, limit: int = 20, color: str | None = None) -> str:
     """Find effects by what they're called (e.g. 'Necrotic', 'Impact_BodyFX', 'Radiant_Beam'):
     MultiEffectInfos whose name, or any component effect's name, matches. Returns the GUID to put in a
-    stats *Effect field, what matched, and sample spells/statuses already using it."""
+    stats *Effect field, what matched, and sample spells/statuses already using it.
+    color: keep only effects whose dominant keyframe colour is this bucket (red, orange, yellow, green, cyan, blue,
+    purple, magenta, white = colour comes from the texture); needs bg3_fx_index. Each hit then shows its colour."""
     if not text or len(text.strip()) < 3:
         return "error: `text` needs at least 3 characters"
     _text(text)
     s = store()
-    rows = s.search_effects(text.strip(), s.active(layers), _limit(limit, 20, 100))
+    active = s.active(layers)
+    n = _limit(limit, 20, 100)
+    # with a colour: scan every name match without the (slow) users lookup, keep the colour hits, then look users up
+    rows = s.search_effects(text.strip(), active, 5000 if color else n, users=not color)
     out = []
+    if color:
+        from . import fx
+        fx._need_index(None)
     for uuid, name, source, why, users in rows:
-        out.append(f"{uuid}  {name}  [{source}, matched {why}]" + (("\n    used by: " + ", ".join(n for n, _ in users)) if users else ""))
+        tag = ""
+        if color:
+            e = s.effect(uuid, active)
+            c = fx.colour_of(s, e["effects"], active) if e else None
+            if c != color.strip().lower():
+                continue
+            tag = f", {c}"
+            users = s.effect_users(uuid, active, limit=5)
+        out.append(f"{uuid}  {name}  [{source}, matched {why}{tag}]" + (("\n    used by: " + ", ".join(n for n, _ in users)) if users else ""))
+        if len(out) >= n:
+            break
     return "\n".join(out) or "no matching effects"
+
+
+@mcp.tool()
+@guarded
+def bg3_fx_index(force: bool = False) -> str:
+    """Build the vanilla effect fingerprints (every .lsfx in the game: component IDs, colour/value hashes, dominant colour)
+    that bg3_fx_provenance, bg3_search_effects(color=...) and the effect colour lines use. About 6 minutes; only needed
+    again after a game patch (other tools say so)."""
+    from . import fx
+    return fx.build_index(force=force, log=_log)
+
+
+@mcp.tool()
+@guarded
+def bg3_fx_provenance(layer: str, effect: str | None = None, against: list[str] | None = None, limit: int = 60) -> str:
+    """Where a mod layer's effects (.lsfx) come from, traced through component IDs (they survive copying): identical
+    copy, recolour, recolour + edits, combined (parts of several vanilla effects), vanilla base + new parts, or new;
+    and whether they use non-vanilla materials/textures. `effect` (part of a file name) gives one effect's detail with a
+    diff against its vanilla source. `against`: other layers (e.g. ['vlads_grimoire']) - flags any component identical
+    to theirs and not to vanilla, to prove our effects derive only from vanilla."""
+    from . import fx
+    s = store()
+    return fx.provenance(s, layer, effect=effect, against=against, limit=_limit(limit, 60, 400))
+
+
+@mcp.tool()
+@guarded
+def bg3_fx_diff(a: str, b: str, layers: list[str] | None = None, limit: int = 60) -> str:
+    """Compare two effects component by component (effect resource GUID/name or MultiEffectInfo GUID/name; a
+    MultiEffectInfo's effects are paired by position). Float noise from re-saving is ignored; colours, timing and other
+    property changes are listed, plus added/removed components."""
+    from . import fx
+    s = store()
+    return fx.diff(s, a, b, s.active(layers), limit=_limit(limit, 60, 400))
+
+
+@mcp.tool()
+@guarded
+def bg3_fx_build(layer: str, apply: bool = False) -> str:
+    """Recolour build: new effects derived from vanilla ones, per <mod>/Scripts/data/vfx.toml (palettes: blood,
+    crimson, necrotic, radiant, arcane, psychic, frost, fire, acid, shadow, or custom). Writes .lsfx files, one Content
+    bank and MultiEffectInfos into the mod with stable UUIDs, and Scripts/data/vfx_generated.json (name -> UUID for
+    stats *Effect fields). Lights get the colour and their template override; brightness and alpha are kept.
+    Dry run unless apply=True. Without a spec it prints the format."""
+    from . import fx
+    return fx.build(store(), layer, apply=apply, log=_log)
+
+
+@mcp.tool()
+@guarded
+def bg3_lint_effects(layer: str, layers: list[str] | None = None, limit: int = 100) -> str:
+    """Effect references of a mod layer: stats *Effect GUIDs (and its MultiEffectInfos' effects) that resolve nowhere,
+    or only in a layer loaded after it (a mod it doesn't depend on, e.g. a VFX library), and effect bank entries
+    whose .lsfx isn't in the mod."""
+    from . import fx
+    s = store()
+    return fx.lint(s, layer, s.active(layers), limit=_limit(limit, 100, 1000))
 
 
 # ---------------------------------------------------------------------------- Script Extender
@@ -597,12 +672,34 @@ def bg3_timing(action: str = "show", scale: float | None = None, settings: dict 
 
 @mcp.tool()
 @se_guarded
-def bg3_game_restart(deploy_layer: str | None = None, launch: bool = True) -> str:
+def bg3_game_restart(deploy_layer: str | None = None, launch: bool = True, save: str | None = None) -> str:
     """Kill the game, optionally deploy a mod layer (its layers.json `deploy` command, else the built-in
-    bg3_deploy), relaunch (Steam -applaunch, or the game exe for GOG/other installs; --skip-launcher
-    -continueGame loads the NEWEST save) and wait until a host character is loaded. Unsaved progress is lost."""
+    bg3_deploy), relaunch (Steam -applaunch, or the game exe for GOG/other installs) and wait until a host character is
+    loaded. Unsaved progress is lost. It Continues into the newest save ONLY if that is a harness save (led by the test
+    character, `game.test_leader`, default Tavizard); if the newest is anything else - the user's own campaign - it launches
+    to the main menu and loads the newest harness save instead. `save`: load that harness save by title (or part of one,
+    e.g. "wiz-evoker L20") from the main menu, whatever the newest save is."""
     from . import testing
-    return testing.restart(deploy_layer, launch)
+    return testing.restart(deploy_layer, launch, save=save)
+
+
+@mcp.tool()
+@se_guarded
+def bg3_safety_check(action: str = "status") -> str:
+    """Safe test sessions: the user's own campaigns (every save folder not led by the test character, e.g. the Honour Mode run)
+    are vaulted before any game launch, baselined, and watched while a harness game runs (a watchdog kills the game if a protected
+    file changes or a protected leader is the loaded host). action: "status" (default: protected folders, vaulted versions, the
+    baseline check, the watchdog, past alerts), "protect" (vault now), "verify" (is every protected file unchanged since the session
+    began?). Nothing here ever writes into the Savegames folder; restoring is a manual copy (the status shows how)."""
+    from . import safety
+    if action == "protect":
+        done = safety.protect()
+        return f"vaulted {len(done)} protected save folder(s)\n" + safety.status()
+    if action == "verify":
+        bad = safety.session_violations()
+        return ("all protected files are unchanged since the session began" if "baseline" in safety._state and not bad else
+                ("no session baseline yet (a game launch begins one)" if "baseline" not in safety._state else "VIOLATIONS:\n  " + "\n  ".join(bad)))
+    return safety.status()
 
 
 @mcp.tool()
@@ -686,7 +783,7 @@ def bg3_icon_import(paths: list[str], layer: str, names: list[str] | None = None
     """Take generated images (e.g. ComfyUI outputs) into a mod's icon sources (<mod root>/Icons/src) as
     <IconName>.png: the green screen the BG3 icon LoRAs paint on is unmixed (key="unmix": the soft glow over it survives
     as semi-transparent haze, like base-game icons; "green" = hard key; "none" to skip), centre-cropped,
-    512 px. Black-background art (SDXL + IP-Adapter): key="black", or tints=[fire|cold|lightning|thunder|acid|poison|
+    512 px. Black-background art (SDXL + IP-Adapter): key="black", or tints=[blood|scarlet|crimson|fire|cold|lightning|thunder|acid|poison|
     necrotic|radiant|psychic|force|healing|arcane|earth per path] to recolour to that damage type's base-game gradient;
     crop=True fills the tile. names: one icon name per path (default: the file name without ComfyUI's _00001_ counter).
     Then bg3_icon_build."""
@@ -1095,6 +1192,27 @@ def bg3_vortex_sort(apply: bool = False, remove: list[str] | None = None, deploy
 
 @mcp.tool()
 @guarded
+def bg3_vortex_profile(action: str = "list", layer: str | None = None) -> str:
+    """Vortex dev/test profile (needs the bridge). layers.json `vortex.dev_profile` (or a layer's `vortex_profile`) names a
+    Vortex profile used for mod development and testing; bg3_deploy and the gate switch to it automatically and fit it for the
+    layer. action "list": the profiles, active and dev marked. "plan" / "fit" (layer required): what fitting changes / do it -
+    create the profile if missing, switch to it, enable exactly the layer's dependencies + test_mods + `vortex.dev_keep` + non-pak
+    tool mods (Script Extender), disable every other pak mod (and a Vortex copy of the layer itself, which bg3_deploy deploys
+    loose), sort, deploy. "play": switch back to the profile that was active before and deploy it."""
+    from . import vortex
+    if action == "list":
+        return vortex.profiles_report(layer)
+    if action == "play":
+        return vortex.switch_back()
+    if action in ("plan", "fit"):
+        if not layer:
+            return f"{action} needs a layer"
+        return "\n".join(vortex.fit_dev_profile(layer, apply=action == "fit")) or "no dev profile configured: set vortex.dev_profile in layers.json"
+    return f"unknown action {action!r}; one of list, plan, fit, play"
+
+
+@mcp.tool()
+@guarded
 def bg3_vortex(action: str = "status", mod: str | None = None) -> str:
     """Drive Vortex through the bridge extension (bg3_vortex_bridge_install): action = status | deploy | purge |
     enable | disable | remove; mod = a Vortex mod id or a unique part of it (e.g. '4.11.23.0'). Acts on Vortex's
@@ -1223,15 +1341,15 @@ def bg3_levelup(action: str = "state", sheet_scan: int = 0x17, add_class: str | 
 
 @mcp.tool()
 @guarded
-def bg3_load_save(index: int = 0, name: str | None = None) -> str:
-    """Load a save in the RUNNING game from the pause menu (no restart, ~15-40 s): Esc, Load Game, the save in row `index` of the
-    list (0 = first row = the game's newest), Load Game; clears the [ForceUpdate] box and waits for a host. Clicks nothing unless
-    the pause menu is confirmed open. Returns the host level, so a wrong row shows up immediately. name: load by (part of) the save's
-    name instead - looked up in the game's list order (newest SaveTime first). Take a bg3_screenshot of
-    the Load list first if unsure which row is which."""
+def bg3_load_save(index: int = 0, name: str | None = None, newest: bool = True, dry_run: bool = False) -> str:
+    """Load a HARNESS save (the test leader's playthrough, "Tavizard") in the running game: opens the Load screen, selects the save
+    in that playthrough, verifies in the game's own view model that exactly that save is selected (no other playthrough, not an
+    Honour save) and only then presses Load Game. The user's own campaigns can't be loaded through this. name: (part of) the
+    title; without it, the index-th newest harness save (0 = newest). newest: several saves share the title - take the newest.
+    dry_run: select and verify only, leaving the dialog open (bg3_screenshot to see it). Returns the host level."""
     from . import gameui
-    t, info = gameui.load_save(index, name=name)
-    return f"loaded in {t}s, host level {info}" if t is not None else "not loaded: " + info
+    t, info = gameui.load_save(index, name=name, newest=newest, dry_run=dry_run)
+    return f"loaded in {t}s, host level {info}" if t is not None else (info if dry_run else "not loaded: " + info)
 
 
 @mcp.tool()
@@ -1426,8 +1544,9 @@ def bg3_modio(action: str = "status", layer: str | None = None, name: str | None
     """mod.io REST API for a layer's mod (layers.json "modio": {"mod": id}; keys in ~/.config/bg3-data-mcp/modio.env).
     Reads: status (profile, live file + scan, tags, dependencies, comment count), comments (newest first, `limit`).
     Writes - dry run unless apply=True: edit (name / summary / description), tags (add/remove names), deps (add/remove mod
-    ids), logo (image path), reply (comment_id + text), golive (visible=1). Uploads go through the Toolkit (bg3_toolkit_ui
-    publish): BG3 on mod.io takes files only from the developer's tool. Outward-facing: apply only when the user asked."""
+    ids), logo (image path), reply (comment_id + text), golive (visible=1), publish (everything after the Toolkit upload: find the
+    mod, wait for the scan, approve the file for Windows, make it live, apply <mod>/modio/profile.toml, make the mod public).
+    Uploads go through the Toolkit (bg3_toolkit_ui publish): BG3 on mod.io takes files only from the developer's tool. Outward-facing: apply only when the user asked."""
     from . import modio
     if not layer:
         return "needs a layer"
@@ -1447,6 +1566,8 @@ def bg3_modio(action: str = "status", layer: str | None = None, name: str | None
         return modio.reply(layer, comment_id, text, apply) if comment_id and text else "reply needs comment_id and text"
     if action == "golive":
         return modio.golive(layer, apply)
+    if action == "publish":
+        return modio.publish(layer, apply)
     return f"unknown action {action!r}"
 
 

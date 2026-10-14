@@ -22,10 +22,14 @@ Every write is a dry run unless apply=True (prints the request it would send).
 import json
 import mimetypes
 import os
+import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from . import sources
 import uuid
 
 ENV_FILE = os.path.expanduser("~/.config/bg3-data-mcp/modio.env")
@@ -225,6 +229,113 @@ def platforms(layer, file_id, approve=(), deny=(), apply=False):
     return _write(layer, "PUT", f"/files/{file_id}", {"platforms": list(approve)}, apply=apply, what=f"approve file {file_id} for {list(approve)}")
 
 
+# ---------------------------------------------------------------- publish (everything after the Toolkit upload, through the API)
+def _config_path():
+    return sources.CONFIG
+
+
+def discover(layer, apply=True):
+    """The mod.io mod id of a layer that has none in layers.json yet. A mod the Toolkit just created is Pending and absent from
+    /me/mods, but its file is in /me/files: the newest file whose name starts with the mod's folder name (lower case, as mod.io
+    names uploads) gives mod_id. With apply the id is written to layers.json ("modio": {"mod": id})."""
+    from . import deploy
+    try:
+        return entry(layer)["mod"]
+    except SystemExit:
+        pass
+    _, m, info, _ = deploy.mod_info(layer)
+    stem = re.sub(r"[^a-z0-9]+", "", info["Folder"].split("_", 1)[-1].lower())[:12] if info.get("Folder") else ""
+    want = re.sub(r"[^a-z0-9]+", "", (info.get("Name") or "").lower())
+    r = call("GET", "/me/files", GAME, auth=True, query={"game_id": GAME, "_limit": 100, "_sort": "-date_added"})
+    hit = [f for f in r.get("data", []) if re.sub(r"[^a-z0-9]+", "", f.get("filename", "").lower()).startswith(want[:14]) or stem and stem in re.sub(r"[^a-z0-9]+", "", f.get("filename", "").lower())]
+    if not hit:
+        raise SystemExit(f"no mod.io file for {layer!r} in /me/files - run the Toolkit publish first (bg3_toolkit_ui publish)")
+    mod_id = hit[0]["mod_id"]
+    if apply:
+        path = _config_path()
+        raw = json.load(open(path, encoding="utf-8"))
+        for mm in raw["mods"]:
+            if mm["name"] == layer:
+                mm["modio"] = {"game": GAME, "mod": mod_id}
+        json.dump(raw, open(path, "w", encoding="utf-8"), indent=2)
+    return mod_id
+
+
+def _profile(layer):
+    """<mod>/modio/profile.toml (name, summary, tags, deps = mod.io mod ids, logo; description.html beside it) - the mod.io page, kept in the repo."""
+    import tomllib
+    from . import deploy
+    _, m, _, _ = deploy.mod_info(layer)
+    d = os.path.join(m["path"], "modio")
+    pf = os.path.join(d, "profile.toml")
+    if not os.path.exists(pf):
+        return {}
+    prof = tomllib.load(open(pf, "rb"))
+    dh = os.path.join(d, "description.html")
+    if os.path.exists(dh):
+        prof["description"] = open(dh, encoding="utf-8").read()
+    if prof.get("logo"):
+        prof["logo"] = os.path.join(m["path"], prof["logo"])
+    return prof
+
+
+def publish(layer, apply=False, wait=240, golive=True):
+    """After the Toolkit upload (bg3_toolkit_ui publish): find the mod, wait for the scan, approve the newest file for Windows,
+    make it the live file, apply the page from <mod>/modio/profile.toml (name, summary, description.html, tags, deps, logo) and make the
+    mod public. Dry run unless apply (a dry run only reads). Every step is a plain API call - nothing here needs the browser."""
+    out = []
+    mod_id = discover(layer, apply=apply)
+    e = {"game": GAME, "mod": mod_id}
+    out.append(f"{layer}: mod.io mod {mod_id}")
+    fl = call("GET", f"/games/{GAME}/mods/{mod_id}/files", GAME, auth=True, platform=None, query={"_sort": "-date_added", "_limit": 1}).get("data", [])
+    if not fl:
+        raise SystemExit("the mod has no file yet - run the Toolkit publish first")
+    f = fl[0]
+    out.append(f"  newest file {f['id']} v{f.get('version')} {f.get('filename')} ({f.get('filesize')} bytes), scan {f.get('virus_status')}")
+    t0 = time.time()
+    while f.get("virus_status") in (0, None) and apply and time.time() - t0 < wait:
+        time.sleep(10)
+        f = call("GET", f"/games/{GAME}/mods/{mod_id}/files/{f['id']}", GAME, auth=True, platform=None)
+    if f.get("virus_status") not in (1,) and apply:
+        raise SystemExit(f"the file's scan isn't clean (virus_status {f.get('virus_status')}) - not going live")
+    plats = {p.get("platform"): p.get("status") for p in f.get("platforms") or []}
+    if plats.get("windows") != 1:
+        out.append(_write2(mod_id, "PUT", f"/files/{f['id']}", {"platforms": ["windows"]}, apply, "approve the file for Windows"))
+    out.append(_write2(mod_id, "PUT", "", {"modfile": f["id"]}, apply, "make it the live file"))
+    prof = _profile(layer)
+    data = {k: prof[k] for k in ("name", "summary", "description", "name_id") if prof.get(k)}
+    for k, mx in (("name", 50), ("summary", 250), ("description", 50000)):   # mod.io's limits: say so before sending
+        if len(data.get(k, "")) > mx:
+            raise SystemExit(f"modio/profile.toml: {k} is {len(data[k])} characters, mod.io allows {mx}")
+    if data:
+        out.append(_write2(mod_id, "PUT", "", data, apply, "apply the page profile"))
+    cur = {t["name"] for t in call("GET", f"/games/{GAME}/mods/{mod_id}", GAME, auth=True).get("tags", [])}
+    add = [t for t in prof.get("tags", []) if t not in cur]
+    if add:
+        out.append(_write2(mod_id, "POST", "/tags", {"tags": add}, apply, "add tags"))
+    have = {d.get("mod_id") for d in call("GET", f"/games/{GAME}/mods/{mod_id}/dependencies", GAME).get("data", [])}
+    add_deps = [d for d in prof.get("deps", []) if d not in have]
+    if add_deps:
+        out.append(_write2(mod_id, "POST", "/dependencies", {"dependencies": add_deps}, apply, "add dependencies"))
+    if prof.get("logo") and os.path.isfile(prof["logo"]):
+        out.append(_write2(mod_id, "POST", "/media", None, apply, "set the logo", files={"logo": prof["logo"]}))
+    if golive:
+        out.append(_write2(mod_id, "PUT", "", {"visible": 1}, apply, "make the mod public"))
+    return "\n".join(out)
+
+
+def _write2(mod_id, method, path, data, apply, what, files=None):
+    shown = {k: (v if len(str(v)) < 120 else str(v)[:120] + "...") for k, v in (data or {}).items()}
+    line = f"  {'APPLY' if apply else 'DRY RUN'}: {method} /mods/{mod_id}{path} {json.dumps(shown)} - {what}"
+    if not apply:
+        return line
+    try:
+        r = call(method, f"/games/{GAME}/mods/{mod_id}{path}", GAME, data=data, files=files)
+    except RuntimeError as ex:
+        return line + "\n    FAILED: " + str(ex)[:300]
+    return line + "\n    -> " + json.dumps({k: r.get(k) for k in ("id", "name", "visible", "status", "message") if isinstance(r, dict) and k in r})[:200]
+
+
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="python -m bg3data.modio")
@@ -259,6 +370,10 @@ def main(argv):
         p.add_argument("--add", nargs="*", default=[])
         p.add_argument("--remove", nargs="*", default=[])
         p.add_argument("--apply", action="store_true")
+    p = sub.add_parser("publish")
+    p.add_argument("layer")
+    p.add_argument("--no-golive", action="store_true")
+    p.add_argument("--apply", action="store_true")
     p = sub.add_parser("logo")
     p.add_argument("layer")
     p.add_argument("image")
@@ -286,6 +401,8 @@ def main(argv):
         print(tags(a.layer, a.add, a.remove, a.apply))
     elif a.cmd == "deps":
         print(deps(a.layer, a.add, a.remove, a.apply))
+    elif a.cmd == "publish":
+        print(publish(a.layer, a.apply, golive=not a.no_golive))
     elif a.cmd == "logo":
         print(logo(a.layer, a.image, a.apply))
     else:
