@@ -1544,8 +1544,9 @@ def bg3_modio(action: str = "status", layer: str | None = None, name: str | None
     """mod.io REST API for a layer's mod (layers.json "modio": {"mod": id}; keys in ~/.config/bg3-data-mcp/modio.env).
     Reads: status (profile, live file + scan, tags, dependencies, comment count), comments (newest first, `limit`).
     Writes - dry run unless apply=True: edit (name / summary / description), tags (add/remove names), deps (add/remove mod
-    ids), logo (image path), reply (comment_id + text), golive (visible=1). Uploads go through the Toolkit (bg3_toolkit_ui
-    publish): BG3 on mod.io takes files only from the developer's tool. Outward-facing: apply only when the user asked."""
+    ids), logo (image path), reply (comment_id + text), golive (visible=1), publish (everything after the Toolkit upload: find the
+    mod, wait for the scan, approve the file for Windows, make it live, apply <mod>/modio/profile.toml, make the mod public).
+    Uploads go through the Toolkit (bg3_toolkit_ui publish): BG3 on mod.io takes files only from the developer's tool. Outward-facing: apply only when the user asked."""
     from . import modio
     if not layer:
         return "needs a layer"
@@ -1565,6 +1566,8 @@ def bg3_modio(action: str = "status", layer: str | None = None, name: str | None
         return modio.reply(layer, comment_id, text, apply) if comment_id and text else "reply needs comment_id and text"
     if action == "golive":
         return modio.golive(layer, apply)
+    if action == "publish":
+        return modio.publish(layer, apply)
     return f"unknown action {action!r}"
 
 
