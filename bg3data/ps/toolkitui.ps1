@@ -39,6 +39,20 @@ function FindWindow($p, $title) {
     }
     return $null
 }
+function FindShallow($root, $pred, $maxDepth) {
+    # breadth-first over Children, never into lists/trees/grids: a Descendants search of a loaded editor never returns
+    $skip = @($CT::List, $CT::Tree, $CT::DataGrid, $CT::Table)
+    $q = New-Object System.Collections.Queue
+    $q.Enqueue(@($root, 0))
+    while ($q.Count -gt 0) {
+        $it = $q.Dequeue()
+        foreach ($c in $it[0].FindAll($S::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+            if (& $pred $c) { return $c }
+            if ($it[1] + 1 -lt $maxDepth -and $skip -notcontains $c.Current.ControlType) { $q.Enqueue(@($c, $it[1] + 1)) }
+        }
+    }
+    return $null
+}
 function Rect($el) { $r = $el.Current.BoundingRectangle; return @{ x = [int]$r.X; y = [int]$r.Y; w = [int]$r.Width; h = [int]$r.Height } }
 function ProjectRows($p) {
     $rb = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::RadioButton)
@@ -62,10 +76,16 @@ switch ($Cmd) {
         if (-not $p) { J @{ running = $false }; break }
         $main = (Tops $p) | Where-Object { $_.Current.Name -like "Glasses*" } | Select-Object -First 1
         if (-not $main) { $main = (Tops $p) | Select-Object -First 1 }
+        $title = $main.Current.Name
         $ps = FindWindow $p "Project Settings"
+        $lb = FindWindow $p "Browser"
+        # the picker only exists before a project is open; with one open, a Descendants search walks the whole editor
+        # (level browser, outliner - 2026-10-19: never returned at 11.8 GB), so the title decides
         $picker = $false
-        foreach ($t in (Tops $p)) { if ($t.FindFirst($S::Descendants, (New-Object System.Windows.Automation.PropertyCondition($A::AutomationIdProperty, "m_OpenButton")))) { $picker = $true } }
-        J @{ running = $true; pid = $p.Id; title = $main.Current.Name; picker = $picker; settings = $(if ($ps) { Rect $ps } else { $null }) }
+        if ($title -notmatch ' - .+ - ') {
+            foreach ($t in (Tops $p)) { if ($t.FindFirst($S::Descendants, (New-Object System.Windows.Automation.PropertyCondition($A::AutomationIdProperty, "m_OpenButton")))) { $picker = $true } }
+        }
+        J @{ running = $true; pid = $p.Id; title = $title; picker = $picker; settings = $(if ($ps) { Rect $ps } else { $null }); levels = $(if ($lb) { Rect $lb } else { $null }) }
     }
     "projects" {
         if (-not $p) { J @{ error = "the Toolkit isn't running" }; break }
@@ -87,7 +107,10 @@ switch ($Cmd) {
         if (-not $p) { J @{ error = "the Toolkit isn't running" }; break }
         $mi = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::MenuItem)
         $m = $null
-        foreach ($t in (Tops $p)) { foreach ($e in $t.FindAll($S::Descendants, $mi)) { if ($e.Current.Name -eq $Menu) { $m = $e; break } }; if ($m) { break } }
+        foreach ($t in (Tops $p)) {
+            $m = FindShallow $t { param($c) $c.Current.ControlType -eq $CT::MenuItem -and $c.Current.Name -eq $Menu } 6
+            if ($m) { break }
+        }
         if (-not $m) { J @{ error = "no menu $Menu" }; break }
         $m.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
         Start-Sleep -Milliseconds 700
@@ -111,7 +134,12 @@ switch ($Cmd) {
         J (Rect $w)
     }
     "click" {
-        if ($p) { [TkInput]::SetForegroundWindow($p.MainWindowHandle) | Out-Null; Start-Sleep -Milliseconds 150 }
+        # focus the window that owns the button (-Title, e.g. Project Settings): a click on an inactive window only
+        # activates it and is swallowed (2026-10-19: Publish after Explorer had taken the focus did nothing)
+        $h = [IntPtr]::Zero
+        if ($p -and $Title) { $w = FindWindow $p $Title; if ($w) { $h = [IntPtr]$w.Current.NativeWindowHandle } }
+        if ($h -eq [IntPtr]::Zero -and $p) { $h = $p.MainWindowHandle }
+        if ($h -ne [IntPtr]::Zero) { [TkInput]::SetForegroundWindow($h) | Out-Null; Start-Sleep -Milliseconds 300 }
         [TkInput]::SetCursorPos($X, $Y) | Out-Null; Start-Sleep -Milliseconds 120
         [TkInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60
         [TkInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
