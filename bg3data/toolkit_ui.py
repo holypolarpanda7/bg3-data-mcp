@@ -19,6 +19,7 @@ Publishing is outward-facing: it needs apply=True and a GREEN gate on the mod's 
 """
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -36,7 +37,11 @@ def _ps(cmd, timeout=120, **kw):
             "-File", platform.to_win(PS), "-Cmd", cmd]
     for k, v in kw.items():
         args += [f"-{k[0].upper()}{k[1:]}", str(v)]
-    r = platform.run_win(args, timeout=timeout, encoding="utf-8", errors="replace")
+    try:
+        r = platform.run_win(args, timeout=timeout, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        # a Toolkit that is busy (hashing the mod, 2026-10-19: 11.8 GB, UI Automation calls hang) never answers: fail, don't hang
+        return {"error": f"the UI helper '{cmd}' got no answer in {timeout}s - the Toolkit UI is busy or frozen"}
     out = (r.stdout or "").strip().splitlines()
     try:
         return json.loads(out[-1]) if out else {"error": (r.stderr or "no output").strip()[:300]}
@@ -52,12 +57,22 @@ def _shot_path(tag):
 
 def screenshot(tag="screen", window=None):
     p = _shot_path(tag)
-    r = _ps("shot", out=platform.to_win(p), title=window or "")
+    r = _ps("shot", timeout=40, out=platform.to_win(p), title=window or "")
     return p if r.get("ok") else None
 
 
 def state():
-    return _ps("state")
+    return _ps("state", timeout=30)
+
+
+def _glasses_stats():
+    """CPU seconds / memory of the Toolkit process from the OS (no UI Automation, so it works while the UI is frozen)."""
+    cmd = "$p=Get-Process Glasses -ErrorAction SilentlyContinue|Select-Object -First 1; if($p){'{0:N0}s CPU, {1:N0} MB, responding={2}' -f $p.CPU,($p.WorkingSet64/1MB),$p.Responding}else{'not running'}"
+    try:
+        r = platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-NoProfile", "-Command", cmd], timeout=20)
+        return (r.stdout or "").strip() or "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
 
 
 def _wait(pred, timeout, step=3.0):
@@ -161,7 +176,7 @@ def _gate_green(layer):
     return head, bool(r and r.get("ok")), (r or {}).get("desc", "not gated")
 
 
-def publish(layer, apply=False, timeout=900):
+def publish(layer, apply=False, timeout=300):
     """Project Settings -> Publish (mod.io). Dry run unless apply=True: opens the project and the settings, saves a screenshot
     of what would be published, and stops. With apply: needs a GREEN gate on HEAD, clicks Publish, and waits for the browser to
     open on mod.io (the Toolkit's own sign that the upload finished)."""
@@ -186,14 +201,17 @@ def publish(layer, apply=False, timeout=900):
     rect = open_settings()
     if "error" in rect:
         return rect
-    before = {w["name"] for w in _ps("windows").get("windows", [])}
+    before = {w["name"] for w in _ps("windows", timeout=25).get("windows", [])}
     x, y = _button(rect, "publish")
     _ps("click", x=x, y=y)
-    seen = _wait(lambda: [w["name"] for w in _ps("windows").get("windows", [])
+    seen = _wait(lambda: [w["name"] for w in _ps("windows", timeout=25).get("windows", [])
                           if w["name"] not in before and "mod.io" in w["name"].lower()], timeout, 5)
+    stats = _glasses_stats()
     after = screenshot("publish-after")
     if not seen:
-        return {"error": f"no mod.io browser window within {timeout}s - check the Toolkit's Message Log", "screenshot": after}
+        return {"error": f"no mod.io browser window within {timeout}s (Toolkit: {stats}) - check the Toolkit's Message Log; "
+                         "a frozen UI with high CPU/memory means it is still hashing the mod, otherwise Publish was never accepted",
+                "screenshot": after, "meta_changed": _meta_diff(layer)}
     return {"ok": True, "project": name, "browser": seen[0], "screenshot": after, "meta_changed": _meta_diff(layer),
             "next": "on mod.io: wait for the scan, fill the profile if new, then Go live"}
 
