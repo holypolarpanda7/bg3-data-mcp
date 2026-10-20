@@ -109,6 +109,7 @@ def open_project(layer, timeout=420):
     if st.get("error"):
         return st
     if f" - {name} - " in (st.get("title") or ""):
+        dismiss_level_browser()
         return {"ok": True, "project": name, "already": True}
     if not st.get("picker"):
         return {"error": f"another project is open ({st.get('title')}) - close the Toolkit first"}
@@ -116,10 +117,28 @@ def open_project(layer, timeout=420):
     if r.get("error"):
         return r
     st = _wait(lambda: (lambda s: s if f" - {name} - " in (s.get("title") or "") else None)(state()), timeout, 5)
-    return {"ok": True, "project": name} if st else {"error": f"{name} didn't finish opening in {timeout}s"}
+    if not st:
+        return {"error": f"{name} didn't finish opening in {timeout}s"}
+    time.sleep(3)                       # the level browser pops up just after the title changes
+    dismiss_level_browser()
+    return {"ok": True, "project": name}
+
+
+def dismiss_level_browser(timeout=15):
+    """Cancel the "Select your level" browser the Toolkit shows after a project opens: it sits over the editor and
+    Project Settings' Publish never reaches mod.io while it is up (2026-10-14 by hand, automated 2026-10-19)."""
+    st = state()
+    rect = st.get("levels")
+    if not rect:
+        return {"ok": True, "levels": False}
+    x, y = _button(rect, "cancel")      # same bottom-right layout as Project Settings: Cancel, then Select
+    _ps("click", x=x, y=y)
+    gone = _wait(lambda: not state().get("levels"), timeout, 1.5)
+    return {"ok": True, "levels": "dismissed"} if gone else {"error": "the level browser didn't close after Cancel"}
 
 
 def open_settings(timeout=30):
+    dismiss_level_browser()
     st = state()
     if st.get("settings"):
         return st["settings"]
@@ -152,10 +171,12 @@ def publish_local(layer, timeout=180):
     pak = os.path.join(mods_dir, folder + ".pak")
     before = os.path.getmtime(pak) if os.path.exists(pak) else 0
     x, y = _button(rect, "publish_local")
-    _ps("click", x=x, y=y)
+    _ps("click", x=x, y=y, title=SETTINGS)
     ok = _wait(lambda: os.path.exists(pak) and os.path.getmtime(pak) > before, timeout, 2)
-    time.sleep(2)
-    _ps("closeexplorer", location="Mods")   # the Toolkit opens Explorer on the Mods folder afterwards
+    # the Toolkit opens Explorer on the Mods folder a few seconds AFTER writing the pak; it lands over Project Settings'
+    # buttons and takes the focus, so wait for it and close it
+    if ok:
+        _wait(lambda: _ps("closeexplorer", timeout=20, location="Mods").get("closed"), 20, 1.5)
     shot = screenshot("publish-local", SETTINGS)
     if not ok:
         return {"error": f"no new {folder}.pak in {mods_dir} after {timeout}s", "screenshot": shot}
@@ -184,6 +205,15 @@ def publish(layer, apply=False, timeout=300):
     head, green, desc = _gate_green(layer)
     if apply and not green:
         return {"error": f"the gate isn't GREEN on {layer} HEAD {head[:10]} ({desc}) - not publishing"}
+    # meta.lsx ModuleInfo PublishHandle is the mod.io mod the Toolkit uploads to; 0 makes it create a NEW mod (2026-10-19:
+    # a revert of the Toolkit's meta.lsx rewrite reset it and v1.0.2 went to a duplicate page). It must match layers.json.
+    from . import deploy
+    _, m, info, _ = deploy.mod_info(layer)
+    want = str((m.get("modio") or {}).get("mod") or "")
+    have = info.get("PublishHandle", "0")
+    if apply and want and have != want:
+        return {"error": f"meta.lsx PublishHandle is {have}, but layers.json says the mod.io mod is {want} - the Toolkit would "
+                         f"upload to {'a NEW mod' if have in ('', '0') else 'mod ' + have}; set PublishHandle to {want} and commit it"}
     r = open_project(layer)
     if r.get("error"):
         return r
@@ -203,7 +233,7 @@ def publish(layer, apply=False, timeout=300):
         return rect
     before = {w["name"] for w in _ps("windows", timeout=25).get("windows", [])}
     x, y = _button(rect, "publish")
-    _ps("click", x=x, y=y)
+    _ps("click", x=x, y=y, title=SETTINGS)
     seen = _wait(lambda: [w["name"] for w in _ps("windows", timeout=25).get("windows", [])
                           if w["name"] not in before and "mod.io" in w["name"].lower()], timeout, 5)
     stats = _glasses_stats()
