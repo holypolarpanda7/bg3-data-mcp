@@ -82,7 +82,7 @@ switch ($Cmd) {
         # the picker only exists before a project is open; with one open, a Descendants search walks the whole editor
         # (level browser, outliner - 2026-10-19: never returned at 11.8 GB), so the title decides
         $picker = $false
-        if ($title -notmatch ' - .+ - ') {
+        if ($title -notmatch '^Glasses \S+ - \S') {   # no project: 'Glasses <ver> -  -  - (Public)'
             foreach ($t in (Tops $p)) { if ($t.FindFirst($S::Descendants, (New-Object System.Windows.Automation.PropertyCondition($A::AutomationIdProperty, "m_OpenButton")))) { $picker = $true } }
         }
         J @{ running = $true; pid = $p.Id; title = $title; picker = $picker; settings = $(if ($ps) { Rect $ps } else { $null }); levels = $(if ($lb) { Rect $lb } else { $null }) }
