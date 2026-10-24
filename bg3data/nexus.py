@@ -2,7 +2,8 @@
 
   python -m bg3data.nexus status LAYER                       the layer's Nexus mod and its files (ids, versions, categories)
   python -m bg3data.nexus upload LAYER ZIP --version V [--file-id ID] [--name N] [--changelog TEXT] [--keep-old] [--apply]
-                                                              a new version of the layer's main file (dry run without --apply)
+                                                              a new version of the layer's main file (dry run without --apply);
+                                                              the changelog defaults to the layer's CHANGELOG.md "## vV" section
 
 What the API can do: upload a file, add a version to an existing mod file (archiving the previous one), create a new file on an
 existing mod, changelog entries, per-file-version requirements on other Nexus files. What it can't: create a mod page or edit
@@ -15,6 +16,7 @@ Every call needs the key, reads included.
 """
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -105,6 +107,16 @@ def _upload(path, log):
     raise RuntimeError(f"upload {up['id']} never became available")
 
 
+def changelog_from_file(layer, version):
+    """The body of the "## vVERSION ..." section of the layer's CHANGELOG.md, or None."""
+    from . import testing
+    cl = os.path.join(testing.mod_entry(layer)["path"], "CHANGELOG.md")
+    if not os.path.exists(cl):
+        return None
+    sec = re.search(rf"^## v{re.escape(version)}\b[^\n]*\n(.*?)(?=\n## |\Z)", open(cl, encoding="utf-8").read(), re.S | re.M)
+    return sec.group(1).strip() or None if sec else None
+
+
 def upload(layer, zip_path, version, file_id=None, name=None, changelog=None, keep_old=False, apply=False, log=print):
     """A new version of the layer's main Nexus file. Dry run unless apply=True: it shows the mod, the file it would update and
     what it would send, and changes nothing."""
@@ -115,6 +127,7 @@ def upload(layer, zip_path, version, file_id=None, name=None, changelog=None, ke
     target = next((f for f in files if str(f.get("id")) == str(fid)), None)
     if not target:
         raise SystemExit(f"file {fid!r} isn't one of mod {nx['mod']}'s files - run `status {layer}` and set nexus.file")
+    changelog = changelog or changelog_from_file(layer, version)
     body = {"name": name or target.get("name") or os.path.basename(zip_path), "version": version, "file_category": "main",
             "archive_existing_file": not keep_old, "update_mod_version": True, "primary_mod_manager_download": True}
     log(f"{'UPLOAD' if apply else 'DRY RUN'}: {os.path.basename(zip_path)} ({os.path.getsize(zip_path)} bytes) -> mod {nx['mod']} "
@@ -123,6 +136,8 @@ def upload(layer, zip_path, version, file_id=None, name=None, changelog=None, ke
     log(f"  version request: {json.dumps(body)}")
     if changelog:
         log(f"  changelog {version}: {changelog[:200]}")
+    else:
+        log(f"  WARNING: no changelog - pass --changelog or add a '## v{version}' section to CHANGELOG.md")
     if not apply:
         return None
     uid = _upload(zip_path, log)
