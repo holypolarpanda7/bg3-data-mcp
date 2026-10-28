@@ -89,6 +89,9 @@ def handle(c):
         _call(c["tab"], "Input.dispatchKeyEvent", {"type": "rawKeyDown", **base, **({"text": "\r"} if k == "Enter" else {})})
         _call(c["tab"], "Input.dispatchKeyEvent", {"type": "keyUp", **base})
         return {"ok": True}
+    if op == "front":   # a hidden page (window behind the game) ignores clicks on headless-ui widgets (2026-10-28)
+        _call(c["tab"], "Page.bringToFront")
+        return {"ok": True}
     if op == "files":
         doc = _call(c["tab"], "DOM.getDocument", {"depth": 0})
         node = _call(c["tab"], "DOM.querySelector", {"nodeId": doc["root"]["nodeId"], "selector": c["selector"]})
