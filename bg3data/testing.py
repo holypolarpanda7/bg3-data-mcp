@@ -875,6 +875,8 @@ Osi.LeaveCombat(h) return true""")
             post.append(f"BG3T.toggleOff({_who(st_)}, {se._lua_string(st_['toggle_off'])})")
         if st_.get("toggle_on"):  # a toggled passive switched on for the case (after a tick: setup may add it), back at cleanup
             late.append((dict(st_, resource=f"toggle {st_['toggle_on']}"), f"return BG3T.toggleOn({_who(st_)}, {se._lua_string(st_['toggle_on'])})"))
+        if st_.get("lua"):  # server Lua run at setup (BG3T.host() etc.), e.g. a mod's test hook: { lua = "Mods.X.Y.SetUses(BG3T.host(), 1)" }
+            post.append(f"local ok_, err_ = pcall(function() {st_['lua']} end); if not ok_ then error('setup lua: ' .. tostring(err_)) end")
         if st_.get("dead"):  # e.g. a corpse for revive spells
             post.append(f"pcall(Osi.Die, {_who(st_)}, 0, 'NULL_00000000-0000-0000-0000-000000000000', 0, 1)")
     # a case that deliberately starts you at low HP mustn't trip the safety watch by itself

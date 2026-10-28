@@ -115,6 +115,17 @@ class Browser:
                       % (json.dumps(selector), nth))
         self.cmd(op="click", tab=self.tab, x=pos[0], y=pos[1])
 
+    def front(self):
+        """Bring the tab to the front: while the window is hidden (e.g. behind the game, visibilityState 'hidden'), clicks on the
+        Files tab's disclosure and menus do nothing (2026-10-28)."""
+        ps = ("Add-Type -Namespace W -Name U -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int c);"
+              "[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h);';"
+              "Get-Process msedge -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -match 'Nexus' } | "
+              "ForEach-Object { [W.U]::ShowWindow($_.MainWindowHandle, 9) | Out-Null; [W.U]::SetForegroundWindow($_.MainWindowHandle) | Out-Null }")
+        platform.run_win(["powershell.exe" if platform.IS_WSL else "powershell", "-NoProfile", "-Command", ps], timeout=30)
+        self.cmd(op="front", tab=self.tab)
+        time.sleep(1)
+
     def type_text(self, text):
         self.cmd(op="type", tab=self.tab, text=text)
 
@@ -384,10 +395,114 @@ def _apply_requirements(b, nx, req):
     return out
 
 
+# ---------------------------------------------------------------- file categories (keep_versions retention)
+_HIDE_SURVEY = """(() => { const l=[...document.querySelectorAll('legend')].find(x => /rate your experience/.test(x.innerText));
+  if (!l) return false; let p=l; for (let i=0;i<8 && p.parentElement && p.parentElement!==document.body;i++) p=p.parentElement;
+  p.style.display='none'; return true; })()"""
+
+
+def _press(b, js_find, key="Enter"):
+    """Focus the element `js_find` (a JS expression) and press a key on it. Keyboard input works while the window is hidden
+    behind the game, where trusted mouse clicks on the Files tab's headless-ui widgets do nothing (2026-10-28)."""
+    if not b.js("(() => { const e=%s; if (!e) return false; e.focus(); return true; })()" % js_find):
+        return False
+    b.key(key)
+    return True
+
+
+_PREV = "[...document.querySelectorAll('button')].find(x => (x.innerText||'').trim()==='Previous files')"
+CATEGORIES = ["Main", "Optional", "Miscellaneous", "Update", "Old", "Archived"]   # the File category list, in order
+
+
+def _files_rows(b):
+    """Expand 'Previous files' and tag every file row with data-apo-row; returns [(index, name, category, version)]."""
+    b.js(_HIDE_SURVEY)
+    for _ in range(4):
+        if b.js("(() => { const h=%s; return !h || h.getAttribute('aria-expanded') === 'true'; })()" % _PREV):
+            break
+        _press(b, _PREV)
+        time.sleep(2)
+    rows = b.js("""(() => [...document.querySelectorAll('tr')].map((tr,i) => { tr.setAttribute('data-apo-row', i);
+      return [i, ...[...tr.querySelectorAll('td')].map(td => td.innerText.replace(/\\s+/g,' ').trim())]; }).filter(r => r.length > 4))()""")
+    return [(r[0], r[1], r[2].replace(" Primary", "").strip(), r[3]) for r in rows or []]
+
+
+def set_file_category(layer, version, category, b=None):
+    """Move one file version to another category on the Files tab (Edit -> File category -> Save file): e.g. 'Old' to bring an
+    archived version back for download, 'Archived' to retire it. The v3 API can't do this (2026-10-28). Keyboard-driven."""
+    own = b is None
+    b = b or Browser()
+    b.ensure_tab()
+    try:
+        b.go_ready(edit_url(_nexus_entry(layer), "files"), "table")
+        time.sleep(3)
+        rows = _files_rows(b)
+        hit = [r for r in rows if r[3] == version]
+        if len(hit) != 1:
+            return f"{version}: {len(hit)} matching rows ({rows})"
+        idx, name, cat, _ = hit[0]
+        cur = cat.split()[0]
+        if cur == category:
+            return f"{version}: already {category}"
+        _press(b, f"document.querySelector('tr[data-apo-row=\"{idx}\"] button[aria-label=\"More actions\"]')")
+        time.sleep(1.2)
+        if not _press(b, "[...document.querySelectorAll('[role=menuitem]')].find(x => x.innerText.trim()==='Edit')"):
+            return f"{version}: the row menu didn't open"
+        time.sleep(2)
+        if not _press(b, "document.querySelector('[role=dialog] button[aria-label=\"File category\"]')", "ArrowDown"):   # ArrowDown opens the list (Enter does not)
+            return f"{version}: no edit dialog"
+        time.sleep(1)
+        shown = b.js("(() => { const a=[...document.querySelectorAll('[role=option]')].map(x => x.innerText.trim()); return a; })()") or CATEGORIES
+        if category not in shown:
+            return f"{version}: no category {category!r} offered ({shown})"
+        # the open list ignores arrow keys from CDP; its options take a plain DOM click
+        b.js("(() => { const o=[...document.querySelectorAll('[role=option]')].find(x => x.innerText.trim()===%s);"
+             " if (o) o.click(); return !!o; })()" % json.dumps(category))
+        time.sleep(1)
+        picked = b.js("(() => { const x=document.querySelector('[role=dialog] button[aria-label=\"File category\"]'); return x && x.innerText.trim(); })()")
+        if picked != category:
+            b.key("Escape")
+            return f"{version}: category picker shows {picked!r}, not {category!r} - nothing saved"
+        b.js(_HIDE_SURVEY)
+        save = "[...document.querySelectorAll('[role=dialog] button')].find(x => x.innerText.trim()==='Save file')"
+        b.js("(() => { const s=%s; if (s) s.click(); return !!s; })()" % save)   # Enter on it doesn't submit; a DOM click does
+        time.sleep(4)
+        now = {r[3]: r[2] for r in _files_rows(b)}
+        ok = (now.get(version) or "").startswith(category)
+        return f"{version}: {cat} -> {now.get(version)}" + ("" if ok else f" (NOT {category}; screenshot {b.shot('category-failed')})")
+    finally:
+        if own:
+            b.close()
+
+
+def apply_retention(layer, apply=False):
+    """Make the Files tab match layers.json nexus.keep_versions: the newest N versions downloadable (archived ones -> Old), older
+    ones Archived. Dry run unless apply."""
+    from . import nexus
+    nx = nexus.nexus_entry(layer)
+    keep = int(nx.get("keep_versions") or 1)
+    vers = nexus.versions(nx["file"])
+    plan = []
+    for i, x in enumerate(vers):
+        if i < keep and x.get("category") not in nexus.ACTIVE:
+            plan.append((x["version"], "Old"))
+        elif i >= keep and x.get("category") in nexus.ACTIVE:
+            plan.append((x["version"], "Archived"))
+    if not plan:
+        return f"{layer}: Nexus files already match keep_versions={keep}"
+    if not apply:
+        return "\n".join([f"{layer}: would set (keep_versions={keep}):"] + [f"  {v} -> {c}" for v, c in plan])
+    b = Browser()
+    try:
+        return "\n".join(set_file_category(layer, v, c, b) for v, c in plan)
+    finally:
+        b.close()
+
+
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="python -m bg3data.nexus_web")
-    ap.add_argument("cmd", choices=["open", "pull", "diff", "push"])
+    ap.add_argument("cmd", choices=["open", "pull", "diff", "push", "retention"])
     ap.add_argument("layer", nargs="?")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
@@ -397,6 +512,8 @@ def main(argv):
         print(json.dumps(pull(a.layer), indent=1, ensure_ascii=False))
     elif a.cmd == "diff":
         print(_show(diff(a.layer)))
+    elif a.cmd == "retention":
+        print(apply_retention(a.layer, a.apply))
     else:
         print(push(a.layer, a.apply))
 

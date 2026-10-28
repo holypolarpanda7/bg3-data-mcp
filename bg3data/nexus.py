@@ -13,8 +13,8 @@ Config: the API key from NEXUS_API_KEY or ~/.config/bg3-data-mcp/nexus.env (NEXU
 https://www.nexusmods.com/settings/api-keys). A layer names its page in layers.json:
   "nexus": {"game": "baldursgate3", "mod": 20246, "file": "<v3 mod-file id of the main file, from `status`>", "keep_versions": 4}
 keep_versions (default 1): how many of the newest versions stay downloadable. Above 1 an upload doesn't archive the previous
-version; the API can't change an older version's category, so `status` / `upload` list the versions to archive (or restore)
-on the website (Files tab) to match the policy.
+version; the API can't change an older version's category, so `upload` then applies the policy on the website (Files tab,
+signed-in Edge window: `python -m bg3data.nexus_web retention LAYER --apply`) and `status` lists what is still out of policy.
 Every call needs the key, reads included.
 """
 import json
@@ -182,6 +182,12 @@ def upload(layer, zip_path, version, file_id=None, name=None, changelog=None, ke
     if changelog:
         call("POST", f"/mods/{mod['id']}/changelogs", {"version": version, "changelog": changelog})
         log("  changelog added")
+    if int(nx.get("keep_versions") or 1) > 1:   # the website half: archive what fell out of the newest N (signed-in Edge window)
+        try:
+            from . import nexus_web
+            log("  " + nexus_web.apply_retention(layer, apply=True).replace("\n", "\n  "))
+        except Exception as e:   # signed out / no Edge window: say what's left to do
+            log(f"  retention on the website not applied ({e}); run: python -m bg3data.nexus_web retention {layer} --apply")
     for line in retention(nx):
         log(line)
     return ver
