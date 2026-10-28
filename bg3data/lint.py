@@ -167,6 +167,12 @@ def lint_stats(store, active, layer, limit=200):
             if len(kids) > 42 or len(cs) > 1900:  # 44 spells / ~2080 chars hung the game at LoadModule (2026-10-02)
                 add("SIZE", name, file, f"ContainerSpells has {len(kids)} spells / {len(cs)} chars: 44 / ~2080 hung the game "
                                         "at load (43 / 2030 loaded; shipped max 42 / ~1000) - split the container")
+        # any one field over 4 KB: a 4826-char StatsFunctors (PTA's Brutal Strike 13+17 in one passive) hung the save load at 93-94%
+        # in LoadModule; split into 1846 + 2428 it loaded (2026-10-28). The base game's longest field is 4052 chars.
+        for fld, v in f.items():
+            if isinstance(v, str) and len(v) > 4096:
+                add("SIZE", name, file, f"{fld} is {len(v)} chars: over 4096 hung the save load (a 4826-char StatsFunctors, "
+                                        "2026-10-28; the base game's longest is 4052) - split it across entries")
         # name/description handles with no text in any layer: blank names and tooltips in game (ten Apotheosis 13+ features pointed
         # at placeholder handles, e.g. hg5h6i7j8..., while their written text sat under other handles; 2026-10-04)
         for fld in ("DisplayName", "Description"):
@@ -247,6 +253,14 @@ def lint_stats(store, active, layer, limit=200):
         if not fl or fl.get("ContainerSpells", ("",))[0] or not fl.get("DisplayName", ("",))[0]:
             continue
         flags_, props_ = fl.get("SpellFlags", ("",))[0] or "", fl.get("SpellProperties", ("",))[0] or ""
+        # a container flag on a spell that is neither a container (ContainerSpells is empty, checked above) nor a container's
+        # child: the hotbar view model makes it IsContainer with 0 SpellVariants - an empty spell menu, uncastable. Verified in
+        # game 2026-10-28 (PTA #60 Spell Mastery Magic Missile; Holy Aura / Storm of Vengeance on the Spirit Guardians chassis
+        # with ContainerSpells blanked). Reaction spells (InterruptPrototype) carry the flag in the base game (Shout_Shield_Wizard).
+        if ("IsLinkedSpellContainer" in flags_ and not (fl.get("SpellContainerID", ("",))[0] or "")
+                and not (fl.get("InterruptPrototype", ("",))[0] or "")):
+            add("SPELL", name, file, "IsLinkedSpellContainer on a spell with no ContainerSpells and no SpellContainerID: the hotbar "
+                                     "shows an empty spell menu and it can't be cast - drop the flag (set SpellFlags without it)")
         # a spell slot spent from an area spell's functors is spent per creature hit (and per covered area with GROUND:) -
         # Bigby's rune spells took 3 slots for one Fog Cloud (found in game 2026-10-07); spend it OnCast or in UseCosts
         area = (fl.get("SpellType", ("",))[0] in ("Zone", "Cone", "Wall") or any((fl.get(k, ("",))[0] or "0") not in ("", "0")
