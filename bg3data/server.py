@@ -1192,13 +1192,15 @@ def bg3_vortex_sort(apply: bool = False, remove: list[str] | None = None, deploy
 
 @mcp.tool()
 @guarded
-def bg3_vortex_profile(action: str = "list", layer: str | None = None) -> str:
+def bg3_vortex_profile(action: str = "list", layer: str | None = None, profile: str | None = None) -> str:
     """Vortex dev/test profile (needs the bridge). layers.json `vortex.dev_profile` (or a layer's `vortex_profile`) names a
     Vortex profile used for mod development and testing; bg3_deploy and the gate switch to it automatically and fit it for the
     layer. action "list": the profiles, active and dev marked. "plan" / "fit" (layer required): what fitting changes / do it -
     create the profile if missing, switch to it, enable exactly the layer's dependencies + test_mods + `vortex.dev_keep` + non-pak
     tool mods (Script Extender), disable every other pak mod (and a Vortex copy of the layer itself, which bg3_deploy deploys
-    loose), sort, deploy. "play": switch back to the profile that was active before and deploy it."""
+    loose), sort, deploy (switching Vortex to BG3 first when it manages another game). "play": switch back to the profile that was
+    active before and deploy it. "remove" (profile = id): delete an EMPTY, inactive profile of any game (e.g. one created by
+    mistake); the bridge refuses a profile with enabled mods."""
     from . import vortex
     if action == "list":
         return vortex.profiles_report(layer)
@@ -1208,7 +1210,12 @@ def bg3_vortex_profile(action: str = "list", layer: str | None = None) -> str:
         if not layer:
             return f"{action} needs a layer"
         return "\n".join(vortex.fit_dev_profile(layer, apply=action == "fit")) or "no dev profile configured: set vortex.dev_profile in layers.json"
-    return f"unknown action {action!r}; one of list, plan, fit, play"
+    if action == "remove":
+        if not profile:
+            return "remove needs profile (the id the bridge lists)"
+        r = vortex.bridge_call("POST", "/profile-remove", {"profile": profile})
+        return f"remove failed: {r['error']}" if r.get("error") else f"removed {r.get('gameId')} profile '{r.get('name')}' ({r.get('removed')})"
+    return f"unknown action {action!r}; one of list, plan, fit, play, remove"
 
 
 @mcp.tool()

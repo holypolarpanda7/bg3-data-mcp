@@ -349,8 +349,13 @@ def fetch(store, layer, apply=False, wait_s=900, log=print):
     st = vortex.action("status")
     if st.get("error"):
         return f"Vortex bridge: {st['error']}"
-    mods = {m["id"]: m for m in st.get("mods") or []}
     out, todo = [], []
+    if st.get("gameId") != vortex.GAME_ID:   # its mod list would be another game's: every dependency would look unmanaged
+        out += vortex.fit_dev_profile(layer) or [f"  Vortex is managing {st.get('gameId')} - switch it to {vortex.GAME_ID}"]
+        st = vortex.action("status")
+        if st.get("gameId") != vortex.GAME_ID:
+            return "\n".join(out)
+    mods = {m["id"]: m for m in st.get("mods") or []}
     for d, dep_m, dep_info in dependencies(cfg, layer):
         if not dep_m or not dep_m["path"].lower().endswith(".pak"):
             continue

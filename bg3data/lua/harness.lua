@@ -473,6 +473,21 @@ function T.toggleOff(g, passive)
     return on
 end
 
+-- the opposite of toggleOff, for a toggled passive a case needs ON (e.g. one Brutal Strike option of a ToggleGroup). Returns true
+-- once it is on, nil while the passive isn't on the character yet (a passive added by the same setup appears a tick later)
+function T.toggleOn(g, passive)
+    g = uuid(g)
+    local on
+    pcall(function() for _, p in ipairs(Ext.Entity.Get(g).PassiveContainer.Passives) do
+        if p.Passive.PassiveId == passive then on = p.Passive.ToggledOn end end end)
+    if on == false then
+        Osi.TogglePassive(g, passive)
+        T.toggled[#T.toggled + 1] = { g, passive }
+        return true
+    end
+    return on
+end
+
 function T.cleanup()
     T.aiClear, T.seenRolls, T.aiLocks = {}, {}, {}
     local report = { spawns = 0, grants = 0, statuses = 0, passives = 0, cooldowns = T.clearCooldowns(T.host()) }

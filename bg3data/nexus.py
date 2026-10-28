@@ -11,7 +11,10 @@ its title, description, images or page requirements - those stay on the website.
 
 Config: the API key from NEXUS_API_KEY or ~/.config/bg3-data-mcp/nexus.env (NEXUS_API_KEY=...; create one at
 https://www.nexusmods.com/settings/api-keys). A layer names its page in layers.json:
-  "nexus": {"game": "baldursgate3", "mod": 20246, "file": "<v3 mod-file id of the main file, from `status`>"}
+  "nexus": {"game": "baldursgate3", "mod": 20246, "file": "<v3 mod-file id of the main file, from `status`>", "keep_versions": 4}
+keep_versions (default 1): how many of the newest versions stay downloadable. Above 1 an upload doesn't archive the previous
+version; the API can't change an older version's category, so `status` / `upload` list the versions to archive (or restore)
+on the website (Files tab) to match the policy.
 Every call needs the key, reads included.
 """
 import json
@@ -71,6 +74,37 @@ def mod_info(layer):
     return nx, mod, files
 
 
+ACTIVE = {"main", "update", "optional", "old_version", "miscellaneous"}
+
+
+def versions(fid):
+    """The versions of mod file `fid`, newest first: dicts with id, version, category, game_scoped_id."""
+    v = call("GET", f"/mod-files/{fid}/versions")["data"]
+    items = v.get("versions") or v.get("mod_file_versions") or [] if isinstance(v, dict) else v
+    return sorted(items, key=lambda x: int(x.get("id") or 0), reverse=True)
+
+
+def retention(nx, vers=None):
+    """Lines saying which versions to archive / restore on the website so the newest `keep_versions` stay downloadable."""
+    keep = int(nx.get("keep_versions") or 1)
+    if not nx.get("file"):
+        return []
+    vers = vers if vers is not None else versions(nx["file"])
+    out = [f"  keep the newest {keep} version(s) downloadable (layers.json nexus.keep_versions):"]
+    todo = 0
+    for i, x in enumerate(vers):
+        cat = x.get("category")
+        want = "keep" if i < keep else "archive"
+        mark = ""
+        if want == "keep" and cat not in ACTIVE:
+            mark, todo = "  <- RESTORE on the website (Files tab: move out of Archived, e.g. to Old versions)", todo + 1
+        elif want == "archive" and cat in ACTIVE:
+            mark, todo = "  <- ARCHIVE on the website (Files tab)", todo + 1
+        out.append(f"    {x.get('version'):<10} {cat:<13} (file id {x.get('game_scoped_id')}){mark}")
+    out.append("    nothing to change" if not todo else f"    {todo} change(s) to make on the website - the v3 API can't set a version's category")
+    return out
+
+
 def status(layer):
     nx, mod, files = mod_info(layer)
     out = [f"{layer}: Nexus {nx['game']} mod {nx['mod']} = v3 mod {mod['id']} - {mod.get('name')!r}"]
@@ -80,6 +114,7 @@ def status(layer):
                    f"(archived {f.get('archived_count')})" + ("   <- layers.json nexus.file" if str(f.get('id')) == str(nx.get('file')) else ""))
     if not nx.get("file"):
         out.append('  -> set "file" (the main file\'s id above) under "nexus" in layers.json before uploading')
+    out += retention(nx)
     return "\n".join(out)
 
 
@@ -129,10 +164,11 @@ def upload(layer, zip_path, version, file_id=None, name=None, changelog=None, ke
         raise SystemExit(f"file {fid!r} isn't one of mod {nx['mod']}'s files - run `status {layer}` and set nexus.file")
     changelog = changelog or changelog_from_file(layer, version)
     body = {"name": name or target.get("name") or os.path.basename(zip_path), "version": version, "file_category": "main",
-            "archive_existing_file": not keep_old, "update_mod_version": True, "primary_mod_manager_download": True}
+            "archive_existing_file": not keep_old and int(nx.get("keep_versions") or 1) <= 1,
+            "update_mod_version": True, "primary_mod_manager_download": True}
     log(f"{'UPLOAD' if apply else 'DRY RUN'}: {os.path.basename(zip_path)} ({os.path.getsize(zip_path)} bytes) -> mod {nx['mod']} "
         f"({mod.get('name')!r}) file {fid} ({target.get('name')!r}) as version {version}"
-        + ("" if keep_old else "; the previous version is archived"))
+        + ("; the previous version is archived" if body["archive_existing_file"] else "; the previous version stays downloadable"))
     log(f"  version request: {json.dumps(body)}")
     if changelog:
         log(f"  changelog {version}: {changelog[:200]}")
@@ -146,6 +182,8 @@ def upload(layer, zip_path, version, file_id=None, name=None, changelog=None, ke
     if changelog:
         call("POST", f"/mods/{mod['id']}/changelogs", {"version": version, "changelog": changelog})
         log("  changelog added")
+    for line in retention(nx):
+        log(line)
     return ver
 
 
@@ -162,7 +200,7 @@ def main(argv):
     u.add_argument("--file-id")
     u.add_argument("--name")
     u.add_argument("--changelog")
-    u.add_argument("--keep-old", action="store_true", help="don't archive the previous version")
+    u.add_argument("--keep-old", action="store_true", help="don't archive the previous version (keep_versions > 1 implies it)")
     u.add_argument("--apply", action="store_true", help="really upload (default: dry run)")
     a = ap.parse_args(argv)
     if a.cmd == "status":
