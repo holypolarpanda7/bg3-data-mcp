@@ -320,10 +320,23 @@ def fit_dev_profile(layer, apply=True, cfg=None):
     st = action("status")
     if st.get("error"):
         return [f"{tag}: not applied ({st['error']})"]
-    profs = bridge_call("GET", "/profiles")
+    profs = bridge_call("POST", "/profiles", {"game": GAME_ID})
     if profs.get("error"):
-        return [f"{tag}: not applied - the bridge is older than 0.3.0 (re-run bg3_vortex_bridge_install, restart Vortex)"]
+        return [f"{tag}: not applied - the bridge is older than 0.6.0 (re-run bg3_vortex_bridge_install, restart Vortex)"]
     target = next((p for p in profs.get("profiles") or [] if _norm(p["name"]) == _norm(name)), None)
+    pre = []
+    if st.get("gameId") != GAME_ID:   # Vortex manages another game: the mod list below would be that game's
+        if not apply:
+            return [f"{tag}: Vortex is on {st.get('gameId')} - fitting switches it to {GAME_ID} (dry run)"]
+        r = bridge_call("POST", "/profile", {"profile": target["id"] if target else name, "game": GAME_ID, "create": True},
+                        timeout=240)
+        if r.get("error"):
+            return [f"{tag}: could not switch Vortex from {st.get('gameId')} to {GAME_ID} ({r['error']})"]
+        _save_state({"previous": r.get("from"), "previous_name": f"{st.get('profile')} ({st.get('gameId')})", "dev": name,
+                     "switched": time.strftime("%Y-%m-%d %H:%M:%S")})
+        pre.append(f"  switched Vortex from {st.get('gameId')} profile '{st.get('profile')}' to {GAME_ID}")
+        st, profs = action("status"), bridge_call("POST", "/profiles", {"game": GAME_ID})
+        target = next((p for p in profs.get("profiles") or [] if _norm(p["name"]) == _norm(name)), None)
     mods = {m["id"]: m for m in st.get("mods") or []}
     man = manifest(deploy._paths(cfg)[1])
     stage = staging_dir(cfg, man, _log_lines(app_dir(cfg)))
@@ -332,7 +345,7 @@ def fit_dev_profile(layer, apply=True, cfg=None):
     _, _, info, _ = deploy.mod_info(layer)
     keep = [str(k) for k in (cfg.get("vortex") or {}).get("dev_keep") or []]
     want_uuids = [u.lower() for u in deploy.desired_mods(layer) if u.lower() != info["UUID"].lower()]
-    lines, want, missing = [], set(), []
+    lines, want, missing = pre, set(), []
     reg = deploy._registry()
     for u in want_uuids:
         mid = u2m.get(u)
@@ -391,7 +404,7 @@ def fit_dev_profile(layer, apply=True, cfg=None):
     sw = r = bridge_call("POST", "/profile", {"profile": target["id"] if target else name, "create": True}, timeout=240)
     if r.get("error"):
         return [f"{tag}: switch failed ({r['error']})"] + lines
-    if r.get("switched"):
+    if r.get("switched") and not pre:
         old = next((p["name"] for p in profs.get("profiles") or [] if p["id"] == prev), prev)
         _save_state({"previous": prev, "previous_name": old, "dev": name, "switched": time.strftime("%Y-%m-%d %H:%M:%S")})
         lines.insert(0, f"  switched Vortex from profile '{old}' (bg3_vortex_profile action='play' switches back)")
@@ -427,11 +440,13 @@ def switch_back():
 
 def profiles_report(layer=None):
     cfg = sources.load_config()
-    r = bridge_call("GET", "/profiles")
+    r = bridge_call("POST", "/profiles", {"game": GAME_ID})
     if r.get("error"):
-        return f"bridge error: {r['error']}"
+        return f"bridge error: {r['error']} (0.6.0+ needed: bg3_vortex_bridge_install, restart Vortex)"
     name = dev_profile_name(cfg, layer)
     out = [f"Vortex {GAME_ID} profiles (dev profile: {name or 'none - set vortex.dev_profile in layers.json'}):"]
+    if r.get("gameId") != GAME_ID:
+        out.append(f"  (Vortex is managing {r.get('gameId')} right now)")
     for p in r.get("profiles") or []:
         out.append(f"  {'*' if p['id'] == r.get('active') else ' '} {p['name']}  ({p['id']}, {p.get('enabled', 0)} mods enabled)"
                    + ("  [dev]" if name and _norm(p["name"]) == _norm(name) else ""))

@@ -539,7 +539,7 @@ EXPECT_KEYS = {"target", "dead", "hp_change", "hp", "status_present", "status_ab
                "status_removed", "resource", "level", "change", "cast", "acted_first", "damage_type", "note", "max_hp_change",
                "roll", "pass", "consecutive_turns", "count", "took_turn",
                "status_applied_count", "cast_count", "saves", "cast_only", "interrupt_used",
-               "amount_change", "max_change", "amount", "resource", "level", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits", "log",
+               "amount_change", "max_change", "amount", "max", "resource", "level", "skill", "ability", "damage_count", "temp_hp", "temp_hp_change", "hits", "log",
                "summon", "moved"}
 ROLL_TYPES = {"SavingThrow", "SkillCheck", "RawAbility"}
 
@@ -873,6 +873,8 @@ Osi.LeaveCombat(h) return true""")
             post.append(f"BG3T.grant({_who(st_)}, {se._lua_string(st_['boost'])})")
         if st_.get("toggle_off"):  # a toggled passive switched off for the case, back on at cleanup
             post.append(f"BG3T.toggleOff({_who(st_)}, {se._lua_string(st_['toggle_off'])})")
+        if st_.get("toggle_on"):  # a toggled passive switched on for the case (after a tick: setup may add it), back at cleanup
+            late.append((dict(st_, resource=f"toggle {st_['toggle_on']}"), f"return BG3T.toggleOn({_who(st_)}, {se._lua_string(st_['toggle_on'])})"))
         if st_.get("dead"):  # e.g. a corpse for revive spells
             post.append(f"pcall(Osi.Die, {_who(st_)}, 0, 'NULL_00000000-0000-0000-0000-000000000000', 0, 1)")
     # a case that deliberately starts you at low HP mustn't trip the safety watch by itself
@@ -895,7 +897,8 @@ Osi.LeaveCombat(h) return true""")
             if n_:
                 break
         if not n_:
-            raise RuntimeError(f"setup: {st_.get('target', 'host')} has no {st_['resource']} resource to set")
+            raise RuntimeError(f"setup: {st_.get('target', 'host')} has no {st_['resource']}"
+                               + ("" if st_["resource"].startswith("toggle ") else " resource to set"))
     # your own reactions off unless the case names the ones it measures (`reactions = ["Fate"]`, or ["*"]): a
     # Shield / Arcane or Projected Ward / opportunity attack changes the rolls a case checks (Last Stand's bite was
     # eaten by Projected Ward, 2026-10-02). AI mode keeps them all on unless the case lists some.
@@ -1241,6 +1244,10 @@ def verify(store, active, cleanup=True, wait=2.0):
             lvl = str(e.get("level", 0))
             av = ((a.get("resources") or {}).get(e["resource"]) or {}).get(lvl) or [0, 0]
             row(av[0] == e["amount"], f"{label} {e['resource']}[{lvl}] amount {av[0]:g} == {e['amount']}")
+        if "max" in e and e.get("resource"):  # the pool's maximum at the end (uses a passive or level grants, e.g. Master of Runes)
+            lvl = str(e.get("level", 0))
+            av = ((a.get("resources") or {}).get(e["resource"]) or {}).get(lvl) or [0, 0]
+            row(av[1] == e["max"], f"{label} {e['resource']}[{lvl}] max {av[1]:g} == {e['max']}")
         if "amount_change" in e or "max_change" in e:  # the character's pool before/after (not a spell's cost)
             lvl = str(e.get("level", 0))
             bv = ((b.get("resources") or {}).get(e["resource"]) or {}).get(lvl) or [0, 0]
@@ -1374,7 +1381,7 @@ def verify(store, active, cleanup=True, wait=2.0):
         for s in e.get("status_removed", []):
             was = s in (b.get("statuses") or [])
             row(was and s not in (a.get("statuses") or []), f"{s} removed from {label}" + ("" if was else " (it wasn't present before!)"))
-        if "resource" in e and "amount_change" not in e and "max_change" not in e and "amount" not in e:  # spell-cost check
+        if "resource" in e and "amount_change" not in e and "max_change" not in e and "amount" not in e and "max" not in e:  # spell-cost check
             lvl = str(e.get("level", 0))
             bv = ((b.get("resources") or {}).get(e["resource"]) or {}).get(lvl)
             av = ((a.get("resources") or {}).get(e["resource"]) or {}).get(lvl)

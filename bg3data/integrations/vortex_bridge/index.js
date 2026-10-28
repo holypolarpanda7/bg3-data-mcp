@@ -132,11 +132,14 @@ function main(context) {
         return { profile: profileId(), count: b.loadOrder.length };
       },
       // profiles of the active game; POST /profile switches to one (by id or name), creating it when asked
-      'GET /profiles': async () => ({ active: profileId(), profiles: profilesOf(gameId()) }),
+      // b.game names the game (default: the active one); a profile of another game switches Vortex to that game
+      'GET /profiles': async () => ({ gameId: gameId(), active: profileId(), profiles: profilesOf(gameId()) }),
+      'POST /profiles': async (b) => ({ gameId: gameId(), active: profileId(), profiles: profilesOf(b.game || gameId()) }),
       'POST /profile': async (b) => {
         if (!actions) throw new Error('vortex-api actions unavailable in this Vortex');
-        const g = gameId();
-        let p = profilesOf(g).find(x => x.id === b.profile || (x.name || '').toLowerCase() === String(b.profile).toLowerCase());
+        const g = b.game || gameId();
+        let p = profilesOf(g).find(x => x.id === b.profile || (x.name || '').toLowerCase() === String(b.profile).toLowerCase())
+          || Object.values(state().persistent.profiles || {}).find(x => x.id === b.profile);   // an id is unique across games
         let created = false;
         if (!p) {
           if (!b.create) throw new Error(`no ${g} profile '${b.profile}'`);
@@ -155,6 +158,16 @@ function main(context) {
           }
         }
         return { switched: from !== p.id, from, created, ...status() };
+      },
+      // delete an empty, inactive profile (one created by mistake); refuses a profile with enabled mods
+      'POST /profile-remove': async (b) => {
+        if (!actions || !actions.removeProfile) throw new Error('vortex-api removeProfile unavailable in this Vortex');
+        const p = (state().persistent.profiles || {})[b.profile];
+        if (!p) throw new Error(`no profile id '${b.profile}'`);
+        if (p.id === profileId()) throw new Error(`profile '${p.name}' is active - switch away first`);
+        if (Object.values(p.modState || {}).some(m => m && m.enabled)) throw new Error(`profile '${p.name}' has enabled mods - not removed`);
+        api.store.dispatch(actions.removeProfile(p.id));
+        return { removed: p.id, name: p.name, gameId: p.gameId };
       },
       // enable / disable many mods of the active profile at once (ids exactly as /status lists them)
       'POST /modstate': async (b) => {
