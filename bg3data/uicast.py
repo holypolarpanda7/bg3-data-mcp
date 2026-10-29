@@ -21,7 +21,7 @@ import time
 
 from . import gameui, se
 
-VERSION = 6
+VERSION = 8
 
 CLIENT_LIB = r"""
 if BG3UI and BG3UI.v == %d then return true end
@@ -188,6 +188,62 @@ function U.overButton(which)
   walk(w, 0)
   return hit
 end
+-- element locator (2026-10-29): U.mark finds the element matching `pred(n)` under widget `root` and keeps its ancestor
+-- chain (1 = the element, #chain = root). U.where() reports the deepest chain element under the mouse and, inside it, which
+-- child is hovered vs which child leads to the target, with the children's sizes (screen fractions, margins included) so
+-- Python can jump from the hovered sibling straight to the target's one (uicast.locate_element). No screenshot.
+local function frac(n, W, H)
+  local okw, aw = pcall(function() return n.ActualWidth end)
+  local okh, ah = pcall(function() return n.ActualHeight end)
+  local m = {0, 0, 0, 0}
+  pcall(function() local g = n.Margin if g then m = {g.Left or g[1] or 0, g.Top or g[2] or 0, g.Right or g[3] or 0, g.Bottom or g[4] or 0} end end)
+  return {((okw and aw or 0) + m[1] + m[3]) / W, ((okh and ah or 0) + m[2] + m[4]) / H, (okw and aw or 0) / W, (okh and ah or 0) / H}
+end
+function U.mark(root, pred)
+  local w = type(root) == "string" and U.widget(root) or root
+  if not w then return nil end
+  local full = U.widget("ContentRoot")
+  U.W, U.H = full.ActualWidth, full.ActualHeight
+  local stack, found = {}, nil
+  local function walk(n, d)
+    if found or n == nil or d > 80 then return end
+    table.insert(stack, n)
+    local ok, hit = pcall(pred, n)
+    if ok and hit then found = {table.unpack(stack)} table.remove(stack) return end
+    local okc, cnt = pcall(function() return n.VisualChildrenCount end)
+    if okc and cnt then for i = 1, cnt do local okv, ch = pcall(function() return n:VisualChild(i) end) if okv and ch then walk(ch, d + 1) end if found then break end end end
+    table.remove(stack)
+  end
+  walk(w, 0)
+  if not found then U.chain = nil return nil end
+  local chain = {}
+  for i = #found, 1, -1 do table.insert(chain, found[i]) end
+  U.chain = chain
+  local sizes = {}
+  for i, n in ipairs(chain) do local f = frac(n, U.W, U.H) sizes[i] = {f[3], f[4]} end
+  return sizes
+end
+local function over(n) local ok, o = pcall(function() return n.IsMouseOver end) return ok and o end
+function U.where()
+  local ch = U.chain
+  if not ch then return nil end
+  local d
+  for i = 1, #ch do if over(ch[i]) then d = i break end end
+  if not d then return {d = 0} end
+  if d == 1 then return {d = 1} end
+  local parent, want = ch[d], ch[d - 1]
+  local res = {d = d, p = frac(parent, U.W, U.H), kids = {}}
+  local okc, cnt = pcall(function() return parent.VisualChildrenCount end)
+  for i = 1, (okc and cnt or 0) do
+    local okv, k = pcall(function() return parent:VisualChild(i) end)
+    if okv and k then
+      res.kids[i] = frac(k, U.W, U.H)
+      if k == want then res.tc = i end
+      if not res.hc and over(k) then res.hc = i end
+    end
+  end
+  return res
+end
 BG3UI = U
 return true
 """ % (VERSION, VERSION)
@@ -296,6 +352,77 @@ def _hover_ground(point, log, tol=1.0):
     return (fx, fy) if _poll(near, 0.6, 0.08) else None
 
 
+def _jump(w, p):
+    """From the hovered child (hc) to the child leading to the target (tc) of the same parent: stacked children add up
+    their sizes, a wrap grid moves by whole cells. Returns the new point or None."""
+    hc, tc, kids = w.get("hc"), w.get("tc"), w.get("kids") or {}
+    if not hc or not tc:
+        return None
+    kids = {int(k): v for k, v in kids.items()} if isinstance(kids, dict) else {i + 1: v for i, v in enumerate(kids)}
+    pw, ph = w["p"][2], w["p"][3]
+    lo, hi = sorted((hc, tc))
+    span = [kids[i] for i in range(lo, hi) if i in kids]
+    sign = 1 if tc > hc else -1
+    vertical = all(abs(k[2] - pw) < 0.004 for k in kids.values() if k[2] > 0)
+    horizontal = all(abs(k[3] - ph) < 0.004 for k in kids.values() if k[3] > 0)
+    if vertical and not horizontal:
+        return p[0], p[1] + sign * sum(k[1] for k in span)
+    if horizontal and not vertical:
+        return p[0] + sign * sum(k[0] for k in span), p[1]
+    cw, chh = kids[hc][0], kids[hc][1]      # a wrap grid of equal cells
+    if cw <= 0 or chh <= 0:
+        return None
+    cols = max(1, int(pw / cw + 0.01))
+    return (p[0] + ((tc - 1) % cols - (hc - 1) % cols) * cw, p[1] + ((tc - 1) // cols - (hc - 1) // cols) * chh)
+
+
+def locate_element(root, pred_lua, starts=None, region=None, budget=60):
+    """Screen position (fractions) of the element under widget `root` for which the Lua predicate `pred_lua` (an expression
+    of `n`, the element) is true, found by hovering + Noesis IsMouseOver - no position API (PointToScreen HANGS the game).
+    Start points: `starts`, or icon-like blobs the screen helper finds in `region` (x, y, w, h fractions), or the screen
+    centre. From each, a hover reports the deepest of the element's ancestors under the mouse and which of its children is
+    hovered; the next hover jumps from that sibling to the child that leads to the target (stacks add up sizes, wrap grids
+    move by cells), so a start on any sibling icon reaches the target in a few hovers. Gaps between icons don't respond to
+    the mouse, which is why blobs (icons) make better starts than a grid. Returns ((fx, fy), hovers) or (None, hovers)."""
+    sizes = _c(f"return BG3UI.mark({_lua(root)}, function(n) return {pred_lua} end)")
+    if not sizes:
+        return None, 0
+    n = 0
+
+    def probe(q):
+        nonlocal n
+        n += 1
+        gameui._fast(f"move {min(max(q[0], 0.001), 0.999):.5f} {min(max(q[1], 0.001), 0.999):.5f}")
+        return _c("return BG3UI.where()") or {"d": 0}
+
+    if starts is None and region:
+        ok, r = gameui._fast("tiles %.5f %.5f %.5f %.5f" % tuple(region), 10)
+        parts = r.split() if ok and r.startswith("ok") else []
+        if len(parts) > 2:
+            hgt = int(parts[1])
+            wid = hgt * 16 / 9
+            starts = [(int(a_) / wid, int(b_) / hgt) for a_, b_ in (q.split(":") for q in parts[2].split(","))]
+    starts = list(starts or [(0.5, 0.5)])
+    tried = set()
+    for p in starts:
+        if n >= budget:
+            break
+        w = probe(p)
+        for _ in range(8):                         # follow sibling jumps from this start
+            if w.get("d") == 1:
+                return p, n
+            key = (w.get("d"), w.get("hc"))
+            q = _jump(w, p) if w.get("d") and key not in tried else None
+            tried.add(key)
+            if not q or n >= budget:
+                break
+            w2 = probe(q)
+            if not (w2.get("d") and w2["d"] <= w["d"]):
+                break
+            p, w = q, w2
+    return None, n
+
+
 def _find_button(which, kind, log):
     """Hover-scan for a prompt button (IsMouseOver), starting at its cached position. Returns (fx, fy) or None."""
     check = f"return BG3UI.overButton({_lua(which)})"
@@ -350,6 +477,17 @@ def _prepare(spell, swap, log):
     if not _c(f"return BG3UI.book({_lua(spell)}) ~= nil"):
         return {"error": "not in the spellbook (not learned)"}
     undo = []
+    if _c(f"return BG3UI.isPrepared({_lua(spell)})"):
+        # prepared but taken off the hotbar (the player removed it): unprepare + prepare puts it back on the class bar
+        # (2026-10-29; the VM drag/assign commands run but add nothing). Always-prepared entries can't be toggled.
+        if not _toggle(spell, False, 2.0):
+            return _drag_to_hotbar(spell, log)
+        if not _toggle(spell, True):
+            return {"error": "unprepared it to re-add it, but preparing it again failed", "undo": [(spell, True)]}
+        if not _poll(lambda: _c(f"return BG3UI.locate({_lua(spell)}) ~= nil"), 4.0, 0.15):
+            return {"error": "re-prepared, but it still isn't on a hotbar"}
+        log.append(f"re-prepared {spell} to put it back on the hotbar")
+        return {"undo": []}
     out = _c(f"return BG3UI.swapFor({_lua(spell)}, {_lua(swap)})")
     if out is False:
         return {"error": "the spellbook is full and nothing can be unprepared"}
@@ -388,9 +526,63 @@ def restore(undo):
             raise RuntimeError(f"couldn't restore the spellbook: {undo}")
 
 
+SPELLBOOK_REGION = (0.0, 0.1, 0.62, 0.8)   # where the character panel's spellbook tiles are (fractions); blobs there seed the search
+HOTBAR_REGION = (0.28, 0.84, 0.42, 0.14)
+
+
+def _drag_to_hotbar(spell, log):
+    """A cantrip / always-prepared spell taken off the hotbar can't be re-added by re-preparing: drag it from the spellbook
+    (key K) onto a visible class-bar slot like a player, then re-prepare the spell it displaced (that puts it back).
+    Restore = clear the dragged slot. The VM drag/assign commands run but add nothing (2026-10-29), so this is a real drag."""
+    opened = False
+    if not _c('return BG3UI.widget("CharacterPanel") ~= nil'):
+        gameui.send_key(0x25)
+        opened = bool(_poll(lambda: _c('return BG3UI.widget("CharacterPanel") ~= nil'), 2.0, 0.1))
+        time.sleep(0.6)                                # the panel animates in
+    try:
+        src, _n = locate_element("CharacterPanel", f"n.DataContext ~= nil and n.DataContext == BG3UI.book({_lua(spell)})",
+                                 region=SPELLBOOK_REGION)
+        if not src:
+            return {"error": "not on any hotbar, and its spellbook tile wasn't found to drag (scrolled out of view?)"}
+        # a visible class-bar slot holding a preparable spell: re-preparing it afterwards puts it back
+        n_slots = _c("return #BG3UI.pcp().KeyboardHotBars[2].SlotList")
+        dst = victim = None
+        for i in range(1, min(n_slots, 20) + 1):
+            sid = _c(f"local c = BG3UI.pcp().KeyboardHotBars[2].SlotList[{i}].Content return c and c.PrototypeID")
+            vm_ok = _c(f"local v = BG3UI.book({_lua(sid)}) local ok, lv = pcall(function() return v.SpellSlotLevel end) "
+                       "return v ~= nil and v.Activated and ok and lv ~= nil and lv > 0") if sid else False
+            if not vm_ok:
+                continue
+            dst, _n = locate_element("HotBar", f"n.DataContext ~= nil and n.DataContext == BG3UI.pcp().KeyboardHotBars[2].SlotList[{i}]",
+                                     region=HOTBAR_REGION, budget=25)
+            if dst:
+                victim = sid
+                break
+        if not dst:
+            return {"error": "no visible class-bar slot with a preparable spell to drop it on"}
+        gameui._fast("drag %d %d %d %d" % (src[0] * 1920, src[1] * 1080, dst[0] * 1920, dst[1] * 1080))
+        if not _poll(lambda: _c(f"return BG3UI.locate({_lua(spell)}) ~= nil"), 2.0, 0.15):
+            return {"error": "dragged it from the spellbook, but it didn't land on the hotbar"}
+        back = _toggle(victim, False) and _toggle(victim, True) and _poll(
+            lambda: _c(f"return BG3UI.locate({_lua(victim)}) ~= nil"), 3.0, 0.15)
+        log.append(f"dragged {spell} from the spellbook onto the hotbar (over {victim}, "
+                   + ("re-prepared back)" if back else "which did NOT come back)"))
+        return {"undo": [("clear", spell)]}
+    finally:
+        if opened:
+            gameui.send_key(0x25)
+
+
 def _undo_prepare(undo, log):
-    """undo = [(spell, prepared state to restore)] - ours first (frees the room), then the swapped one back."""
-    bad = [sp for sp, want in undo if not _toggle(sp, want)]
+    """undo = [(spell, prepared state to restore) | ("clear", spell)] - ours first (frees the room), then the swapped one back."""
+    bad = []
+    for sp, want in undo:
+        if sp == "clear":     # a slot the driver dragged onto the hotbar: take it off again
+            _c(f"local b, i, s = BG3UI.locate({_lua(want)}) if s then BG3UI.hb().ClearSlotCommand:Execute(s) end return true")
+            if not _poll(lambda: not _c(f"return BG3UI.locate({_lua(want)}) ~= nil"), 2.0, 0.15):
+                bad.append(want)
+        elif not _toggle(sp, want):
+            bad.append(sp)
     log.append("spellbook restored" if not bad else f"spellbook NOT fully restored: {', '.join(bad)}")
     return not bad
 

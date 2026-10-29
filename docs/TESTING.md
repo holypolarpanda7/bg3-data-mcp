@@ -28,6 +28,12 @@ combat, even for a class-learned spell (verified 2026-09-30: slot and Action Poi
   - known but unprepared spells: prepared in the spellbook while staging (the game refuses it in combat), one confirmed
     toggle at a time; when the spellbook is full, `unprepare = "<spell>"` (default: the last prepared levelled spell)
     makes room; everything is toggled back after the cleanup ends the fight. A spell that isn't learned is NOT RUN.
+  - prepared but taken off the hotbar: unprepare + prepare puts it back (1.2 s); a cantrip / always-prepared spell is
+    dragged from the spellbook (K) onto a visible class-bar slot with a real mouse drag, and the displaced spell is
+    re-prepared back (~13 s, rare); restore clears the dragged slot.
+  UI elements are located by hovering + Noesis IsMouseOver (`uicast.locate_element`): icon blobs seed the search, then
+  each hover jumps from the hovered sibling to the target's. Never call Noesis PointToScreen/HitTest from SE Lua - it
+  hangs the game (2026-10-29).
   Standalone: `bg3_ui_cast`; what the UI offers (hotbars, Reactions panel Ask/Enabled): `bg3_ui_state`.
 - `mode = "script"`: effects only, no class-ownership requirement.
 - `mode = "ai"`: a spawn (`caster`) casts through its own AI on its own turns while the host ends turns under
