@@ -850,6 +850,17 @@ Osi.LeaveCombat(h) return true""")
         lua("BG3T.cleanup(); return true")
         raise RuntimeError(f"spawn failed for {missing}")
     timing.wait(0.4)  # boosts (initiative, max HP) apply on the next tick (a frame; was 1.2 s)
+    # a spawn in water/fire/grease carries the surface's statuses into the case (Wet halves Fire damage): move it clear
+    if spawns and c.get("dry_spawns", True):
+        for try_ in range(1, 13):
+            wet = lua("return BG3T.spawnsInSurface()", timeout=10) or []
+            if not wet:
+                break
+            for a_ in wet:
+                lua(f"return BG3T.moveSpawn({se._lua_string(a_)}, {try_})", timeout=10)
+            timing.wait(0.5)
+        else:
+            raise RuntimeError(f"spawns stand in a surface after 12 moves: {wet}; stage the case somewhere drier")
     post, late = [], []
     for s in spawns:
         if s.get("hp") is not None:

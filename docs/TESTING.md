@@ -123,6 +123,8 @@ safety = true                # default: kill spawns + heal if a party member dro
 safety_floor = 35            # percent HP (safety = false for cases that need the host near 0 HP, e.g. Last Stand:
                              # the watch heals a party member below the floor and would undo `hp = 1`)
 spawn = [{ as = "A", template = "wolf", faction = "hostile", hp = 40, distance = 8 }]
+dry_spawns = true             # default: a spawn standing in a surface (deep water, fire, grease) is moved round the host
+                             # until clear (Wet halves Fire damage); false keeps it where it lands (surface cases)
 setup = [{ target = "host", hp = 2 }, { target = "host", status = "FRIGHTENED", turns = 10 },
          { target = "A", boost = "Resistance(Fire,Resistant)" }, { target = "host", max_hp = 20 },
          { target = "host", passive = "SomeFeature" },   # passive: added for the case, removed at cleanup
