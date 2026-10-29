@@ -13,6 +13,32 @@ from . import platform, se, timing
 
 FIND = """
 local function find(n, name, d)
+  if d == 0 and n == Ext.UI.GetRoot() then
+    -- fast path (2026-10-29): screens (HotBar, CharacterLevelUp, Dialog_box...) are children of ContentRoot; a full-tree
+    -- search took ~0.19 s per call (3 s of a 13 s level-up). ContentRoot is cached, re-checked on every use.
+    local c = rawget(_G, "__bg3_content_root")
+    local okc, nm = pcall(function() return c and c.Name end)
+    if not (okc and nm == "ContentRoot") then
+      c = nil
+      local function deep(x, k)
+        if not x or k > 9 then return nil end
+        local ok, v = pcall(function() return x.Name end)
+        if ok and v == "ContentRoot" then return x end
+        local ok2, cnt = pcall(function() return x.VisualChildrenCount end)
+        if ok2 and cnt then for i = 1, cnt do local r = deep(x:VisualChild(i), k + 1) if r then return r end end end
+      end
+      c = deep(n, 0)
+      rawset(_G, "__bg3_content_root", c)
+    end
+    if name == "ContentRoot" and c then return c end
+    if c then
+      for i = 1, c.VisualChildrenCount do
+        local ok, ch = pcall(function() return c:VisualChild(i) end)
+        local ok2, v = pcall(function() return ch.Name end)
+        if ok and ok2 and v == name then return ch end
+      end
+    end
+  end
   if not n or d > 9 then return nil end
   local ok, nm = pcall(function() return n.Name end)
   if ok and nm == name then return n end
@@ -582,6 +608,18 @@ def _picker_kind():
     return None
 
 
+def _cleared(y, cap=0.35, every=0.08):
+    """After a click on a picker: poll the row's marker (a cheap pixel read) instead of a fixed pause; True once it clears.
+    A pick that doesn't finish the row still costs the full cap, so the next click lands after this one registered."""
+    end = time.time() + timing.secs(cap)
+    while True:
+        if not _row_pending(y):
+            return True
+        if time.time() >= end:
+            return False
+        time.sleep(every)
+
+
 def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
     """Open the checklist row at y and fill its page until the row's marker clears (the wanted spells first, if this page offers
     them). Returns True when it cleared."""
@@ -606,8 +644,7 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
                 if not tiles:
                     break
                 _rclick(*tiles[0])
-                timing.wait(0.35)
-                if not _row_pending(y):
+                if _cleared(y):
                     log.append(f"row y={y}: scanned icons, {i + 1} click(s)")
                     return True
             # no icons found by the scan - e.g. a Savant page of 2 dark-red Sangromancy icons (wiz-sangromancer L13, 2026-10-13):
@@ -626,8 +663,8 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
                 for ab in order:
                     for _ in range(2):
                         _rclick(ASI_PLUS[0], ASI_PLUS[1] + 44 * ABILITIES.index(ab))
-                        timing.wait(0.3)
-                    if not _row_pending(y):
+                        timing.wait(0.15)
+                    if _cleared(y, 0.3):
                         log.append(f"row y={y}: feat {name} ({ab})")
                         return True
                 continue
@@ -645,8 +682,7 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
         if _icon_taken(i + 1):
             continue                  # a wanted spell picked above sits here: clicking it would deselect it
         _rclick(ox + ICON_STEP * (i % 8), oy + ICON_ROW * (i // 8))
-        timing.wait(0.35)
-        if not _row_pending(y):
+        if _cleared(y):
             log.append(f"row y={y}: {kind} picker, {i + 1} icon(s)")
             return True
     log.append(f"row y={y}: {kind} picker, still pending after {max_clicks} icons (markers now {pending_rows()})")
