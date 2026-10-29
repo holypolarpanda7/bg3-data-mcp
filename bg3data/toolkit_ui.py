@@ -171,7 +171,9 @@ def publish_local(layer, timeout=180):
     pak = os.path.join(mods_dir, folder + ".pak")
     before = os.path.getmtime(pak) if os.path.exists(pak) else 0
     x, y = _button(rect, "publish_local")
-    _ps("click", x=x, y=y, title=SETTINGS)
+    c = _ps("click", x=x, y=y, title=SETTINGS)
+    if c.get("error"):                  # fail now, not after `timeout`: nothing was clicked
+        return {"error": f"Publish Local not clicked: {c['error']}", "screenshot": screenshot("publish-local", SETTINGS)}
     ok = _wait(lambda: os.path.exists(pak) and os.path.getmtime(pak) > before, timeout, 2)
     # the Toolkit opens Explorer on the Mods folder a few seconds AFTER writing the pak; it lands over Project Settings'
     # buttons and takes the focus, so wait for it and close it
@@ -233,7 +235,9 @@ def publish(layer, apply=False, timeout=300):
         return rect
     before = {w["name"] for w in _ps("windows", timeout=25).get("windows", [])}
     x, y = _button(rect, "publish")
-    _ps("click", x=x, y=y, title=SETTINGS)
+    c = _ps("click", x=x, y=y, title=SETTINGS)
+    if c.get("error"):                  # fail now, not after `timeout`: nothing was clicked
+        return {"error": f"Publish not clicked: {c['error']}", "screenshot": screenshot("publish-after"), "meta_changed": _meta_diff(layer)}
     seen = _wait(lambda: [w["name"] for w in _ps("windows", timeout=25).get("windows", [])
                           if w["name"] not in before and "mod.io" in w["name"].lower()], timeout, 5)
     stats = _glasses_stats()
