@@ -410,6 +410,18 @@ def _press(b, js_find, key="Enter"):
     return True
 
 
+def _activate(b, js_find, done_js, key="Enter"):
+    """Open/press a headless-ui control on a page that may be hidden behind the game: a DOM click first, then the keyboard
+    (focus + key) - which of the two the page takes has varied between runs (2026-10-28). done_js: JS that is true once it worked."""
+    b.js("(() => { const e=%s; if (e) e.click(); return !!e; })()" % js_find)
+    time.sleep(1.2)
+    if b.js(done_js):
+        return True
+    _press(b, js_find, key)
+    time.sleep(1.2)
+    return bool(b.js(done_js))
+
+
 _PREV = "[...document.querySelectorAll('button')].find(x => (x.innerText||'').trim()==='Previous files')"
 CATEGORIES = ["Main", "Optional", "Miscellaneous", "Update", "Old", "Archived"]   # the File category list, in order
 
@@ -420,7 +432,11 @@ def _files_rows(b):
     for _ in range(4):
         if b.js("(() => { const h=%s; return !h || h.getAttribute('aria-expanded') === 'true'; })()" % _PREV):
             break
-        _press(b, _PREV)
+        b.js("(() => { const h=%s; if (h) h.click(); return !!h; })()" % _PREV)   # a DOM click opens it (hidden window too)
+        time.sleep(2)
+        if b.js("(() => { const h=%s; return h && h.getAttribute('aria-expanded') === 'true'; })()" % _PREV):
+            break
+        _press(b, _PREV)   # fallback: Enter on the focused button (worked once, 2026-10-28)
         time.sleep(2)
     rows = b.js("""(() => [...document.querySelectorAll('tr')].map((tr,i) => { tr.setAttribute('data-apo-row', i);
       return [i, ...[...tr.querySelectorAll('td')].map(td => td.innerText.replace(/\\s+/g,' ').trim())]; }).filter(r => r.length > 4))()""")
@@ -444,14 +460,16 @@ def set_file_category(layer, version, category, b=None):
         cur = cat.split()[0]
         if cur == category:
             return f"{version}: already {category}"
-        _press(b, f"document.querySelector('tr[data-apo-row=\"{idx}\"] button[aria-label=\"More actions\"]')")
-        time.sleep(1.2)
-        if not _press(b, "[...document.querySelectorAll('[role=menuitem]')].find(x => x.innerText.trim()==='Edit')"):
+        if not _activate(b, f"document.querySelector('tr[data-apo-row=\"{idx}\"] button[aria-label=\"More actions\"]')",
+                         "document.querySelectorAll('[role=menuitem]').length > 0"):
             return f"{version}: the row menu didn't open"
-        time.sleep(2)
-        if not _press(b, "document.querySelector('[role=dialog] button[aria-label=\"File category\"]')", "ArrowDown"):   # ArrowDown opens the list (Enter does not)
-            return f"{version}: no edit dialog"
+        if not _activate(b, "[...document.querySelectorAll('[role=menuitem]')].find(x => x.innerText.trim()==='Edit')",
+                         "!!document.querySelector('[role=dialog] button[aria-label=\"File category\"]')"):
+            return f"{version}: the edit dialog didn't open"
         time.sleep(1)
+        if not _activate(b, "document.querySelector('[role=dialog] button[aria-label=\"File category\"]')",
+                         "document.querySelectorAll('[role=option]').length > 0", "ArrowDown"):   # ArrowDown, not Enter, opens it
+            return f"{version}: the category list didn't open"
         shown = b.js("(() => { const a=[...document.querySelectorAll('[role=option]')].map(x => x.innerText.trim()); return a; })()") or CATEGORIES
         if category not in shown:
             return f"{version}: no category {category!r} offered ({shown})"
@@ -494,9 +512,12 @@ def apply_retention(layer, apply=False):
         return "\n".join([f"{layer}: would set (keep_versions={keep}):"] + [f"  {v} -> {c}" for v, c in plan])
     b = Browser()
     try:
-        return "\n".join(set_file_category(layer, v, c, b) for v, c in plan)
+        out = [set_file_category(layer, v, c, b) for v, c in plan]
     finally:
         b.close()
+    time.sleep(3)   # the page re-read right after Save can be stale; the API is the record
+    now = {x["version"]: x.get("category") for x in nexus.versions(nx["file"])}
+    return "\n".join(out + [f"API: {v} is {now.get(v)}" for v, _ in plan])
 
 
 def main(argv):
