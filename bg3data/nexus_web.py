@@ -343,10 +343,16 @@ def push(layer, apply=False):
                 js.append("setValue([...document.querySelectorAll('textarea')].find(t => t.offsetParent && /nxm-text-area/.test(t.className)), "
                           f"{json.dumps(spec['summary'])});")
             if "description" in d["fields"]:
-                js.append("const tas = [...document.querySelectorAll('textarea')]; const inst = tas.map(t => sceditor.instance(t)).find(Boolean);"
-                          f"inst.val({json.dumps(spec['description'])}); inst.updateOriginal();"
+                # the form keeps the description in a React wrapper above the bbcode-editor textarea (props value / onChange /
+                # onBlur); setting the editor or the textarea no longer marks the form dirty, so Save stayed disabled (2026-10-28).
+                # Call the wrapper's onChange, and set the editor so the page shows the same text.
+                js.append("const tas = [...document.querySelectorAll('textarea')];"
                           "const raw = tas.find(t => t.parentElement && /bbcode-editor/.test(t.parentElement.className)) || tas[tas.length - 1];"
-                          f"setValue(raw, {json.dumps(spec['description'])}); inst.trigger && inst.trigger('valuechanged');")
+                          "let f = raw[Object.keys(raw).find(k => k.startsWith('__reactFiber'))];"
+                          "while (f && !(f.memoizedProps && typeof f.memoizedProps.onChange === 'function' && 'value' in f.memoizedProps)) f = f.return;"
+                          f"if (f) {{ f.memoizedProps.onChange({json.dumps(spec['description'])}); if (f.memoizedProps.onBlur) f.memoizedProps.onBlur(); }}"
+                          "const inst = tas.map(t => window.sceditor && sceditor.instance(t)).find(Boolean);"
+                          f"if (inst) inst.val({json.dumps(spec['description'])});")
             js.append("return true;")
             b.js("(() => {" + "\n".join(js) + "})()")
             time.sleep(1)
