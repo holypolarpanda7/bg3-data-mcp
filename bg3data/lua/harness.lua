@@ -227,6 +227,37 @@ function T.spawn(alias, template, faction, dx, dz)
     return g
 end
 
+-- a spawn standing in a surface (deep water, fire, grease: INSURFACE / DIFFICULT_TERRAIN_*) takes its statuses, e.g. Wet halves
+-- Fire damage: a maximised Fireball read 26 instead of 53 (2026-10-29). These statuses land a tick after the spawn, so staging
+-- asks after a wait and moves the spawn round the host (T.moveSpawn) until it stands clear.
+function T.spawnsInSurface()
+    local out = {}
+    for alias, g in pairs(T.spawns) do
+        if not T.borrowed[alias] then
+            for _, s in ipairs(T.statuses(g)) do
+                if s == "INSURFACE" or s:sub(1, 17) == "DIFFICULT_TERRAIN" then out[#out + 1] = alias; break end
+            end
+        end
+    end
+    return out
+end
+
+function T.moveSpawn(alias, try)
+    local g, h = T.spawns[alias], T.host()
+    local x, y, z = Osi.GetPosition(h)
+    local gx, _, gz = Osi.GetPosition(g)
+    local dist = math.max(2, math.sqrt((gx - x) ^ 2 + (gz - z) ^ 2))
+    local ang = math.atan(gz - z, gx - x) + try * math.pi / 4   -- the next eighth of the circle, at the same distance
+    if try > 8 then dist = dist * 0.6 end
+    -- a valid standing spot near the target point (a blind teleport dropped a wolf off a ledge to its death, 2026-10-29)
+    local px, py, pz = Osi.FindValidPosition(x + dist * math.cos(ang), y, z + dist * math.sin(ang), 3, g, 1)
+    if not px then return false end
+    Osi.TeleportToPosition(g, px, py, pz, "", 0, 0, 0, 0, 0)
+    for _, s in ipairs({ "WET", "INSURFACE" }) do pcall(Osi.RemoveStatus, g, s) end
+    T.removeStatuses(g, "DIFFICULT_TERRAIN*")
+    return true
+end
+
 -- a real party member for a test (an origin companion already in the world): features that react to an ALLY dropping need
 -- one - a spawned NPC dies at 0 HP instead of going Downed (2026-10-06). Recruited with the story's own party proc if it
 -- isn't in the party, placed next to the host, and handed back at cleanup (revived, out of the party again, back where it
