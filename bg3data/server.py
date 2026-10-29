@@ -1300,6 +1300,22 @@ def bg3_ui_state() -> str:
 
 @mcp.tool()
 @guarded
+def bg3_ui_toggle_audit(missing_only: bool = True) -> str:
+    """Toggled passives (IsToggled) each party character has, and whether each has a button on the keyboard and controller
+    hotbars. One on neither is stuck at its default - the PTA 1.0.5.0 bug class (Overchannel stuck ON; Brutal Strike toggles
+    missing on saves made before the update): a toggle only gets its button when granted, not when an update adds it to a
+    level already taken. Run it on a save made with an OLDER release after deploying the new one."""
+    from . import uicast
+    import json as _json
+    rows = uicast.toggle_audit()
+    if missing_only:
+        for r in rows:
+            r["toggles"] = [t for t in r["toggles"] if not (t["keyboard"] and t["controller"])]
+    return _json.dumps(rows, indent=1)
+
+
+@mcp.tool()
+@guarded
 def bg3_screenshot(full: bool = False) -> str:
     """Capture the running game's window to a PNG (half size; full=True: full client size, e.g. 1920x1080, for gallery images) and return its file path - open it with an image-capable
     Read to see what is on screen (dialogs, the HUD, a level-up screen). Needs the game running; it brings the game to the front first (a capture only sees what is visible), so use it while nobody is typing."""
@@ -1380,7 +1396,9 @@ def bg3_load_save(index: int = 0, name: str | None = None, newest: bool = True, 
     """Load a HARNESS save (the test leader's playthrough, "Tavizard") in the running game: opens the Load screen, selects the save
     in that playthrough, verifies in the game's own view model that exactly that save is selected (no other playthrough, not an
     Honour save) and only then presses Load Game. The user's own campaigns can't be loaded through this. name: (part of) the
-    title; without it, the index-th newest harness save (0 = newest). newest: several saves share the title - take the newest.
+    title; without it, the index-th newest harness save (0 = newest). newest: several saves share the title - take the newest;
+    or name "<title> @ <date part>" (e.g. "wiz-evoker L15 @ 23/10/2026") picks one by its date - e.g. a save made with an
+    older release, to check what an update does to existing characters.
     dry_run: select and verify only, leaving the dialog open (bg3_screenshot to see it). Returns the host level."""
     from . import gameui
     t, info = gameui.load_save(index, name=name, newest=newest, dry_run=dry_run)
