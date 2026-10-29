@@ -1605,24 +1605,29 @@ def select_save(name=None, index=0, newest=False, leader=None, tries=3):
     """Select a HARNESS save in the open Load screen and verify it (see LOADUI). name: the title (exact, else a unique substring);
     newest: several match - take the newest; no name: the index-th newest harness save. Only the harness leader's playthrough
     (game.test_leader) is searched, and a leader that is protected (the user's own campaign) is refused. Presses nothing but the
-    playthrough's header and the save row. Returns {ok, title, time, leader} or {ok: False, why}."""
+    playthrough's header and the save row. name "<title> @ <date part>" (e.g. "wiz-evoker L15 @ 23/10/2026") picks among saves
+    with the same title by their date/time string. Returns {ok, title, time, leader} or {ok: False, why}."""
     safety = _safety()
     leader = leader or safety._paths()[1]
     if leader in (safety.protected_leaders() or []):
         return {"ok": False, "why": f"the harness leader {leader!r} is a protected campaign's leader - refusing"}
+    title_part, _, when = (name or "").partition(" @ ")   # "wiz-evoker L15 @ 23/10/2026": that title, saved on that date
+    title_part, when = title_part.strip(), when.strip()
     pick, _ = _client(LOADUI + """
 local w = lgfind(Ext.UI.GetRoot(), "LoadGame", 0)
 if not w then return {why = "the Load dialog isn't open"} end
 local p = playthrough(w.DataContext, %s)
 if not p then return {why = "no playthrough led by " .. %s .. " in the Load screen"} end
-local want, idx, newest = %s, %d, %s
+local want, idx, newest, when = %s, %d, %s, %s
 local exact, part, all = {}, {}, {}
 for i = 1, #p.Saves do
   local s = p.Saves[i]
   local t = tostring(s.Title)
   local row = {title = t, time = tostring(s.TimeString), stamp = stamp(s.TimeString), honour = s.IsHonourMode and true or false}
   all[#all + 1] = row
-  if want ~= "" then
+  if when ~= "" and not string.find(row.time, when, 1, true) then
+    -- "<title> @ <date part>": only saves whose time contains it (pick one of several saves with the same title)
+  elseif want ~= "" then
     if string.lower(t) == string.lower(want) then exact[#exact + 1] = row
     elseif string.find(string.lower(t), string.lower(want), 1, true) then part[#part + 1] = row end
   end
@@ -1639,7 +1644,7 @@ if #hits ~= 1 then
   return {why = #hits .. " harness saves match " .. want .. (#names > 0 and (": " .. table.concat(names, ", ")) or "")}
 end
 return {title = hits[1].title, time = hits[1].time, honour = hits[1].honour}""" % (
-        _lua_str(leader), _lua_str(leader), _lua_str(name or ""), int(index), "true" if newest else "false"))
+        _lua_str(leader), _lua_str(leader), _lua_str(title_part), int(index), "true" if newest else "false", _lua_str(when)))
     if not isinstance(pick, dict) or not pick.get("title"):
         return {"ok": False, "why": (pick or {}).get("why") if isinstance(pick, dict) else "the Load screen didn't answer"}
     if pick.get("honour"):

@@ -31,6 +31,9 @@ combat, even for a class-learned spell (verified 2026-09-30: slot and Action Poi
   - prepared but taken off the hotbar: unprepare + prepare puts it back (1.2 s); a cantrip / always-prepared spell is
     dragged from the spellbook (K) onto a visible class-bar slot with a real mouse drag, and the displaced spell is
     re-prepared back (~13 s, rare); restore clears the dragged slot.
+  Upgrades: `bg3_ui_toggle_audit` lists toggled passives with no hotbar button (keyboard / controller). Load a save made
+  with an OLDER release (`bg3_load_save` name "<title> @ <date>") after deploying the new one: a toggle an update adds to a
+  level already taken never gets a button (PTA 1.0.5.0 Brutal Strike; repaired on load by PTA HotbarRepair.lua).
   UI elements are located by hovering + Noesis IsMouseOver (`uicast.locate_element`): icon blobs seed the search, then
   each hover jumps from the hovered sibling to the target's. Never call Noesis PointToScreen/HitTest from SE Lua - it
   hangs the game (2026-10-29).

@@ -21,7 +21,7 @@ import time
 
 from . import gameui, se
 
-VERSION = 8
+VERSION = 9
 
 CLIENT_LIB = r"""
 if BG3UI and BG3UI.v == %d then return true end
@@ -37,7 +37,12 @@ U.find = find
 function U.widget(name) return find(Ext.UI.GetRoot(), name, 0) end
 function U.hb() local h = U.widget("HotBar") return h and h.DataContext end
 function U.pcp() return U.hb().CurrentPlayer.SelectedCharacter.PlayerCharacterProperties end
-local function id(o) local ok, v = pcall(function() return o.PrototypeID end) return ok and v or nil end
+local function id(o)
+  local ok, v = pcall(function() return o.PrototypeID end)
+  if ok and v then return v end
+  local okp, pv = pcall(function() return o.PassiveName end)   -- a toggled passive's tile on the Passives bar
+  return okp and pv or nil
+end
 function U.bars()
   local pp, out = U.pcp(), {}
   for _, b in ipairs({"ClassHotBar", "CommonHotBar", "CustomHotBar", "PassivesHotBar"}) do
@@ -671,3 +676,42 @@ def _cast(spell, target, level, clicks, reactions, timeout, snapshot, ground, lo
              if after and round(before["slots"][lv] - after["slots"].get(lv, 0), 2) != 0}
     return {"ok": True, "hotbar": sel, "steps": log, "prompts": prompts, "slots_spent": spent,
             "before": before, "after": after, "seconds": round(time.time() - t0, 1)}  # spent = {} without snapshot
+
+
+TOGGLE_AUDIT = r"""
+local function flag(props, f)
+  if type(props) == "string" then return props:find(f, 1, true) ~= nil end
+  if type(props) == "table" then for _, v in pairs(props) do if v == f then return true end end end
+  return false
+end
+local out = {}
+for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("HotbarContainer")) do
+  local okn, who = pcall(function() return e.Uuid.EntityUuid end)
+  local bars = e.HotbarContainer.Containers.DefaultBarContainer
+  local on = {[0] = {}, [1] = {}}
+  for i = 1, (bars and #bars or 0) do
+    local b = bars[i]
+    if on[b.Controller] then for j = 1, #b.Elements do local p = b.Elements[j].Passive if p and p ~= "" then on[b.Controller][p] = true end end end
+  end
+  local rows = {}
+  for _, p in ipairs(e.PassiveContainer and e.PassiveContainer.Passives or {}) do
+    local okp, name = pcall(function() return p.Passive.PassiveId end)
+    local st = okp and name and Ext.Stats.Get(name)
+    if st and flag(st.Properties, "IsToggled") then
+      table.insert(rows, {passive = name, add_to_hotbar = flag(st.Properties, "ToggledDefaultAddToHotbar"),
+        default_on = flag(st.Properties, "ToggledDefaultOn"), keyboard = on[0][name] == true, controller = on[1][name] == true})
+    end
+  end
+  out[#out + 1] = {character = okn and who or "?", name = Osi.GetDisplayName and Ext.Loca.GetTranslatedString(Osi.GetDisplayName(who)) or "", toggles = rows}
+end
+return out
+"""
+
+
+def toggle_audit():
+    """Every toggled passive each hotbar character has, and whether its button is on the keyboard / controller hotbar.
+    A toggle on neither can't be switched by the player: stuck at its default (on for ToggledDefaultOn). Server-side read."""
+    r = se.eval_lua(TOGGLE_AUDIT, "server", timeout=20)
+    if not r.get("ok"):
+        raise RuntimeError("toggle audit failed: " + str(r.get("result"))[:300])
+    return r["result"]
