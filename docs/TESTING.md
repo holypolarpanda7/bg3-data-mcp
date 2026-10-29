@@ -20,7 +20,14 @@ combat, even for a class-learned spell (verified 2026-09-30: slot and Action Poi
   (`reactions` = the ones to accept; every other prompt gets Do Not React). Reaction preferences are left as the
   game has them (Ask), unlike auto. Costs are really charged and checked like `player`. It fails when the spell isn't
   on any hotbar: the reachability check scripted casts can't make (a toggle that never reached the hotbar on old
-  saves shipped in PTA 1.0.5.0). Not yet: ground targets, container variant pickers. ~4 s for the UI part.
+  saves shipped in PTA 1.0.5.0). ~4 s for the UI part. Also handled:
+  - container children (`spell = "Projectile_ChromaticOrb_Fire"`): the container tile, then the variant tile;
+  - upcasts (`slot_level`): the cast event is `<spell>_<level>` (Projectile_MagicMissile_2), which `cast = true` accepts;
+  - ground targets (`target = "ground"`, `distance` along world X from the host, or `at = "<alias>"` = under a spawn):
+    the cursor's ground hit is checked before clicking;
+  - known but unprepared spells: prepared in the spellbook while staging (the game refuses it in combat), one confirmed
+    toggle at a time; when the spellbook is full, `unprepare = "<spell>"` (default: the last prepared levelled spell)
+    makes room; everything is toggled back after the cleanup ends the fight. A spell that isn't learned is NOT RUN.
   Standalone: `bg3_ui_cast`; what the UI offers (hotbars, Reactions panel Ask/Enabled): `bg3_ui_state`.
 - `mode = "script"`: effects only, no class-ownership requirement.
 - `mode = "ai"`: a spawn (`caster`) casts through its own AI on its own turns while the host ends turns under

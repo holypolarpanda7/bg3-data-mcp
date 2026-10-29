@@ -807,6 +807,15 @@ Osi.LeaveCombat(h) return true""")
             notes.append("left a leftover combat (no live enemy within 30 m)")
     if blockers:
         return {"ok": False, "blockers": blockers, "notes": notes}
+    if mode == "ui" and c.get("spell"):  # a known-but-unprepared spell is prepared in the spellbook now: the game refuses it in combat
+        from . import uicast
+        try:
+            undo_, msg_ = uicast.ensure_on_hotbar(c["spell"], c.get("unprepare"))
+        except RuntimeError as e_:
+            return {"ok": False, "blockers": [f"ui: {e_}"], "notes": notes}
+        _UI_UNDO[:] = undo_
+        if msg_:
+            notes.append("ui: " + msg_)
 
     pre_statuses = pre.get("statuses") or []  # anything not here at the end was added by the run
     spawns = c.get("spawn", [])
@@ -1018,14 +1027,17 @@ Osi.LeaveCombat(h) return true""")
     if mode == "ui" and c.get("spell"):  # through the hotbar with real clicks (bg3data/uicast.py): reachability, real costs, prompts
         from . import uicast
         t_ = c.get("target", "host")
-        if t_ == "ground":
-            return {"ok": False, "error": "ui mode can't aim at the ground yet", "notes": notes}
+        ground = None
+        if t_ == "ground":  # the spot `distance` m along world X from the host (as castAt), or under spawn `at`
+            who_ = f"BG3T.spawns[{se._lua_string(c['at'])}]" if c.get("at") else "BG3T.host()"
+            dx_ = 0 if c.get("at") else float(c.get("distance", 3))
+            ground = lua(f"local x, y, z = Osi.GetPosition({who_}) return {{x + {dx_}, y, z}}")
         if combat and not gameui.wait_host_turn(timeout=30):
             return {"ok": False, "error": "ui: the host's turn never came", "notes": notes}
-        tg = "self" if t_ == "host" else (lua(f"return BG3T.spawns[{se._lua_string(t_)}]") or "")[-36:]
+        tg = None if ground else "self" if t_ == "host" else (lua(f"return BG3T.spawns[{se._lua_string(t_)}]") or "")[-36:]
         for i in range(max(1, int(c.get("repeat", 1)))):
             ur = uicast.cast(c["spell"], target=tg, level=c.get("slot_level"), clicks=c.get("clicks"),
-                             reactions={k: True for k in c.get("reactions", [])}, snapshot=False)
+                             reactions={k: True for k in c.get("reactions", [])}, snapshot=False, ground=ground)
             notes.append("ui: " + ("; ".join(ur.get("steps", [])) + (f"; prompts {ur['prompts']}" if ur.get("prompts") else "")
                                    + f"; {ur['seconds']}s" if ur.get("ok") else "FAILED - " + ur.get("error", "")))
             if not ur.get("ok"):
@@ -1427,7 +1439,10 @@ def verify(store, active, cleanup=True, wait=2.0):
                 row(d == e.get("change", -1), f"{e['resource']}[{lvl}] {bv[0]:g} -> {av[0]:g} (change {d:+g}, expected {e.get('change', -1):+d})")
         if e.get("cast"):
             spell = c.get("spell") if e["cast"] is True else e["cast"]
-            row(any(x.get("spell") == spell for x in casts), f"cast event for {spell} from you" + ("" if casts else " (no cast seen)"))
+            # an upcast is cast as its own entry, <spell>_<slot level> (Projectile_MagicMissile_2: a real hotbar upcast, 2026-10-29)
+            hit = [x.get("spell") for x in casts if x.get("spell") == spell or re.fullmatch(re.escape(spell) + r"_\d", x.get("spell") or "")]
+            row(bool(hit), f"cast event for {spell} from you" + (f" (as {hit[0]})" if hit and hit[0] != spell else "")
+                + ("" if casts else " (no cast seen)"))
         if e.get("acted_first"):
             ft = state.get("first_turn")
             row(bool(ft) and ft.get("who") == host, f"you acted first in initiative" + ("" if ft else " (no turn recorded)"))
@@ -1537,6 +1552,21 @@ def run_console(c):
     return f"{c['id']}: {verdict}  [mod console command: {c['console']}]\n  {c.get('title', '')}\n" + "\n".join(f"  | {l}" for l in tail)
 
 
+_UI_UNDO = []   # spellbook changes a ui case made while staging, undone once the fight is over
+
+
+def _restore_ui():
+    if not _UI_UNDO:
+        return
+    from . import uicast
+    for _ in range(40):   # preparing is refused in combat: wait for the cleanup to end it
+        if lua("return Osi.IsInCombat(Osi.GetHostCharacter())") != 1:
+            break
+        timing.wait(0.25)
+    uicast.restore(list(_UI_UNDO))
+    _UI_UNDO.clear()
+
+
 def run(store, active, layer, case_id, wait=4.0):
     """Stage + (scripted) cast + verify in one go for auto/script cases; console cases run their command.
     `retries` re-runs a failed case (for save-based effects the target can resist)."""
@@ -1549,8 +1579,14 @@ def run(store, active, layer, case_id, wait=4.0):
     for attempt in range(1 + int(c.get("retries", 0))):
         r = stage(store, active, layer, case_id)
         if not r["ok"]:
-            return f"{case_id}: NOT RUN - " + "; ".join(r["blockers"])
+            if "blockers" in r:
+                _restore_ui()
+                return f"{case_id}: NOT RUN - " + "; ".join(r["blockers"])
+            rep = cleanup()   # failed mid-case (e.g. a ui cast that couldn't aim): don't leave the fight running
+            _restore_ui()
+            return f"{case_id}: FAIL - {r.get('error')}\n  " + "\n  ".join(r.get("notes", [])) + f"\n  cleanup: {rep}"
         out = verify(store, active, cleanup=True, wait=wait)
+        _restore_ui()
         if ": PASS" in out.split("\n")[0]:
             return out + (f"\n  (passed on attempt {attempt + 1})" if attempt else "")
     return out

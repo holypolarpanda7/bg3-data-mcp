@@ -21,7 +21,7 @@ import time
 
 from . import gameui, se
 
-VERSION = 1
+VERSION = 6
 
 CLIENT_LIB = r"""
 if BG3UI and BG3UI.v == %d then return true end
@@ -73,15 +73,22 @@ function U.state()
   for i = 1, #it do table.insert(out.interrupts, {id = it[i].PrototypeID, ask = it[i].Ask, enabled = it[i].Enabled}) end
   return out
 end
-function U.select(spell, level, variant)
+function U.select(spell, level)
   local hb = U.hb()
   local bar, idx, slot, var = U.locate(spell)
   if not bar then return {error = "not on any hotbar"} end
   if not hb.UseSlotCommand:CanExecute(slot) then return {error = "the hotbar can't use slot " .. idx .. " of " .. bar .. " (greyed out)", bar = bar, index = idx} end
-  hb.UseSlotCommand:Execute(slot)
+  hb.UseSlotCommand:Execute(slot)            -- a container opens its variant row ("Select Variant")
   local res = {bar = bar, index = idx}
-  if hb.IsSelectingUpcastedSpell then
-    local up, pick = slot.Content.SpellUpcast, nil
+  local entry = slot.Content
+  if var then
+    hb.UseSlotCommand:Execute(var)           -- the variant tile: closes the row and starts that variant (2026-10-29)
+    res.variant = id(var)
+    entry = var
+  end
+  local okU, up = pcall(function() return entry.SpellUpcast end)
+  if okU and up and #up > 0 and (level or hb.IsSelectingUpcastedSpell) then
+    local pick = nil
     for j = 1, #up do
       local lv = up[j].SlotLevel
       if (level and lv == level) or (not level and up[j].CanUse and not pick) then pick = up[j] end
@@ -90,10 +97,32 @@ function U.select(spell, level, variant)
     hb.LaunchUpcastCommand:Execute(pick)
     res.level = pick.SlotLevel
   end
-  if var then res.variant_needed = id(var) end
-  res.variants_open = hb.IsShowingAContainerWithVariants
   return res
 end
+-- the spellbook entry for a spell: (vm, book index) - Activated = prepared (or always available)
+function U.book(spell)
+  local pp = U.pcp()
+  for b = 1, #pp.SpellBooks do
+    local gs = pp.SpellBooks[b].ActionGroups
+    for g = 1, #gs do local a = gs[g].Actions for j = 1, #a do if id(a[j]) == spell then return a[j], b end end end
+  end
+end
+function U.prepared() local ok, v = pcall(function() return U.pcp().PreparedSpellsStat end) if ok and v then return v.Value, v.Max end end
+-- what to unprepare so `spell` fits: nil when there is room; `swap` if given, else the last prepared levelled class spell
+function U.swapFor(spell, swap)
+  local n, max = U.prepared()
+  if not (n and max and n >= max) then return nil end
+  if swap and U.book(swap) then return swap end
+  local vm, b = U.book(spell)
+  local gs, out = U.pcp().SpellBooks[b].ActionGroups, nil
+  for g = 1, #gs do local a = gs[g].Actions for j = 1, #a do
+    local okl, lv = pcall(function() return a[j].SpellSlotLevel end)
+    if a[j].Activated and okl and lv and lv > 0 and id(a[j]) ~= spell then out = id(a[j]) end
+  end end
+  return out or false
+end
+function U.toggleBook(spell) local vm = U.book(spell) if vm then U.hb().ToggleCharacterAction:Execute(vm) return true end end
+function U.isPrepared(spell) local vm = U.book(spell) return vm and vm.Activated or false end
 function U.cancel() pcall(function() U.hb().ActionCancelCommand:Execute(nil) end) end
 local function camera()
   for _, e in ipairs(Ext.Entity.GetAllEntitiesWithComponent("Camera")) do if e.Camera.Active then return e.Camera.Controller.Camera end end
@@ -119,6 +148,11 @@ function U.hovered()
     local ok, u = pcall(function() return i[k].Uuid.EntityUuid end)
     if ok and u then return u end
   end
+end
+function U.pointed()
+  local ph = Ext.UI.GetPickingHelper(1)
+  local p = ph and ph.Inner and ph.Inner.Position
+  return p and {p[1], p[2], p[3]} or nil
 end
 function U.casting() local ok, v = pcall(function() return U.pcp().IsCasting end) return ok and v or false end
 -- the open reaction prompt: {spell, decisions = {{id, decision}}}
@@ -245,6 +279,23 @@ def _hover_target(uuid, log):
     return None
 
 
+def _hover_ground(point, log, tol=1.0):
+    """Move the mouse over a world point and confirm with the game's picking that the cursor's ground hit is within `tol` m."""
+    p = _c(f"return BG3UI.project({{{point[0]}, {point[1]}, {point[2]}}})")
+    if not p:
+        return None
+    fx, fy = p
+    if not (0.01 < fx < 0.99 and 0.01 < fy < 0.99):
+        log.append(f"ground point off screen at ({fx:.2f}, {fy:.2f})")
+        return None
+    gameui._fast(f"move {fx:.5f} {fy:.5f}")
+
+    def near():
+        q = _c("return BG3UI.pointed()")
+        return q and ((q[0] - point[0]) ** 2 + (q[2] - point[2]) ** 2) ** 0.5 <= tol
+    return (fx, fy) if _poll(near, 0.6, 0.08) else None
+
+
 def _find_button(which, kind, log):
     """Hover-scan for a prompt button (IsMouseOver), starting at its cached position. Returns (fx, fy) or None."""
     check = f"return BG3UI.overButton({_lua(which)})"
@@ -268,7 +319,10 @@ def answer_prompt(reactions, log, timeout=6.0):
     """Answer the open reaction prompt(s): reactions = {interrupt id or display substring: True/False}; unnamed = Do Not React."""
     answered = []
     while True:
-        p = _poll(lambda: _c("return BG3UI.prompt()"), timeout, 0.15)
+        # a prompt opens while the cast is still on; once the cast has ended there is nothing to wait for
+        r = _poll(lambda: _c("local p = BG3UI.prompt() if p then return p end return not BG3UI.casting() and 'done' or nil"),
+                  timeout, 0.15)
+        p = r if isinstance(r, dict) else None
         if not p:
             return answered
         timeout = 0.5                                 # a chained prompt (another reaction to the same cast) opens at once
@@ -283,28 +337,111 @@ def answer_prompt(reactions, log, timeout=6.0):
         answered.append({"spell": p.get("spell"), "offered": ids, "answer": want or "Do Not React", "closed": bool(closed)})
 
 
-def cast(spell, target=None, level=None, clicks=None, reactions=None, timeout=8.0, snapshot=True):
+def _toggle(spell, want, timeout=4.0):
+    """Toggle `spell` in the spellbook and wait until the game shows it prepared (want=True) or not."""
+    if _c(f"return BG3UI.isPrepared({_lua(spell)})") == want:
+        return True
+    _c(f"return BG3UI.toggleBook({_lua(spell)})")
+    return bool(_poll(lambda: _c(f"return BG3UI.isPrepared({_lua(spell)})") == want, timeout, 0.15))
+
+
+def _prepare(spell, swap, log):
+    """Known but unprepared: prepare it through the spellbook UI, one confirmed toggle at a time. Returns {undo} or {error, undo}."""
+    if not _c(f"return BG3UI.book({_lua(spell)}) ~= nil"):
+        return {"error": "not in the spellbook (not learned)"}
+    undo = []
+    out = _c(f"return BG3UI.swapFor({_lua(spell)}, {_lua(swap)})")
+    if out is False:
+        return {"error": "the spellbook is full and nothing can be unprepared"}
+    if out:
+        if not _toggle(out, False):
+            return {"error": f"couldn't unprepare {out} to make room", "undo": undo}
+        undo.append((out, True))
+    if not _toggle(spell, True):
+        return {"error": "the spellbook didn't prepare it", "undo": undo}
+    undo.insert(0, (spell, False))
+    if not _poll(lambda: _c(f"return BG3UI.locate({_lua(spell)}) ~= nil"), 4.0, 0.15):
+        return {"error": "prepared, but it never appeared on a hotbar", "undo": undo}
+    log.append(f"prepared {spell} in the spellbook" + (f" (unprepared {out}: the spellbook was full)" if out else ""))
+    return {"undo": undo}
+
+
+def ensure_on_hotbar(spell, swap=None):
+    """Out of combat (preparing is refused in combat): prepare `spell` through the spellbook if it isn't on a hotbar.
+    Returns (undo list for restore(), message or None); raises RuntimeError when it can't be done."""
+    install()
+    if _c(f"return BG3UI.locate({_lua(spell)}) ~= nil"):
+        return [], None
+    log = []
+    pr = _prepare(spell, swap, log)
+    if pr.get("error"):
+        if pr.get("undo"):
+            _undo_prepare(pr["undo"], log)
+        raise RuntimeError(f"{spell} is not on any hotbar and couldn't be prepared: {pr['error']}")
+    return pr.get("undo", []), "; ".join(log)
+
+
+def restore(undo):
+    """Toggle back what ensure_on_hotbar prepared/unprepared (out of combat)."""
+    if undo:
+        if not _undo_prepare(undo, []):
+            raise RuntimeError(f"couldn't restore the spellbook: {undo}")
+
+
+def _undo_prepare(undo, log):
+    """undo = [(spell, prepared state to restore)] - ours first (frees the room), then the swapped one back."""
+    bad = [sp for sp, want in undo if not _toggle(sp, want)]
+    log.append("spellbook restored" if not bad else f"spellbook NOT fully restored: {', '.join(bad)}")
+    return not bad
+
+def cast(spell, target=None, level=None, clicks=None, reactions=None, timeout=8.0, snapshot=True, ground=None, swap=None,
+         keep_prepared=False):
     """Cast `spell` through the hotbar UI with real clicks. target: an entity uuid, "self" (the host), or None (no aim
     needed / shouts). clicks: how many target clicks (multi-target spells; default: until the cast starts, max 6).
     reactions: {interrupt id (or part of it): True} to accept that prompt; other prompts get Do Not React.
-    snapshot=False skips the before/after HP and slot read (the test harness takes its own)."""
+    snapshot=False skips the before/after HP and slot read (the test harness takes its own).
+    ground=[x, y, z]: a ground-targeted spell, clicked on that world point (the cursor's ground hit is checked first).
+    A spell that is known but not prepared is prepared through the spellbook first (when full, `swap` - or the last
+    prepared levelled spell - is unprepared) and the spellbook is restored afterwards unless keep_prepared."""
     t0, log = time.time(), []
     install()
     gameui.focus_game()
     before = _snapshot(target) if snapshot else None
     host = _c("return Ext.Entity.GetAllEntitiesWithComponent('ClientControl')[1].Uuid.EntityUuid") if target == "self" else None
+    undo = []
+    if not _c(f"return BG3UI.locate({_lua(spell)}) ~= nil"):
+        pr = _prepare(spell, swap, log)
+        undo = pr.get("undo", [])
+        if pr.get("error"):
+            if undo:
+                _undo_prepare(undo, log)
+            return {"ok": False, "error": f"{spell} is not on any hotbar and couldn't be prepared: {pr['error']}",
+                    "seconds": round(time.time() - t0, 1)}
+    try:
+        return _cast(spell, target, level, clicks, reactions, timeout, snapshot, ground, log, t0, before, host)
+    finally:
+        if undo and not keep_prepared:
+            _undo_prepare(undo, log)
+
+
+def _cast(spell, target, level, clicks, reactions, timeout, snapshot, ground, log, t0, before, host):
     # a slot stays greyed out while the previous cast's animation finishes: wait for it instead of failing
     _poll(lambda: _c(f"local b, i, s = BG3UI.locate({_lua(spell)}) return not s or "
                      "(BG3UI.hb().UseSlotCommand:CanExecute(s) and not BG3UI.casting())"), 4.0, 0.15)
     sel = _c(f"return BG3UI.select({_lua(spell)}, {level if level else 'nil'})")
     if sel.get("error"):
         return {"ok": False, "error": sel["error"], "where": sel, "seconds": round(time.time() - t0, 1)}
-    log.append(f"hotbar: {sel['bar']} slot {sel['index']}" + (f", slot level {sel['level']}" if sel.get("level") else "")
+    log.append(f"hotbar: {sel['bar']} slot {sel['index']}" + (f", variant {sel['variant']}" if sel.get("variant") else "")
+               + (f", slot level {sel['level']}" if sel.get("level") else "")
                + f" @{time.time() - t0:.1f}s")
-    if sel.get("variants_open") or sel.get("variant_needed"):
-        _c("BG3UI.cancel() return true")
-        return {"ok": False, "error": f"{spell} sits in a container ({sel.get('variant_needed')}): variant picking isn't automated yet",
-                "where": sel, "seconds": round(time.time() - t0, 1)}
+    if ground:
+        pos = _hover_ground(ground, log)
+        if not pos:
+            _c("BG3UI.cancel() return true")
+            return {"ok": False, "error": "couldn't hover the ground point (" + "; ".join(log) + ")", "seconds": round(time.time() - t0, 1)}
+        gameui._fast(f"click {pos[0]:.5f} {pos[1]:.5f} L 1")
+        log.append(f"clicked the ground at {[round(v, 1) for v in ground]} @{time.time() - t0:.1f}s")
+        target = None
     aim = host if target == "self" else target
     n = 0
     started = False
@@ -330,6 +467,7 @@ def cast(spell, target=None, level=None, clicks=None, reactions=None, timeout=8.
         _c("BG3UI.cancel() return true")
         return {"ok": False, "error": "the cast didn't start after the clicks", "ui": state, "steps": log,
                 "seconds": round(time.time() - t0, 1)}
+    log.append(f"cast started @{time.time() - t0:.1f}s")
     prompts = answer_prompt(reactions, log, timeout=timeout)
     if prompts:
         log.append(f"prompt answered @{time.time() - t0:.1f}s")
