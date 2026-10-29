@@ -1272,6 +1272,34 @@ def bg3_game_dialog(dismiss: bool = True) -> str:
 
 @mcp.tool()
 @guarded
+def bg3_ui_cast(spell: str, target: str | None = None, level: int | None = None, clicks: int | None = None,
+                reactions: list[str] | None = None) -> str:
+    """Cast a spell the way a player does: start it from the hotbar (the hotbar's own UseSlot/LaunchUpcast commands),
+    aim with REAL mouse clicks on the target (its position projected through the game camera, the hover confirmed by the
+    game's picking before clicking) and answer reaction prompts with real clicks (`reactions`: interrupt ids or parts of
+    them to accept, e.g. ["Overchannel"]; any other prompt gets Do Not React). target: an entity uuid, "self", or none.
+    clicks: target clicks for multi-target spells (Magic Missile at level 1 = 3). Fails, without casting, when the spell
+    isn't on any hotbar - that is the reachability check scripted casts can't make. Returns the steps with timings, the
+    prompts answered and the spell slots really spent. In test cases use mode = "ui" instead."""
+    from . import uicast
+    import json as _json
+    return _json.dumps(uicast.cast(spell, target=target, level=level, clicks=clicks,
+                                   reactions={k: True for k in (reactions or [])}), indent=1)
+
+
+@mcp.tool()
+@guarded
+def bg3_ui_state() -> str:
+    """What the game's UI offers the selected character: the spell ids on each hotbar (class, common, custom, passives,
+    keyboard bars) and the Reactions panel entries with their Ask/Enabled settings. Use it to check that a feature is
+    reachable from the UI (e.g. a toggle or reaction that only appears when granted on a fresh character)."""
+    from . import uicast
+    import json as _json
+    return _json.dumps(uicast.state(), indent=1)
+
+
+@mcp.tool()
+@guarded
 def bg3_screenshot(full: bool = False) -> str:
     """Capture the running game's window to a PNG (half size; full=True: full client size, e.g. 1920x1080, for gallery images) and return its file path - open it with an image-capable
     Read to see what is on screen (dialogs, the HUD, a level-up screen). Needs the game running; it brings the game to the front first (a capture only sees what is visible), so use it while nobody is typing."""
