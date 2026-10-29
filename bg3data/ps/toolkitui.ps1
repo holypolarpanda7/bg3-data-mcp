@@ -22,6 +22,12 @@ public class TkInput {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
+  [StructLayout(LayoutKind.Sequential)] public struct PT { public int X, Y; }
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(PT p);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  public static uint PidAt(int x, int y) { var p = new PT(); p.X = x; p.Y = y; uint pid; GetWindowThreadProcessId(WindowFromPoint(p), out pid); return pid; }
 }
 "@
 $A = [System.Windows.Automation.AutomationElement]; $S = [System.Windows.Automation.TreeScope]; $CT = [System.Windows.Automation.ControlType]
@@ -139,7 +145,17 @@ switch ($Cmd) {
         $h = [IntPtr]::Zero
         if ($p -and $Title) { $w = FindWindow $p $Title; if ($w) { $h = [IntPtr]$w.Current.NativeWindowHandle } }
         if ($h -eq [IntPtr]::Zero -and $p) { $h = $p.MainWindowHandle }
-        if ($h -ne [IntPtr]::Zero) { [TkInput]::SetForegroundWindow($h) | Out-Null; Start-Sleep -Milliseconds 300 }
+        # an Alt tap lets a background process take the foreground (plain SetForegroundWindow is often refused: on
+        # 2026-10-29 the terminal stayed on top and Publish Local clicked into it, then the caller waited 180 s for a pak)
+        for ($i = 0; $i -lt 3 -and $h -ne [IntPtr]::Zero; $i++) {
+            [TkInput]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [TkInput]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+            [TkInput]::ShowWindow($h, 9) | Out-Null; [TkInput]::SetForegroundWindow($h) | Out-Null; Start-Sleep -Milliseconds 300
+            if ($p -and [TkInput]::PidAt($X, $Y) -eq [uint32]$p.Id) { break }
+        }
+        # never click blind: the window under the point must be the Toolkit's
+        if ($p -and [TkInput]::PidAt($X, $Y) -ne [uint32]$p.Id) {
+            J @{ error = "another window covers the Toolkit at ($X, $Y) - not clicked"; x = $X; y = $Y }; break
+        }
         [TkInput]::SetCursorPos($X, $Y) | Out-Null; Start-Sleep -Milliseconds 120
         [TkInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60
         [TkInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
