@@ -163,7 +163,10 @@ def upload(layer, zip_path, version, file_id=None, name=None, changelog=None, ke
     if not target:
         raise SystemExit(f"file {fid!r} isn't one of mod {nx['mod']}'s files - run `status {layer}` and set nexus.file")
     changelog = changelog or changelog_from_file(layer, version)
-    body = {"name": name or target.get("name") or os.path.basename(zip_path), "version": version, "file_category": "main",
+    # the file record keeps the name of its first upload ("Path to Apotheosis v1.0.0.0"): reusing it named every later version
+    # v1.0.0.0 on the Files tab (seen 2026-10-29). Swap its trailing version for this one.
+    base = re.sub(r"\s*v?\d+(\.\d+)+\s*$", "", target.get("name") or "").strip()
+    body = {"name": name or (f"{base} v{version}" if base else os.path.basename(zip_path)), "version": version, "file_category": "main",
             "archive_existing_file": not keep_old and int(nx.get("keep_versions") or 1) <= 1,
             "update_mod_version": True, "primary_mod_manager_download": True}
     log(f"{'UPLOAD' if apply else 'DRY RUN'}: {os.path.basename(zip_path)} ({os.path.getsize(zip_path)} bytes) -> mod {nx['mod']} "
