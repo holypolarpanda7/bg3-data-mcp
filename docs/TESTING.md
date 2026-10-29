@@ -13,6 +13,15 @@ combat, even for a class-learned spell (verified 2026-09-30: slot and Action Poi
   `bg3_test_run` / `bg3_test_run_level` do stage + cast + verify + cleanup in one call.
 - `mode = "player"`: stage, you cast from the class spell bar, `bg3_test_verify`. Measures the real
   resource change; use it as a spot check (e.g. once per resource type).
+- `mode = "ui"` (2026-10-29, `bg3data/uicast.py`): unattended player cast. The harness stages as usual, then the
+  spell is started from the hotbar's own commands (UseSlot, LaunchUpcast with `slot_level`), aimed with real mouse
+  clicks (`clicks` = target picks; the target's position is projected through the game camera and the hover is
+  confirmed by the game's picking before clicking) and reaction prompts are answered with real clicks
+  (`reactions` = the ones to accept; every other prompt gets Do Not React). Reaction preferences are left as the
+  game has them (Ask), unlike auto. Costs are really charged and checked like `player`. It fails when the spell isn't
+  on any hotbar: the reachability check scripted casts can't make (a toggle that never reached the hotbar on old
+  saves shipped in PTA 1.0.5.0). Not yet: ground targets, container variant pickers. ~4 s for the UI part.
+  Standalone: `bg3_ui_cast`; what the UI offers (hotbars, Reactions panel Ask/Enabled): `bg3_ui_state`.
 - `mode = "script"`: effects only, no class-ownership requirement.
 - `mode = "ai"`: a spawn (`caster`) casts through its own AI on its own turns while the host ends turns under
   Sanctuary. Real rolls AND interrupts/reactions: the only way to exercise what an enemy's spell does to the
@@ -26,9 +35,11 @@ Every verdict states which kind of run it was.
 | --- | --- |
 | A spell's effects: damage, statuses, healing, summons, costs (from data) | `auto` / `script`: a scripted cast. Deterministic and fastest. |
 | Something that depends on the target's saving throw (save bonuses, advantage, floors) | `script` + `real_rolls = true` (the save is rolled), or `ai` |
-| Anything that reacts to a roll or a cast: interrupts (Legendary Resistance-style), reactions | `ai` only - Osiris casts never raise OnPostRoll interrupts |
+| Anything that reacts to a roll: interrupts (Legendary Resistance-style), reactions | `ai` only - Osiris casts never raise OnPostRoll interrupts |
+| The caster's own OnSpellCast prompt (Overchannel-style) | `ui` (real prompt, clicked); `auto` with `reactions` answers it by script (it does fire on Osiris casts, 2026-10-29) |
 | Turn order, enemy turns | `end_turns` (any mode) or `ai` |
-| A spell's real slot/action cost | `player` (hotbar spot check) |
+| A spell's real slot/action cost | `ui` (unattended) or `player` (by hand) |
+| A feature is reachable from the UI; a reaction prompt appears and its answer works | `ui` |
 
 Before writing an `ai` case, run `bg3_test_spell_check(spell)`: it says whether the AI can cast the spell at all
 (`AIFlags CanNotUse`), whether its save is the spell's own roll or comes from a status/surface/passive, and what

@@ -121,7 +121,12 @@ while ($true) {
             "click" { $s = Client-Size
                       $b = if ($a.Count -gt 3) { $a[3] } else { "L" }; $n = if ($a.Count -gt 4) { [int]$a[4] } else { 1 }
                       Do-Click ([int]($s[0] * [double]$a[1])) ([int]($s[1] * [double]$a[2])) $b $n; $r = "ok" }
-            "clickpx" { $b = if ($a.Count -gt 3) { $a[3] } else { "L" }; $n = if ($a.Count -gt 4) { [int]$a[4] } else { 1 }
+            "move"  { Set-Focus; $s = Client-Size; $hw = Get-Game   # hover only (fractions of the client area): no button
+                      $pt = New-Object ID+PT; $pt.X = [int]($s[0] * [double]$a[1]); $pt.Y = [int]($s[1] * [double]$a[2])
+                      [ID]::ClientToScreen($hw, [ref]$pt) | Out-Null
+                      [ID]::SetCursorPos($pt.X + 4, $pt.Y + 3) | Out-Null; Start-Sleep -Milliseconds 25
+                      [ID]::SetCursorPos($pt.X, $pt.Y) | Out-Null; $r = "ok" }
+            "clickpx" { $b =if ($a.Count -gt 3) { $a[3] } else { "L" }; $n = if ($a.Count -gt 4) { [int]$a[4] } else { 1 }
                       Do-Click ([int]$a[1]) ([int]$a[2]) $b $n; $r = "ok" }
             "shot"  { Set-Focus; Start-Sleep -Milliseconds 80
                       $h = Get-Game; $s = Client-Size

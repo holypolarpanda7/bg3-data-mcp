@@ -44,7 +44,7 @@ FACTIONS = {
     "friendly": "80182081-6bb1-95f1-c40f-4c3cea368269",
     "neutral": "a66b2d45-1b6c-082d-8a01-c6d975ead314",
 }
-MODES = ("ai", "auto", "player", "script")
+MODES = ("ai", "auto", "player", "script", "ui")
 SCRIPT_SPELL_SOURCES = {"Osiris"}  # spells added by script (Osi.AddSpell): not class-sourced
 GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
@@ -917,7 +917,8 @@ Osi.LeaveCombat(h) return true""")
     # eaten by Projected Ward, 2026-10-02). AI mode keeps them all on unless the case lists some.
     keep = c.get("reactions", ["*"] if mode == "ai" else [])
     timing.wait(0.6)  # a freshly added passive's interrupt appears a moment later
-    lua(f"return BG3T.setReactions(BG3T.host(), {{{', '.join(se._lua_string(k) for k in keep)}}})", timeout=15)
+    if mode != "ui":  # ui mode keeps the game's own preferences (Ask): the prompts are answered with clicks
+        lua(f"return BG3T.setReactions(BG3T.host(), {{{', '.join(se._lua_string(k) for k in keep)}}})", timeout=15)
     timing.wait(0.2)
     before = lua("return BG3T.world()", timeout=30)
     if combat == "after_setup":  # the fight starts after the snapshot, so "when you roll Initiative" effects count
@@ -1014,6 +1015,21 @@ Osi.LeaveCombat(h) return true""")
                 for st_ in c.get("clear_between", []):  # e.g. PRONE, so every cast can land it again
                     lua(f"local g = {tgt} if Osi.HasActiveStatus(g, {se._lua_string(st_)}) == 1 then Osi.RemoveStatus(g, {se._lua_string(st_)}) end return true")
                 lua(f"BG3T.cast({who}, {se._lua_string(c['spell'])}, {tgt}, {rolled}); return true")
+    if mode == "ui" and c.get("spell"):  # through the hotbar with real clicks (bg3data/uicast.py): reachability, real costs, prompts
+        from . import uicast
+        t_ = c.get("target", "host")
+        if t_ == "ground":
+            return {"ok": False, "error": "ui mode can't aim at the ground yet", "notes": notes}
+        if combat and not gameui.wait_host_turn(timeout=30):
+            return {"ok": False, "error": "ui: the host's turn never came", "notes": notes}
+        tg = "self" if t_ == "host" else (lua(f"return BG3T.spawns[{se._lua_string(t_)}]") or "")[-36:]
+        for i in range(max(1, int(c.get("repeat", 1)))):
+            ur = uicast.cast(c["spell"], target=tg, level=c.get("slot_level"), clicks=c.get("clicks"),
+                             reactions={k: True for k in c.get("reactions", [])}, snapshot=False)
+            notes.append("ui: " + ("; ".join(ur.get("steps", [])) + (f"; prompts {ur['prompts']}" if ur.get("prompts") else "")
+                                   + f"; {ur['seconds']}s" if ur.get("ok") else "FAILED - " + ur.get("error", "")))
+            if not ur.get("ok"):
+                return {"ok": False, "error": "ui cast: " + ur.get("error", ""), "notes": notes, "ui": ur}
     if c.get("rest"):  # rest = "short": a real short rest through the HUD (OnShortRest passives, e.g. Red Renewal)
         ok_, why_ = gameui.short_rest()
         notes.append(f"rest short: {why_}")
@@ -1202,7 +1218,7 @@ def verify(store, active, cleanup=True, wait=2.0):
         if k not in before and isinstance(v, dict) and v.get("guid"):
             before[k] = {"guid": v["guid"]}
     mode = state["mode"]
-    player = mode == "player"
+    player = mode in ("player", "ui")  # both really cast: the engine charges the costs
     costs = None if player or not c.get("spell") else _use_costs(c["spell"])
     host = (before.get("host") or {}).get("guid")
     results = []
@@ -1446,7 +1462,9 @@ def verify(store, active, cleanup=True, wait=2.0):
                     + ("" if done == n else f" (only {done} results came back)"))
     safety = [x for x in events if x.get("kind") == "SAFETY"]
     where = " in real combat (initiative)" if state["combat"] else " out of combat"
-    if player:
+    if mode == "ui":
+        fid = "UI cast (hotbar + real clicks)" + where
+    elif player:
         fid = "player cast" + where
     elif mode == "ai":
         fid = f"AI cast by {c.get('caster')} on its own turns - real rolls and interrupts"
