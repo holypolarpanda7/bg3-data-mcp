@@ -210,6 +210,26 @@ function main(context) {
         });
         return { installed: modId, ...status() };
       },
+      // import local archives (absolute Windows paths) as downloads of the active game; returns their download ids.
+      // Used by dd2-mcp's packaging test (2026-10-29): a release zip -> download -> POST /install.
+      'POST /import': async (b) => {
+        const paths = b.paths || [];
+        const names = paths.map(p => p.split(/[\\/]/).pop().toLowerCase());
+        const stamp = (d) => `${d.received}|${d.started}`;
+        const before = Object.fromEntries(downloads().map(d => [d.id, stamp(d)]));
+        // a rebuilt archive keeps its file name: Vortex asks "File exists" -> Replace (keeps the download id)
+        autoAnswer([{ label: '^replace$', title: 'file exists' }], 60000);
+        api.events.emit('import-downloads', paths, () => {});
+        const deadline = Date.now() + 45000;
+        let found = [];
+        while (Date.now() < deadline) {
+          found = downloads().filter(d => d.state === 'finished' && names.includes(String(d.localPath || '').toLowerCase())
+            && (!(d.id in before) || stamp(d) !== before[d.id] || b.allowUnchanged));
+          if (found.length >= paths.length) break;
+          await new Promise(r => setTimeout(r, 500));
+        }
+        return { imported: found.map(d => ({ id: d.id, localPath: d.localPath })) };
+      },
       'POST /remove': async (b) => {
         const g = gameId(); const id = findMod(g, b.mod);
         await new Promise((res, rej) => api.events.emit('remove-mod', g, id, (err) => (err ? rej(err) : res())));
