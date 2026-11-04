@@ -629,7 +629,10 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
     if wanted:                        # don't assume where the page is scrolled: put it at the top (probes expect that)
         _scroll_panel(down=False)
     _TAKEN.clear()
-    kind = _picker_kind()
+    # The feat page is told from the view model, not from brightness: the padlocks on locked feats (a Dexterity class's list
+    # has some at y ~ 483) light the "grid" probe band, and the page was then clicked as a spell grid (rogue-thief and
+    # gunslinger L4, 2026-11-04, after DnD 5.5e 4.14.3.5 changed which feats are locked).
+    kind = None if levelup_state().get("can_feat") else _picker_kind()
     if wanted and (kind or _stable_tiles()):
         for sid in _pick_wanted(y, kind, wanted, log):
             wanted.pop(sid, None)
