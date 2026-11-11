@@ -369,6 +369,69 @@ def _rclick(x, y):
     return click_frac(x / REF_W, y / REF_H)
 
 
+# Feat page geometry (1920x1080 reference, verified 2026-11-11): the list's rows are 26 px apart and in SelectableFeats order;
+# the first visible row's label sits at y 194, the last fully visible near 876. The mouse wheel doesn't scroll it; dragging its
+# scrollbar (x 720) does. Walking the screen's visual tree for the rows HUNG the client (2026-11-11) - only the view model is read.
+FEAT_ROW_X, FEAT_ROW_H, FEAT_TOP_Y, FEAT_BOTTOM_Y, FEAT_SCROLL_X = 420, 26, 194, 876, 720
+
+
+def _selected_feat_indices():
+    """1-based SelectableFeats indices whose name matches the selected feat ([] when none is selected)."""
+    res, _ = _client(FIND + _VM + """
+local s = d.SelectedFeatDetails
+local ok, h = pcall(function() return tostring(s.Name) end)
+if not ok or not h or h == "" then return {} end
+local out = {}
+for i = 1, #d.SelectableFeats do if tostring(d.SelectableFeats[i].Name) == h then out[#out + 1] = i end end
+return out""")
+    return res if isinstance(res, list) else []
+
+
+def levelup_pick_feat(name, tries=12):
+    """Select a feat by (part of) its name on the open Feat page: drag the list's scrollbar until the feat's row is on screen,
+    click it and confirm in the view model. Returns {ok, picked, log}. A probe click on a visible row tells which index sits
+    where (rows are SelectableFeats in order), so the target's row is computed, not guessed."""
+    log = []
+    feats = levelup_feats()
+    if not feats:
+        return {"ok": False, "log": ["no feat list (open the level-up screen and its Feat row first)"]}
+    want = [i + 1 for i, f in enumerate(feats) if name.lower() in str(f.get("name", "")).lower()]
+    if not want:
+        return {"ok": False, "log": [f"no feat matching {name!r}"]}
+    idx = want[0]
+    if feats[idx - 1].get("locked"):
+        return {"ok": False, "log": [f"{feats[idx - 1]['name']} is locked: {feats[idx - 1].get('requirements')}"]}
+    n = len(feats)
+    visible = (FEAT_BOTTOM_Y - FEAT_TOP_Y) // FEAT_ROW_H + 1
+    track = FEAT_BOTTOM_Y - FEAT_TOP_Y          # scrollbar travel; the thumb's centre moves over (about) the list's height
+    per_row = track / max(1, n - visible)        # thumb travel per scrolled row
+    probe_y = FEAT_TOP_Y + FEAT_ROW_H * (visible // 2)
+    for t in range(tries):
+        if idx in _selected_feat_indices():
+            log.append(f"selected {feats[idx - 1]['name']} (#{idx})")
+            return {"ok": True, "picked": feats[idx - 1]["name"], "log": log}
+        _rclick(FEAT_ROW_X, probe_y)
+        timing.wait(0.5)
+        sel = _selected_feat_indices()
+        if len(sel) != 1:  # nothing selected (a locked row) or an ambiguous name (several "Deprecated"): probe another row
+            probe_y = FEAT_TOP_Y + FEAT_ROW_H * ((visible // 2 + 3 * (t + 1)) % visible)
+            continue
+        here = sel[0]
+        ty = probe_y + (idx - here) * FEAT_ROW_H
+        if FEAT_TOP_Y <= ty <= FEAT_BOTTOM_Y:
+            _rclick(FEAT_ROW_X, ty)
+            timing.wait(0.5)
+            continue  # verified at the top of the loop
+        # off screen: grab the thumb where the visible rows say it is, and move it by the row difference
+        first = here - (probe_y - FEAT_TOP_Y) // FEAT_ROW_H           # index of the first visible row
+        y0 = FEAT_TOP_Y + 30 + (first - 1) * per_row
+        y1 = max(FEAT_TOP_Y + 10, min(FEAT_BOTTOM_Y, y0 + (idx - here) * per_row))
+        log.append(f"probe row #{here}, target #{idx}: drag {round(y0)} -> {round(y1)}")
+        _fast("drag %d %d %d %d" % (round(FEAT_SCROLL_X * _sx()), round(y0 * _sy()), round(FEAT_SCROLL_X * _sx()), round(y1 * _sy())), 15)
+        timing.wait(0.4)
+    return {"ok": False, "log": log + [f"couldn't select #{idx} after {tries} tries"]}
+
+
 def levelup_feats(match=None):
     """The open level-up screen's feat list, from its view model (CharacterLevelUp.DataContext.SelectableFeats - no scrolling
     needed, the visual list virtualizes): [{name, locked, requirements:[{text, met}]}]. locked = some requirement not met,
