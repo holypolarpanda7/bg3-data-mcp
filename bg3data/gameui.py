@@ -695,7 +695,12 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
     # The feat page is told from the view model, not from brightness: the padlocks on locked feats (a Dexterity class's list
     # has some at y ~ 483) light the "grid" probe band, and the page was then clicked as a spell grid (rogue-thief and
     # gunslinger L4, 2026-11-04, after DnD 5.5e 4.14.3.5 changed which feats are locked).
-    kind = None if levelup_state().get("can_feat") else _picker_kind()
+    # can_feat is true for the whole screen, so on a level with a Spells row AND a Feat row (Wizard 12/16) the Spells row was
+    # treated as a feat page too (wiz-evoker L12/L16 RED, 2026-11-11). The Feat row is the checklist's last one: only the lowest
+    # pending row (or the only one) is the feat page.
+    rows = pending_rows() or []
+    feat_row = levelup_state().get("can_feat") and (not rows or abs(y - max(rows)) <= ROW_TOL)
+    kind = None if feat_row else _picker_kind()
     if wanted and (kind or _stable_tiles()):
         for sid in _pick_wanted(y, kind, wanted, log):
             wanted.pop(sid, None)
@@ -704,7 +709,7 @@ def _fill_row(y, log, max_clicks=10, wanted=None, wanted_only=False):
     if wanted_only:
         return True
     if kind is None:
-        if not levelup_state().get("can_feat"):
+        if not feat_row:
             for i in range(max_clicks):    # an icon page in a layout not mapped above: click what the scanner finds
                 tiles = _tiles()
                 if not tiles:
