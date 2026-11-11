@@ -2091,7 +2091,11 @@ def container_gaps(store, active, layer):
         if not f.get("ContainerSpells") or f.get("SpellContainerID") or f.get("RootSpellID") not in (None, "", n):
             continue
         kids = C.kids(store, active, n)
-        mine = set(kids) if n in ours else {k for k in kids if k in ours}
+        # a container the layer only extends (it overrides another layer's, e.g. appends children to dnd55e's
+        # Target_UnleashingASpirit) needs cases for the layer's own children, not the dependency's (2026-11-11)
+        extended = n in ours and store.db.execute(
+            f"SELECT 1 FROM stats WHERE {w} AND name=? AND layer<>? LIMIT 1", p + [n, layer]).fetchone() is not None
+        mine = set(kids) if n in ours and not extended else {k for k in kids if k in ours}
         for g in (C.groups(store, active, n) if mine else []):
             if mine & set(g):
                 out.append((n, g, bool(tested & set(g))))
