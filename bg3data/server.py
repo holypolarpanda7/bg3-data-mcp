@@ -906,6 +906,8 @@ def bg3_test_stage(layer: str, case_id: str, layers: list[str] | None = None) ->
         out.append("  combat: " + ("your turn first" if ft and ft.get("tracked") == "host" else
                                    f"first turn went to {ft.get('tracked') or 'someone else'}" if ft else "no turn recorded yet"))
     for alias, snap in (r["before"] or {}).items():
+        if not isinstance(snap, dict):  # "_summons" is a list of pre-existing summons, not a creature snapshot (2026-11-19)
+            continue
         out.append(f"  {alias}: HP {snap.get('hp')}/{snap.get('max_hp')}" + (f", statuses {', '.join(snap.get('statuses') or [])}" if snap.get("statuses") else ""))
     if c.get("mode", "auto") == "player" and r["spell_name"]:
         tgt = "yourself" if c.get("target", "host") == "host" else c["target"]
