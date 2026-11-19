@@ -567,6 +567,9 @@ def validate(store, active, c):
             if sf and sv.get("spell_only") and sv.get("ability") and sv["ability"] not in sf["save_abilities"]:
                 errs.append(f"{c['spell']}'s own roll isn't a {sv['ability']} save ({sf['roll'] or 'no SpellRoll'}) - "
                             f"spell_only saves will never be recorded; see bg3_save_spells")
+    # clicks = how many target clicks (an int); a list of aliases passed validation and crashed the ui cast (2026-11-19)
+    if "clicks" in c and (isinstance(c["clicks"], bool) or not isinstance(c["clicks"], int) or c["clicks"] < 1):
+        errs.append(f"clicks = {c['clicks']!r}: the number of target clicks (an integer >= 1), not targets")
     for who in [c.get("caster")] + [cs.get("by") for cs in c.get("casts", [])]:
         if who and who not in aliases:
             errs.append(f"caster `{who}` isn't host or a spawn alias")

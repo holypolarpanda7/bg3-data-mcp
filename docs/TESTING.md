@@ -15,7 +15,7 @@ combat, even for a class-learned spell (verified 2026-09-30: slot and Action Poi
   resource change; use it as a spot check (e.g. once per resource type).
 - `mode = "ui"` (2026-10-29, `bg3data/uicast.py`): unattended player cast. The harness stages as usual, then the
   spell is started from the hotbar's own commands (UseSlot, LaunchUpcast with `slot_level`), aimed with real mouse
-  clicks (`clicks` = target picks; the target's position is projected through the game camera and the hover is
+  clicks (`clicks = N`: how many target clicks, an integer - Magic Missile at level 1 = 3; the target's position is projected through the game camera and the hover is
   confirmed by the game's picking before clicking) and reaction prompts are answered with real clicks
   (`reactions` = the ones to accept; every other prompt gets Do Not React). Reaction preferences are left as the
   game has them (Ask), unlike auto. Costs are really charged and checked like `player`. It fails when the spell isn't
