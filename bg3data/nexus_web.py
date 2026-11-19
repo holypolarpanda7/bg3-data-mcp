@@ -294,6 +294,10 @@ def diff(layer, b=None):
                if spec.get(k) is not None and norm(spec[k]) != norm(live.get(k))}
     lr, sr = live["requirements"], spec.get("requirements", {})
     req = {}
+    if not any(lr.get(k) for k in ("nexus", "external", "files")) and any(sr.get(k) for k in ("nexus", "external")):
+        # an all-empty read while the spec has requirements is a failed read (the legacy <details> rows didn't render), not an
+        # empty page: adding from it duplicated the page's MCM requirement on 2026-11-19. Requirements are left alone.
+        return {"fields": changes, "requirements": {}, "unread": "requirements couldn't be read (all empty) - left as they are"}
     if sr.get("method") and sr["method"] != lr["method"]:
         req["method"] = (lr["method"], sr["method"])
     for kind in ("nexus", "external"):
@@ -305,7 +309,17 @@ def diff(layer, b=None):
         extra = [r["name"] for r in lr.get(kind, []) if r["name"].strip().lower() not in names]
         if extra:
             req[f"remove_{kind}"] = extra
-    return {"fields": changes, "requirements": req}
+        seen, dup = set(), []
+        for r in lr.get(kind, []):
+            k_ = r["name"].strip().lower()
+            if k_ in seen:
+                dup.append(r["name"])
+            seen.add(k_)
+        if dup:  # reported, not fixed: push doesn't delete rows (remove them on the page)
+            d_note = f"duplicate {kind} requirement rows on the page: {dup} - delete the extra ones on the Requirements tab"
+            req.setdefault("_notes", []).append(d_note)
+    notes = req.pop("_notes", [])
+    return {"fields": changes, "requirements": req, **({"unread": "; ".join(notes)} if notes else {})}
 
 
 def _show(d):
@@ -317,6 +331,8 @@ def _show(d):
             out.append(f"  {k}: {old!r} -> {new!r}")
     for k, v in d["requirements"].items():
         out.append(f"  requirements {k}: {v}")
+    if d.get("unread"):
+        out.append(f"  note: {d['unread']}")
     return "\n".join(out) or "  (live page matches the spec)"
 
 
