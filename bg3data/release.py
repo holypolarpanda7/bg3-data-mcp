@@ -1,7 +1,8 @@
 """Local release of a mod layer (2026-10-06), after the gate (bg3data/gate.py) is green.
 
   python -m bg3data.release prepare LAYER VERSION   stamp Version64 in meta.lsx, add a CHANGELOG.md section, commit
-  python -m bg3data.release package LAYER           gate must be GREEN on HEAD: pak + info.json -> zip + checksums
+  python -m bg3data.release package LAYER           gate must be GREEN on HEAD: pak + info.json -> zip + checksums,
+                                                    plus translator assets (English loca XML + strings changed since the last tag)
   python -m bg3data.release publish LAYER           tag v<version>, push it, GitHub Release with the zip (no mod sites yet)
 
 Between prepare and package, run the gate on the release commit: a Version64-only meta.lsx change owes no builds, so it is
@@ -57,6 +58,49 @@ def stamp(meta_path, ver):
 def _last_tag(path):
     r = subprocess.run(["git", "describe", "--tags", "--abbrev=0", "--match", "v*"], cwd=path, capture_output=True, text=True)
     return r.stdout.strip() if r.returncode == 0 else None
+
+
+_LOCA = re.compile(r'<content contentuid="([^"]+)" version="(\d+)">(.*?)</content>', re.S)
+
+
+def _loca_entries(text):
+    return {u: (v, t) for u, v, t in _LOCA.findall(text or "")}
+
+
+def localization_assets(path, out, ver, slug):
+    """Translator assets (2026-11-19, PTA #85): every English loca XML of the mod, copied as a release asset, plus a list of the
+    strings added, changed and removed since the previous v* tag - what a translation mod has to update. Returns the paths."""
+    import glob
+    files = sorted(glob.glob(os.path.join(path, "Mods", "*", "Localization", "English", "*.xml")))
+    if not files:
+        return []
+    prev = _last_tag(path)
+    assets, lines = [], [f"Localization changes for v{ver}" + (f" since {prev}" if prev else " (first release with this list)"),
+                          "Each entry: the contentuid (handle) the game looks text up by, then the English text.", ""]
+    for f in files:
+        rel = os.path.relpath(f, path).replace(os.sep, "/")
+        stem = os.path.splitext(os.path.basename(f))[0]
+        dst = os.path.join(out, f"{slug}_English_{stem}_v{ver}.xml" if len(files) > 1 else f"{slug}_English_v{ver}.xml")
+        shutil.copyfile(f, dst)
+        assets.append(dst)
+        new = _loca_entries(open(f, encoding="utf-8").read())
+        old = {}
+        if prev:
+            r = subprocess.run(["git", "show", f"{prev}:{rel}"], cwd=path, capture_output=True, text=True, encoding="utf-8")
+            old = _loca_entries(r.stdout) if r.returncode == 0 else {}
+        added = [u for u in new if u not in old]
+        changed = [u for u in new if u in old and old[u][1] != new[u][1]]
+        removed = [u for u in old if u not in new]
+        lines += [f"== {rel}: {len(new)} strings; {len(added)} added, {len(changed)} changed, {len(removed)} removed", ""]
+        for title, us, fmt in (("Added", added, lambda u: f"{u}  {new[u][1]}"),
+                               ("Changed", changed, lambda u: f"{u}  {old[u][1]}\n    -> {new[u][1]}"),
+                               ("Removed", removed, lambda u: f"{u}  {old[u][1]}")):
+            if us:
+                lines += [f"-- {title} ({len(us)})"] + [fmt(u) for u in us] + [""]
+    ch = os.path.join(out, f"{slug}_localization-changes_v{ver}.txt")
+    with open(ch, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return assets + [ch]
 
 
 def changelog_section(path, ver, since=None):
@@ -130,13 +174,15 @@ def package(layer):
         for f in ("README.md", "CHANGELOG.md", "LICENSE", "LICENSE.md"):
             if os.path.exists(os.path.join(path, f)):
                 z.write(os.path.join(path, f), f)
-    sums = {os.path.basename(zip_path): zip_path, pak_name: pak}
+    assets = localization_assets(path, out, ver, slug)
+    sums = {os.path.basename(zip_path): zip_path, pak_name: pak, **{os.path.basename(a): a for a in assets}}
     with open(os.path.join(out, "checksums.txt"), "w") as fh:
         for name, p in sums.items():
             fh.write(f"SHA256 {hashlib.sha256(open(p, 'rb').read()).hexdigest()}  {name}\n")
-    json.dump({"version": ver, "sha": head, "zip": zip_path, "pak_files": n, "pak_md5": md5},
+    json.dump({"version": ver, "sha": head, "zip": zip_path, "pak_files": n, "pak_md5": md5, "assets": assets},
               open(os.path.join(out, "release.json"), "w"), indent=1)
-    return f"v{ver} packaged from {head[:10]}: {zip_path} ({os.path.getsize(zip_path) // 1024} KiB, pak {n} files, md5 {md5})"
+    return (f"v{ver} packaged from {head[:10]}: {zip_path} ({os.path.getsize(zip_path) // 1024} KiB, pak {n} files, md5 {md5})"
+            + (f"; translator assets: {', '.join(os.path.basename(a) for a in assets)}" if assets else ""))
 
 
 def publish(layer):
@@ -156,7 +202,8 @@ def publish(layer):
     gate._git(path, "tag", "-a", tag, "-m", f"{info['Name']} {tag}")
     gate._git(path, "push", "origin", "HEAD", tag)
     d = os.path.dirname(rel)
-    r = subprocess.run(["gh", "release", "create", tag, rj["zip"], os.path.join(d, "checksums.txt"), "--title", f"{info['Name']} {tag}",
+    r = subprocess.run(["gh", "release", "create", tag, rj["zip"], *rj.get("assets", []), os.path.join(d, "checksums.txt"),
+                        "--title", f"{info['Name']} {tag}",
                         "--notes", notes.group(0) if notes else tag], cwd=path, capture_output=True, text=True)
     if r.returncode != 0:
         return f"tagged and pushed {tag}, but the GitHub release failed: {r.stderr.strip()[:300]}"
